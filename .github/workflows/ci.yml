@@ -36,8 +36,8 @@ jobs:
       - run: cargo test --workspace
 
   windows-agent:
-    # Eight of the workstation agent's twelve modules are cfg(windows):
-    # without the target build nobody type-checks them. Same triple as
+    # Most of the workstation agent is cfg(windows): without the target
+    # build nobody type-checks that half of it. Same triple as
     # `cargo win`.
     runs-on: ubuntu-latest
     steps:

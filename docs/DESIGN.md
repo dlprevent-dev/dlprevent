@@ -33,7 +33,7 @@ Status: 2026-09-05. Result of the planning session.
 │  ┌──────────┐  ┌──────────┐      ┌───────────────┐  │
 │  │ file     │─▶│ Event    │─────▶│ Correlation   │  │
 │  │ network  │─▶│ Bus      │      │ Learning      │  │
-│  └──────────┘  └──────────┘      │ Store (SQLite)│  │
+│  └──────────┘  └──────────┘      │ Store (JSON)  │  │
 │                                  └───────┬───────┘  │
 │                                          │ unix socket
 └──────────────────────────────────────────┼───────────┘
@@ -210,7 +210,15 @@ pairs, and everything else in the service is JSON too.
 
 ## Storage
 
-- SQLite at `/var/lib/deelpe/deelpe.db`, mode 0600, owned by root.
+- **No database.** Everything the service keeps is a file under
+  `/var/lib/deelpe`, mode 0600, owned by root: `alerts.jsonl` (the alerts),
+  `state.json` (the correlator's memory), `learned.json` (the learning
+  phase), `changes.log` (every change to the lists) and `agent.log`. The
+  planning of 2026-09-05 had SQLite here for M2; M2 shipped without it,
+  because a few hundred learned pairs and an append-only alert log do not
+  need one, and one storage format across the whole service is worth more
+  than the query language (see "Learning"). The central server is the one
+  that has a database, and it is Postgres.
 - Unix socket `/var/run/deelpe.sock` with 0660, group `staff` (macOS) or
   `deelpe`/`users` (Linux): not every local process may read.
 - Only root may change things (the protection list, the ignore list) —
@@ -256,16 +264,18 @@ pairs, and everything else in the service is JSON too.
   only if the identifier of the system boot (`kern.boottime`, Linux `boot_id`)
   is the same; derived files always. Otherwise an attacker could copy, wait
   out a restart of the service and then send.
-- Events: 30 days. Alerts: `alert_retain_days`, default 1 year, 0 =
-  unlimited. Learned pairs and decisions: unlimited.
-- Until SQLite arrives (M2), alerts live in `/var/lib/deelpe/alerts.jsonl`
+- Raw events are never stored — they are correlated and dropped. Alerts:
+  `alert_retain_days`, default 1 year (365), 0 = unlimited. Learned pairs and
+  decisions: unlimited. (The central server keeps its own alerts for
+  `alert_retain_days` as well, defaulting to 730 there.)
+- Alerts live in `/var/lib/deelpe/alerts.jsonl`
   (one JSON line per alert in the wire format, 0600, append only; read on
   start and trimmed of anything older than a year, unreadable lines stay, IDs
   carry on). An updated alert is appended as a further line with the same ID;
   on reading, the last line per ID counts, and the file is compacted
   afterwards. Decision of 2026-09-05: alerts have to survive a restart and be
   exportable.
-- Export: `deelpe export --format csv|json [-o datei]`, and in the app the
+- Export: `deelpe export --format csv|json [-o file]`, and in the app the
   "Export" button above the alert list (a save dialog, CSV or JSON). Both
   fetch `AlertsAll` over the socket; the table (`Alerts`) loads 500 (since
   2026-09-05, 50 before that: Claude Code produced three alerts every 5 s and
@@ -443,8 +453,9 @@ file system" policy itself when the rule is created.
   never to the agent. Counts and alerts by POST, the configuration (rules,
   thresholds, lifted blocks) collected every 30 s. Enrollment with an
   enrollment token from the dashboard, the agent gets a client certificate,
-  the token is burned. The agent buffers locally in SQLite and sends
-  afterwards.
+  the token is burned. The agent buffers locally and sends
+  afterwards (built as a backlog in its state file, not as a database —
+  see "Z2 as built").
 - **Agents are autonomous.** Thresholds and reactions run in the agent; the
   central server watches and configures. Agents send **no raw events**, but
   counts per (user, rule, minute) and alerts. NAS syslog is condensed on
@@ -635,7 +646,8 @@ things nobody would have noticed without the real machine:
   file. The colon of the drive letter is left untouched (`strip_stream`, with
   tests).
 - **Open:** the client IP of an updated alert is the one from the last access
-  seen, not from all of them; the log file is not rotated.
+  seen, not from all of them. (The log file was on this list too; it has
+  rotated since — one rollover at 4 MB, `deelpe-core::agentlog`.)
 
 
 ### Service account and shares (2026-09-06)

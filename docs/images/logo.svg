@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="DLPrevent">
+  <title>DLPrevent</title>
+  <rect width="128" height="128" rx="24" fill="#faf8f4"/>
+  <g transform="translate(12 10) scale(.9)">
+    <path fill="#17181a" d="M8 8H55C87 8 108 29 108 60S87 112 55 112H8V90H54C73 90 84 79 84 60S73 30 54 30H8Z"/>
+    <path fill="#9e4708" d="M16 43H50V77H16Z"/>
+  </g>
+</svg>

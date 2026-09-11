@@ -1,13 +1,30 @@
+<div align="center">
+
+<img src="docs/images/logo.svg" alt="" width="128" height="128">
+
 # DLPrevent
 
-Lean data-loss detection for macOS and Windows (Linux to follow), with a
-central dashboard. You pick the folders; the tool warns when a program reads
-from one of them and then sends data outward.
+**Lean data-loss detection for macOS and Windows — with a central dashboard**
+
+You pick the folders; the tool warns when a program reads from one of them
+and then sends data outward.
+
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue)](LICENSE)
+[![Rust](https://img.shields.io/badge/Rust-1.90%2B-b7410e?logo=rust&logoColor=white)](rust-toolchain.toml)
+[![Postgres](https://img.shields.io/badge/Postgres-18%2B-336791?logo=postgresql&logoColor=white)](docs/SERVER.md)
+[![Docker](https://img.shields.io/badge/Docker-Ready-2496ed?logo=docker&logoColor=white)](docs/INSTALL.md)
+[![Platforms](https://img.shields.io/badge/Agents-macOS%20%C2%B7%20Windows-555)](docs/INSTALL.md)
+[![Status](https://img.shields.io/badge/Status-Z1%20observe%20%26%20report-e07a3f)](#status)
+
+</div>
+
+---
 
 ![DLPrevent central dashboard: open alerts, hard-limit verdicts, reads per folder and top readers](docs/images/dashboard.png)
 
-Two parts, usable separately:
+## Overview
 
+Two parts, usable separately:
 - **Standalone.** The **DLPrevent** menu-bar app plus a background service on
   the Mac. Runs on its own, with no outbound network access.
 - **Central server.** A dashboard with login that agents report to, syslog
@@ -221,10 +238,13 @@ browser connector and the network cage.
   installation works without Gatekeeper overrides.
 - **Cloud hosting on request.** A hosted central server per customer,
   operated by us. Ask via info@dlprevent.ch.
-- **Role-based access control.** Today every dashboard login is an
-  administrator. Planned: viewer, operator and admin, per agent, agent group
-  or whole server.
-- **Enterprise Single Sign-On (SSO).** Support for SAML 2.0 and LDAP directory integration. Allows customers to authenticate via their own Identity Provider (Microsoft      Entra ID, Okta, on-prem Active Directory, etc.) for centralized dashboard acces
+- **Finer-grained access control.** Today an account is either administrator
+  or read only, for the whole server ([SERVER.md](docs/SERVER.md#roles)).
+  Planned: an operator role between the two, and a scope per agent or agent
+  group instead of all-or-nothing.
+- **Enterprise single sign-on (SSO).** SAML 2.0 and LDAP, so an account comes
+  from your own identity provider (Microsoft Entra ID, Okta, on-premises
+  Active Directory) instead of being created in the dashboard.
 
 ## License
 

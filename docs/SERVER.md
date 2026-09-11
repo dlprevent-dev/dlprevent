@@ -136,9 +136,12 @@ lost.
 "Second factor").
 
 **Settings** — apply to the whole central server and every agent. Each change
-bumps the configuration generation; agents pick it up on their next report. The
-**Notifications** tab is the only page that reaches out on its own; see
-"Email notifications".
+bumps the configuration generation; agents pick it up on their next report.
+Four of the tabs let the central server talk to the outside world, and every
+one of them is off from the factory: **Reputation** (AbuseIPDB, asks on its
+own once it is on), **Notifications** (SMTP, sends on its own), **Assistant**
+(a language model, only on a click) and, under **Interfaces**, the release
+source it checks for new agent versions. Each has its own section below.
 
 **Audit log** — every change to the central server, with user and time. Never
 deleted.
@@ -329,9 +332,13 @@ share-to-share copy is caught by the file server agent instead.
 **The copy onto one's own PC.** If somebody drags a file from `\\srv01\GL`
 onto the desktop, there is no send to stop — the copier is Explorer. The
 sensor therefore passes on the file events of a process that has just read
-from a protected folder for five minutes, including **outside** the protected
-folders; otherwise the copy would stay invisible (which is exactly what
-happened in the lab on 2026-09-07). If the folder is strict and **Enforce**
+from a protected folder, including **outside** the protected folders;
+otherwise the copy would stay invisible (which is exactly what happened in
+the lab on 2026-09-07). It keeps doing so for as long as the correlator holds
+the process as touched, plus a minute of lead — `touch_ttl_secs` + 60 s, so
+eleven minutes at the default. The sensor must never be the narrower of the
+two, or it drops the very copy the correlator is still waiting for
+(`Config::sensor_taint_ttl`). If the folder is strict and **Enforce**
 is set, the agent deletes the copy again — and if the copier still
 holds the file open, it keeps trying for ten seconds. Nothing inside the
 protected folder itself is ever deleted.
@@ -505,6 +512,70 @@ replaces the program on **every** enrolled device, so check the checksum
 before you flip it. Rollout details, the recovery action a
 pre-existing installation needs, and what to do if a new program does not
 come up: [INSTALL.md](INSTALL.md).
+
+## IP reputation: is the destination known bad?
+
+An alert names a destination address. Whether that address is a colleague's
+Nextcloud or a host that a thousand people have reported for brute-forcing
+is not something the alert can say on its own. **Settings → Reputation**
+points the central server at [AbuseIPDB](https://www.abuseipdb.com) and puts
+the answer in the alert list.
+
+It is **off from the factory** and stays off until two things are true: the
+switch is on **and** an API key is stored. Without both, nothing goes out.
+
+**Only the IP address leaves the network** — never a user, a process, a
+folder or a file name. The central server does not have file contents at all.
+Where that address goes is AbuseIPDB's, and that is the whole of the
+decision: one address per lookup, no context with it.
+
+**One key for the whole fleet.** Until 2026-09-08 every Mac asked on its own,
+with its own key, its own cache and its own daily budget — the same address
+cost ten lookups across ten devices, and the Windows agent had no reputation
+at all. Now it is one key, one cache, one budget, and every agent benefits
+from what any other one already looked up.
+
+**What the dashboard shows.** The alert list gets a *Reputation* column, and
+the expanded row shows country, provider, the number of reports, whether the
+address is a Tor exit node, and a link to the report at AbuseIPDB. The
+thresholds are theirs: from 25 % suspicious (orange), from 75 % malicious
+(red). **Check again** in the expanded row forces a fresh lookup; it costs
+one query against the budget and is for administrators only.
+
+**What it does not do:** nothing is blocked, no verdict changes, no alert is
+closed. It is a column, not a decision.
+
+### The budget, and how it is spared
+
+The free plan gives 1000 lookups a day, and this is built not to spend them:
+
+- A result is cached for **7 days** in `ip_reputations`. A restart does not
+  clear it.
+- **Private and reserved addresses are never asked about** — AbuseIPDB does
+  not know them, and asking would be a wasted lookup and a leaked internal
+  address.
+- Only what stands as a destination in the alerts of the **last 30 days** is
+  looked up. The `remote` column also carries `volume …` and `copy to …`;
+  those are filtered out before anything goes out.
+- The worker asks **one address at a time**, about 20 a minute, 300 ms apart.
+- **Lookups per day** (`abuseipdb_daily_limit`, 1000 by default) is counted
+  from the table, not from memory: restarting the central server does not
+  hand you a fresh budget, and does not walk into AbuseIPDB's own block.
+- An invalid key or a 429 pauses the worker rather than hammering on. The
+  reason stands on the Reputation page.
+
+Addresses nothing has referred to for a multiple of the cache lifetime are
+cleaned out with everything else (see the retention job) — otherwise the
+cache would be the one table that grows without end.
+
+### An email when a destination is known bad
+
+**Settings → Notifications** has a switch for it: an email when an alert's
+destination is known bad, even if the flow itself stayed under every limit.
+It reads the cache only, so it never costs a lookup of its own. The alerts it
+mails are often *notices* rather than alarms — a link from such an email
+finds them anyway, because the link names the alert rather than filtering the
+list (see "Email notifications").
 
 ## AI assistance: let a model explain an alert
 
@@ -798,8 +869,12 @@ are marked *(admin)*. Bodies and responses are JSON.
 | `GET /api/alerts/{id}/explain` | the stored explanation of an alert, or `null` *(admin: the dossier quotes the agent log)* |
 | `POST /api/alerts/{id}/explain` | gather the dossier, ask the model, store the answer *(admin)* |
 | `GET /api/assist`, `POST /api/assist/test` | state of the AI assistance; test the endpoint without sending alert data *(admin)* |
+| `GET /api/reputation` | IP reputation: whether it is active, what today's budget has left, and the cached verdict for the addresses in `ips` (comma-separated, at most 500) |
+| `POST /api/reputation/{ip}` | look this address up again — costs one query against the daily budget *(admin)* |
 | `GET/POST /api/rules`, `PUT/DELETE /api/rules/{id}` | folder rules *(admin)* |
 | `GET /api/agents`, `GET /api/groups`, `GET /api/agents/{id}/log` | agents; AD groups seen; agent log *(groups, log: admin)* |
+| `POST /api/agents/{id}/update` | order this one agent to fetch the stored program on its next report *(admin)* |
+| `GET /api/release`, `POST /api/release/check`, `POST /api/release/fetch` | the configured release source and what it last saw; look now; download, verify the signature and store *(admin)* |
 | `DELETE /api/agents/{id}`, `DELETE /api/agents/{id}/delete` | revoke certificate; delete the record *(admin)* |
 | `GET /api/sources`, `PUT/DELETE /api/sources/{id}` | syslog sources *(admin)* |
 | `GET/POST /api/tokens`, `DELETE /api/tokens/{id}` | enrollment tokens *(admin)* |
