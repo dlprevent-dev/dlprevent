@@ -1,5 +1,5 @@
--- de-el-pe central server, schema Z1 (2026-09-06). One installation per
--- customer: deliberately no tenant column (docs/DESIGN.md).
+-- de-el-pe Zentrale, Schema Z1 (2026-09-06). Eine Installation pro Kunde:
+-- bewusst keine Mandanten-Spalte (docs/DESIGN.md).
 
 CREATE TABLE users (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -55,7 +55,7 @@ CREATE TABLE agents (
   revoked_at TIMESTAMPTZ
 );
 
--- NAS boxes and other syslog sources without an agent; identified by the sender address.
+-- NAS und andere Syslog-Quellen ohne Agent; identifiziert über die Absenderadresse.
 CREATE TABLE sources (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   name TEXT NOT NULL,
@@ -85,7 +85,7 @@ CREATE TABLE rules (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Alerts: retained for years. `detail` carries the original in wire format.
+-- Warnungen: Jahre aufbewahrt. `detail` trägt das Original im Drahtformat.
 CREATE TABLE alerts (
   id BIGSERIAL PRIMARY KEY,
   kind TEXT NOT NULL CHECK (kind IN ('endpoint', 'access')),
@@ -115,7 +115,7 @@ CREATE UNIQUE INDEX alerts_origin_external ON alerts (COALESCE(agent_id, source_
 CREATE INDEX alerts_at ON alerts (at DESC);
 CREATE INDEX alerts_open ON alerts (acknowledged_at) WHERE acknowledged_at IS NULL;
 
--- Counts: retained for weeks. `origin` is an agent id or a source id.
+-- Zählungen: Wochen aufbewahrt. `origin` ist Agent- oder Quellen-ID.
 CREATE TABLE access_counts (
   origin UUID NOT NULL,
   rule_id UUID,

@@ -1,17 +1,17 @@
--- Learning instructions from the central server to an agent ("remember the
--- pair", "always report"). Without them a person at the dashboard cannot
--- silence a recurring alert: the agent reports an unknown pair as `new`
--- again on every flow, and it only goes quiet once somebody presses
--- "Remember" on the device itself.
+-- Lernanweisungen der Zentrale an einen Agenten ("Paar merken", "immer
+-- melden"). Ohne sie kann ein Mensch am Dashboard eine wiederkehrende
+-- Warnung nicht stillstellen: der Agent meldet ein unbekanntes Paar bei
+-- jedem Fluss neu als `new`, und still wird es erst, wenn jemand am Geraet
+-- selbst "Remember" drueckt.
 --
--- The agent picks up open rows with its report and reports back the ones it
--- carried out; only then is `applied_at` set. So a report that gets lost on
--- the way merely repeats the instruction.
+-- Der Agent holt offene Zeilen mit seinem Bericht ab und meldet die
+-- ausgefuehrten zurueck; erst dann wird `applied_at` gesetzt. Ein Bericht,
+-- der unterwegs verlorengeht, wiederholt die Anweisung also nur.
 CREATE TABLE learn_commands (
     id          BIGSERIAL PRIMARY KEY,
     agent_id    UUID NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
-    -- The agent's own alert id; the row in `alerts` may be long gone, the
-    -- instruction stays valid.
+    -- Warnungskennung des Agenten; die Zeile in `alerts` kann laengst weg
+    -- sein, die Anweisung bleibt gueltig.
     alert_id    BIGINT NOT NULL,
     action      TEXT NOT NULL CHECK (action IN ('remember', 'flag')),
     created_by  UUID REFERENCES users(id) ON DELETE SET NULL,
@@ -19,14 +19,13 @@ CREATE TABLE learn_commands (
     applied_at  TIMESTAMPTZ
 );
 
--- The report only asks for the open ones, every 30 seconds per agent.
+-- Der Bericht fragt nur die offenen ab, alle 30 Sekunden je Agent.
 CREATE INDEX learn_commands_pending ON learn_commands (agent_id) WHERE applied_at IS NULL;
 
--- Sending the same instruction twice achieves nothing.
+-- Dieselbe Anweisung zweimal zu schicken bringt nichts.
 CREATE UNIQUE INDEX learn_commands_open_once ON learn_commands (agent_id, alert_id, action) WHERE applied_at IS NULL;
 
--- By design, alerts from the learning phase are "in the table yes, reported
--- no". The central server still carried them as open until now; from here
--- on they arrive already acknowledged (see db.rs), and the existing ones
--- are brought into line.
+-- Warnungen der Lernphase sind laut Design "Tabelle ja, Meldung nein". Die
+-- Zentrale hat sie bisher trotzdem als offen gefuehrt; ab jetzt kommen sie
+-- erledigt herein (siehe db.rs), und die vorhandenen werden nachgezogen.
 UPDATE alerts SET acknowledged_at = now() WHERE verdict = 'learning' AND acknowledged_at IS NULL;

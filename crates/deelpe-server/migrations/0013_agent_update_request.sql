@@ -1,15 +1,15 @@
--- A single agent should fetch its program without the whole workforce doing
--- the same.
+-- Ein einzelner Agent soll sein Programm holen, ohne dass es die ganze
+-- Belegschaft tut.
 --
--- The master switch `agent_update_enabled` applies to everyone. That is
--- exactly what you do not want the first time round: one device first, check
--- whether it comes back up, then the rest. This column is the order to
--- exactly one of them — set by the button in the agent list.
+-- Der Hauptschalter `agent_update_enabled` gilt fuer alle. Genau das will
+-- man beim ersten Mal nicht: erst ein Geraet, nachsehen, ob es wieder
+-- hochkommt, dann die uebrigen. Diese Spalte ist der Auftrag an genau
+-- einen — gesetzt vom Knopf in der Agentenliste.
 --
--- It clears itself: as soon as the agent runs the program that was waiting
--- for it, `agent::report` clears it away. A marker that stays stuck would be
--- an order nobody can withdraw any more, and at the next upload this one
--- device would help itself to that one too, unasked.
+-- Sie loescht sich selbst: sobald der Agent das bereitliegende Programm
+-- faehrt, raeumt `agent::report` sie weg. Eine Marke, die haengen bleibt,
+-- waere ein Auftrag, den niemand mehr zurueckziehen kann, und beim
+-- naechsten Hochladen holte sich dieses eine Geraet ungefragt auch das.
 ALTER TABLE agents ADD COLUMN update_requested TIMESTAMPTZ;
 
 COMMENT ON COLUMN agents.update_requested IS

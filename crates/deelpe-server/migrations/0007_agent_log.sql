@@ -1,6 +1,6 @@
--- The agents' local log, as it arrives with their reports. So that the
--- dashboard says *what* is going on on a device — until now it only said
--- whether the device had checked in.
+-- Lokales Protokoll der Agenten, wie es mit den Berichten hereinkommt.
+-- Damit im Dashboard steht, *was* auf einem Geraet los ist — bisher stand
+-- dort nur, ob es sich gemeldet hat.
 CREATE TABLE agent_log (
   id BIGSERIAL PRIMARY KEY,
   agent_id UUID NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
@@ -10,13 +10,14 @@ CREATE TABLE agent_log (
   msg TEXT NOT NULL,
   received_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
--- The only query: the most recent lines of one agent.
+-- Die einzige Abfrage: die letzten Zeilen eines Agenten.
 CREATE INDEX agent_log_agent_at ON agent_log (agent_id, at DESC, id DESC);
--- For cleaning up by age.
+-- Fuer das Aufraeumen nach Alter.
 CREATE INDEX agent_log_at ON agent_log (at);
--- If the central server accepts a report and the answer gets lost, the
--- agent sends the same lines again. As with alerts and counts, that must
--- not duplicate anything. The timestamp has microsecond resolution; two
--- different lines with the same text in the same microsecond do not exist.
--- Via `md5`, because a message may be longer than a btree entry.
+-- Nimmt die Zentrale einen Bericht an und geht die Antwort verloren,
+-- schickt der Agent dieselben Zeilen noch einmal. Wie bei Warnungen und
+-- Zaehlungen darf das nichts verdoppeln. Der Zeitstempel hat Mikrosekunden;
+-- zwei verschiedene Zeilen mit gleichem Text in derselben Mikrosekunde gibt
+-- es nicht. Ueber `md5`, weil eine Meldung laenger sein darf als ein
+-- Btree-Eintrag.
 CREATE UNIQUE INDEX agent_log_once ON agent_log (agent_id, at, md5(msg));

@@ -1,8 +1,8 @@
--- Second factor. A TOTP secret per user (NULL: not set up) and the last
--- accepted time step, so that an intercepted code does not work a second
--- time. Passkeys in their own table: a user has several of them (phone,
--- computer, security key). `credential` is the record from webauthn-rs
--- (key, counter, backup state), stored unchanged.
+-- Zweiter Faktor. TOTP-Geheimnis je Benutzer (NULL: nicht eingerichtet) und
+-- der zuletzt angenommene Zeitschritt, damit ein abgefangener Code nicht ein
+-- zweites Mal gilt. Passkeys als eigene Tabelle: ein Benutzer hat mehrere
+-- (Telefon, Rechner, Schluessel). `credential` ist der Datensatz von
+-- webauthn-rs (Schluessel, Zaehler, Sicherungszustand), unveraendert abgelegt.
 ALTER TABLE users
   ADD COLUMN totp_secret BYTEA,
   ADD COLUMN totp_used_step BIGINT NOT NULL DEFAULT 0;
