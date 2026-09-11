@@ -126,6 +126,21 @@ a development machine. Without the target build, any change there is blind.
 
 Bitdefender: add an exception for `/usr/local/bin/deelpe`.
 
+## Migrations
+
+`crates/deelpe-server/migrations/*.sql` are applied once and then frozen.
+SQLx stores a checksum per migration in `_sqlx_migrations` and compares it at
+every start; the checksum covers the **whole file**, comments included. Edit
+an applied migration and every central server that already ran it refuses to
+start with `migration N was previously applied but has been modified` — the
+operator's, not just yours, and there is nobody at that installation to
+repair the table by hand.
+
+So: a change to the schema is a new file, never an edit to an old one. That
+includes rewording a comment. This is why these files are the one place in
+the repo whose comments are still German (2026-09-11): translating them
+changed the checksums and stopped the lab server.
+
 ## Branches and CI
 
 Work happens on `dev`; `main` carries what has been released. A pull request

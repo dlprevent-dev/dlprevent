@@ -214,7 +214,8 @@ server {
 }
 ```
 
-Then, in the server environment:
+Then, in the server environment — `.env` next to `docker-compose.yml`, or
+`/etc/deelpe-server/env` for the `.deb`:
 
 ```
 DEELPE_TRUST_PROXY=true
@@ -237,11 +238,17 @@ Two further points:
 
 - **Passkeys need a DNS name** at the proxy, not an IP, and the name has to
   stay — it is the key's identity. Same for the server certificate list
-  (`DEELPE_SERVER_NAMES`).
+  (`DEELPE_SERVER_NAMES`). A key is bound to the address it was registered
+  under: whoever then opens the dashboard by IP is not offered it and signs in
+  with a password, or registers a second key under that address.
 - The **enrollment command** (Agents → Enroll agent) builds its URL from the
   name in the address bar plus port 8444. If the proxy runs on a different
   machine than the server, that name has to resolve to the server for the
   agents as well — or correct the host name in the command by hand.
+  Shortcut for a lab where only the IP resolves: open the dashboard directly
+  under `https://<ip>:8443`, past the proxy, and the command comes out with
+  the IP already in it. The IP has to be in `DEELPE_SERVER_NAMES` for that —
+  enrolment verifies the certificate against the CA.
 
 `DEELPE_UI_HTTP=true` serves the dashboard as plain HTTP for the proxy to
 pick up. It saves the proxy the `proxy_ssl_verify off`, and costs nothing as
@@ -363,7 +370,9 @@ apps/macos/DeelpeBar/build.sh
 ```
 
 Result: `apps/macos/DeelpeBar/build/DLPrevent.app` — the app contains the
-service and the plists and can install itself. Copy it to the target device
+service and the plists and can install itself — and next to it
+`build/DLPrevent.zip`, the same bundle packed for the dashboard (see
+"Into the dashboard" below). Copy it to the target device
 (remote support, MDM, USB), then:
 
 ```bash
@@ -375,6 +384,29 @@ Build and install on the same Mac in one go:
 ```bash
 apps/macos/DeelpeBar/build.sh && rm -rf /Applications/DLPrevent.app && cp -R apps/macos/DeelpeBar/build/DLPrevent.app /Applications/ && open /Applications/DLPrevent.app
 ```
+
+### Into the dashboard
+
+So that the enrollment command fetches the app from the central server
+instead of somebody carrying it over by hand, upload `build/DLPrevent.zip`
+as an administrator: **Agents → the macOS row → Upload/Replace**. As long as
+nothing is stored for macOS the row is hidden; then the dialog under
+**Agents → Enroll agent → macOS** offers "Upload it now". The server checks
+the `PK` header and keeps the file as `DLPrevent.zip`; the local file name
+does not matter.
+
+What the zip has to look like is decided by the enrollment command: it
+unpacks it with `unzip -d /Applications`, so `DLPrevent.app` has to be the
+top level of the archive. `build.sh` packs it with `zip -y` for that reason
+and not with `ditto -c -k`: ditto writes AppleDouble entries which unzip
+drops inside the bundle, and the signature of the unpacked app is then
+broken ("a sealed resource is missing or invalid").
+
+Two limits: `build.sh` builds for the architecture of the build machine, so
+a zip from an Apple-Silicon Mac does not run on an Intel one. And macOS
+agents do not update themselves — the upload serves the enrollment
+download, nothing goes out to devices already enrolled (see
+`docs/adr/0004-agent-update-from-the-dashboard.md`).
 
 In the app (lock icon in the menu bar):
 
