@@ -549,9 +549,9 @@
     {:else}
       {#if binFor(platform)?.present}
         <p style="margin-top:0">
-          Run on the device {platform === 'mac' ? 'as root' : 'in Windows PowerShell as administrator'}. It fetches
+          Run on the device {platform === 'mac' ? 'in Terminal' : 'in Windows PowerShell as administrator'}. It fetches
           <span class="mono">{binFor(platform)!.file_name}</span> ({fmtBytes(binFor(platform)!.size)}) from this
-          server, checks the fingerprint and enrolls:
+          server, checks the fingerprint and {created.enroll_command ? 'installs the app' : 'enrolls'}:
         </p>
       {:else}
         <p class="hint" style="margin-top:0">
@@ -568,6 +568,14 @@
         </p>
       {/if}
       <div class="copy"><code style="white-space:pre-wrap">{created.command}</code><button class="btn sm" onclick={() => copy(created!.command)}><Icon name="copy" size={14} /> Copy</button></div>
+      {#if created.enroll_command}
+        <p style="margin-bottom:6px">
+          Then in the app, lock icon in the menu bar: <strong>Install service…</strong>. It asks for the admin
+          password and puts <span class="mono">/usr/local/bin/deelpe</span> in place — until it has, the command
+          below does not exist on the device. Only then:
+        </p>
+        <div class="copy"><code style="white-space:pre-wrap">{created.enroll_command}</code><button class="btn sm" onclick={() => copy(created!.enroll_command!)}><Icon name="copy" size={14} /> Copy</button></div>
+      {/if}
       <div class="kv small" style="margin-top:14px">
         <span class="k">Central server (agents)</span><span class="mono">{created.agent_url}</span>
         <span class="k">CA SHA-256</span><span class="mono">{created.ca_sha256}</span>
