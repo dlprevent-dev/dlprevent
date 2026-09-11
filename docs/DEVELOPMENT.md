@@ -20,9 +20,12 @@ deelpe daemon (root)              DLPrevent.app / deelpe CLI (no root)
 On macOS the sensors are Apple's own tools (`eslogger`, `nettop`), so no
 kernel extension and no entitlement are needed. On Windows they are event
 tracing (Kernel-File, Kernel-Network), which likewise needs no driver — only
-blocking does. The service has no outbound network access; the sole exception
-is the optional IP lookup in the app, and only the IP address leaves the
-machine there.
+blocking does. The service has no outbound network access of its own; the one
+exception is the connection to a central server, once the device has been
+enrolled. The menu-bar app reaches out only to the system resolver, for the
+reverse DNS of a destination address (`HostResolver`). The IP reputation
+check is not in the app: it has been the central server's job since
+2026-09-08.
 
 ## Layout
 
@@ -120,9 +123,11 @@ with the `CREATEDB` right (only `central_wire.rs` runs without one); see
 set, against a real instance, and is skipped otherwise.
 
 **Whoever touches `crates/deelpe-winagent` or `crates/deelpe-sensors/src/windows`
-runs `cargo win`.** Eight of the twelve modules of the workstation agent are
-`cfg(windows)`; `cargo check` and `cargo test` do not even type-check them on
-a development machine. Without the target build, any change there is blind.
+runs `cargo win`.** Eleven of the workstation agent's thirteen modules carry
+Windows-only code, and two of them (`rights`, `service`) do not exist off
+Windows at all; `cargo check` and `cargo test` on a development machine
+therefore never type-check the bulk of it. Without the target build, any
+change there is blind.
 
 Bitdefender: add an exception for `/usr/local/bin/deelpe`.
 
@@ -137,9 +142,14 @@ operator's, not just yours, and there is nobody at that installation to
 repair the table by hand.
 
 So: a change to the schema is a new file, never an edit to an old one. That
-includes rewording a comment. This is why these files are the one place in
-the repo whose comments are still German (2026-09-11): translating them
-changed the checksums and stopped the lab server.
+includes rewording a comment. This is why the comments in the applied
+migrations are still German and have to stay that way: translating them
+changed the checksums and stopped the lab server (2026-09-11). A new
+migration file is written in English like everything else.
+
+German also still lingers in a scattering of **test assertion messages**
+across the workspace (`mail.rs`, `wfp.rs`, `enforce.rs` and others). Those
+are not frozen — translate them when you next touch the test.
 
 ## Branches and CI
 

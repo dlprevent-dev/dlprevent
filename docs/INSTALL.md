@@ -580,8 +580,8 @@ cargo win-build
 # → target/x86_64-pc-windows-gnu/release/deelpe-winagent.exe
 ```
 
-Eight of the agent's twelve modules are `cfg(windows)`, so a plain
-`cargo check` on a Mac or Linux box does not even type-check them. After
+Eleven of the agent's thirteen modules carry `cfg(windows)` code, so a plain
+`cargo check` on a Mac or Linux box never type-checks the bulk of it. After
 touching `crates/deelpe-winagent` or `crates/deelpe-sensors/src/windows`,
 run the target build:
 
@@ -635,9 +635,19 @@ needed. Better a dedicated account, and on a domain file server a gMSA:
 .\deelpe-winagent.exe rights grant --account "DOMAIN\deelpe-svc$"
 ```
 
-The account needs membership in **Performance Log Users** (for event
-tracing); `rights grant` sets the remaining privileges and makes the EXE and
-`C:\ProgramData\deelpe` readable and writable for the account.
+The two commands do different jobs, and the order above matters:
+
+- `service install --account` registers the service **and** fixes the file
+  permissions: read and execute on the EXE, modify on
+  `C:\ProgramData\deelpe`. `service start` does it again, because every
+  update sets the same trap (see *Updating* below).
+- `rights grant --account` grants exactly what the agent needs and nothing
+  more: `SeServiceLogonRight`, `SeSecurityPrivilege`, and membership in
+  **Event Log Readers**. Deliberately not: Administrators.
+
+One thing neither of them does: membership in **Performance Log Users**,
+which the account needs for event tracing (workstation role). Add that by
+hand or by group policy.
 
 Two commands help when a rule stays silent on site: `check` verifies the
 audit policy and the SACL of every rule folder (file server role), `probe
@@ -1010,11 +1020,12 @@ password for the monitoring system would sit in a file on a development
 machine. The git token only opens the repository, and the signature makes the
 central server independent of who it trusts.
 
-Signaturen erzeugt `deelpe-sign` (im Repo, `cargo build -p deelpe-server`):
+The signatures come from `deelpe-sign`, which is in this repository
+(`cargo build -p deelpe-server`):
 
 ```bash
-deelpe-sign keygen release.key         # einmal; zeigt den oeffentlichen Schluessel
-deelpe-sign sign release.key deelpe-winagent.exe    # schreibt deelpe-winagent.exe.sig
+deelpe-sign keygen release.key                      # once; prints the public key
+deelpe-sign sign release.key deelpe-winagent.exe    # writes deelpe-winagent.exe.sig
 ```
 
 Both files belong to the release. The **private** key stays with whoever

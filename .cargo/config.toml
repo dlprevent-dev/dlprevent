@@ -1,5 +1,6 @@
-# Eight twelfths of the workstation agent is `cfg(windows)`: on a development
-# machine `cargo check` does not even type-check those modules. Touching
+# Most of the workstation agent is `cfg(windows)`: eleven of its thirteen
+# modules carry Windows-only code, and two of them exist only there. On a
+# development machine `cargo check` never type-checks that half. Touching
 # anything in there is therefore blind without the target build — hence this
 # as one word.
 #
