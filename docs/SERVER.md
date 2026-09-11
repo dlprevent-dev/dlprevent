@@ -192,6 +192,11 @@ Two artefacts cover three roles:
 | `deelpe-winagent.exe` | Windows workstation **and** Windows file server — the role is decided at enrollment (`--endpoint`), not by the file |
 | `DLPrevent.zip` | the macOS app bundle; the app installs the `deelpe` service itself |
 
+Where the files come from: `scripts/publish-agent.sh` (or
+`scripts/release-agent.sh`) for the Windows one, `apps/macos/DeelpeBar/build.sh`
+for the Mac one — it writes `build/DLPrevent.zip` ready for the upload, see
+`docs/INSTALL.md`, "Into the dashboard".
+
 The files live in the data directory, not in the database: they are
 megabyte-sized blobs, they belong next to the CA and the server certificate,
 and an update is a file swap.

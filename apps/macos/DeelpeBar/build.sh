@@ -23,3 +23,12 @@ cp "$ROOT/packaging/ch.deelpe.daemon.plist" "$APP/Contents/Resources/"
 cp "$ROOT/packaging/ch.deelpe.bar.plist" "$APP/Contents/Resources/"
 codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
 echo "→ $APP"
+
+# The dashboard takes the zip around the bundle, not the bundle itself
+# (`binaries.rs`: "mac" → DLPrevent.zip), and the enrollment command unpacks
+# it straight into /Applications — so DLPrevent.app has to be the top level.
+# `zip -y` keeps the symlinks. Not `ditto -c -k`: its AppleDouble entries
+# land inside the bundle on unzip and the signature is then broken.
+rm -f build/DLPrevent.zip
+(cd build && zip -qry DLPrevent.zip DLPrevent.app)
+echo "→ build/DLPrevent.zip  $(shasum -a 256 build/DLPrevent.zip | cut -d' ' -f1)"

@@ -370,7 +370,9 @@ apps/macos/DeelpeBar/build.sh
 ```
 
 Result: `apps/macos/DeelpeBar/build/DLPrevent.app` — the app contains the
-service and the plists and can install itself. Copy it to the target device
+service and the plists and can install itself — and next to it
+`build/DLPrevent.zip`, the same bundle packed for the dashboard (see
+"Into the dashboard" below). Copy it to the target device
 (remote support, MDM, USB), then:
 
 ```bash
@@ -382,6 +384,29 @@ Build and install on the same Mac in one go:
 ```bash
 apps/macos/DeelpeBar/build.sh && rm -rf /Applications/DLPrevent.app && cp -R apps/macos/DeelpeBar/build/DLPrevent.app /Applications/ && open /Applications/DLPrevent.app
 ```
+
+### Into the dashboard
+
+So that the enrollment command fetches the app from the central server
+instead of somebody carrying it over by hand, upload `build/DLPrevent.zip`
+as an administrator: **Agents → the macOS row → Upload/Replace**. As long as
+nothing is stored for macOS the row is hidden; then the dialog under
+**Agents → Enroll agent → macOS** offers "Upload it now". The server checks
+the `PK` header and keeps the file as `DLPrevent.zip`; the local file name
+does not matter.
+
+What the zip has to look like is decided by the enrollment command: it
+unpacks it with `unzip -d /Applications`, so `DLPrevent.app` has to be the
+top level of the archive. `build.sh` packs it with `zip -y` for that reason
+and not with `ditto -c -k`: ditto writes AppleDouble entries which unzip
+drops inside the bundle, and the signature of the unpacked app is then
+broken ("a sealed resource is missing or invalid").
+
+Two limits: `build.sh` builds for the architecture of the build machine, so
+a zip from an Apple-Silicon Mac does not run on an Intel one. And macOS
+agents do not update themselves — the upload serves the enrollment
+download, nothing goes out to devices already enrolled (see
+`docs/adr/0004-agent-update-from-the-dashboard.md`).
 
 In the app (lock icon in the menu bar):
 
