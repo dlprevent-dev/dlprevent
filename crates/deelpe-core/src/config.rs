@@ -53,9 +53,20 @@ pub struct Strict {
     /// Allowed destinations: IP or network, each with an optional port
     /// (`crate::allow`).
     pub allow: Vec<String>,
-    /// In addition to the alert, stop the sending process. At the endpoint
-    /// that is the only lever without a Network Extension: the bytes
-    /// already sent are gone, the rest is not.
+    /// Switch the folder from reporting to acting. **The sending process is
+    /// never stopped** — that is what this used to mean, and it is gone
+    /// since 2026-09-09, after it took a user's `explorer.exe` twice over a
+    /// few hundred bytes of telemetry. A kill lands after the bytes are
+    /// already out and prevents nothing.
+    ///
+    /// What acts instead sits earlier, and on a Windows workstation only:
+    /// the browser connector refuses an upload before the first byte
+    /// (`winagent::browser`, **Firefox only** — Chrome and Edge are
+    /// reported after the fact), the WFP cage takes the network from a program
+    /// that has read from the folder without ending it (`winagent::wfp`),
+    /// and a copy that left the folder is deleted again
+    /// ([`crate::enforce::Action::DeleteCopy`]). The Mac has no lever of its
+    /// own yet and reports. See ADR 0002.
     pub enforce: bool,
 }
 
@@ -224,7 +235,7 @@ impl Config {
     /// browser.
     ///
     /// The price is a forwarder on the same machine that takes the data in
-    /// and carries it out. This layer then does not catch it; killing a
+    /// and carries it out. This layer then does not catch it; caging a
     /// browser because it is talking to itself is the more expensive
     /// mistake — the same trade-off as with a destination without a name.
     pub fn denies(&self, files: &[PathBuf], ip: Option<IpAddr>, port: Option<u16>) -> Option<&Strict> {

@@ -22,6 +22,54 @@ and then sends data outward.
 
 ![DLPrevent central dashboard: open alerts, hard-limit verdicts, reads per folder and top readers](docs/images/dashboard.png)
 
+## Why this exists
+
+Read the breach notifications of the past few years and one sentence keeps
+coming back: *an employee transferred company files to a private account.*
+Not a zero-day. Not a state actor. Somebody with legitimate access, a folder
+they were allowed to open, and a browser tab.
+
+That is the moment nothing in a normal security stack is looking at. The
+firewall sees an ordinary HTTPS connection. The file server sees an
+authorised user opening a file — to it, indistinguishable from opening it in
+Word. The antivirus is quiet, the backup runs, the logs fill up with
+nothing. And when it does come out, months later, the expensive part is
+rarely the data itself. It is standing in front of a regulator, a customer
+or a journalist and not being able to say **what** left, **when**, and **to
+where**.
+
+DLPrevent exists to make that question answerable on the day it is asked —
+and, in the places where it matters most, to make the answer *"nothing did"*.
+
+**Three things it gives you:**
+
+- **The moment itself, not the aftermath.** A program reads from a folder
+  you named and then sends data outward — that pairing is the alert, raised
+  on the device within seconds and in the dashboard with the next report.
+  It names the user, the process, the files and the destination. The copy
+  onto a USB stick, the drag into an AI chat, the upload split into small
+  pieces to stay under a threshold: all the same shape, all caught.
+- **A record you can hand to a lawyer.** Every alert is kept, with its chain,
+  its timestamps and its destination — for as long as you set, two years by
+  default on the central server. The difference between a notification
+  obligation you can fulfil and one you can only apologise for is this
+  record.
+- **A folder that really is closed.** Declare a folder strict and nothing may
+  leave it except to destinations you listed — every other one is an alert
+  from the very first byte, never learned away, never silenced. Tick
+  **Enforce** as well and a Windows workstation stops acting politely: the
+  browser upload is refused before a byte moves (Firefox today), the sending
+  program loses its network, and a copy that made it out of the folder is
+  deleted again.
+
+**And a promise about what it is not.** This is a detection tool with a
+narrow enforcement edge, not a guarantee. Nobody can stop a photograph of a
+screen, and anyone who sells you otherwise is selling you something else.
+Exactly where the edge runs — what is blocked, what is only reported, and
+what is not seen at all — is written down in plain words under
+[Scope, limits and your obligations](#scope-limits-and-your-obligations),
+before you install anything. Treat that section as part of the product.
+
 ## Overview
 
 Two parts, usable separately:

@@ -119,12 +119,16 @@ pub struct Alert {
     /// derived, so a later upload is reported too.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub copy_to: Option<PathBuf>,
-    /// Did **this sending process** read the protected file itself? Only
-    /// then may an intervention stop it. With an inherited touch
-    /// (`cat geheim | curl`, or a child whose parent process is a
+    /// Did **this sending process** read the protected file itself? With an
+    /// inherited touch (`cat geheim | curl`, or a child whose parent is a
     /// long-lived service such as `sshd`) the sender is a bystander or even
-    /// the infrastructure — killing that paralyses the machine in the worst
-    /// case. Report yes, stop no. Lab 2026-09-07.
+    /// the infrastructure, and the distinction belongs in the alert rather
+    /// than nowhere. Lab 2026-09-07.
+    ///
+    /// It gates **no** intervention today: the kill it once guarded is gone
+    /// (2026-09-09), the cage decides in `winagent::wfp::may_cage` and the
+    /// copy in [`crate::enforce::action_for`]. What is left is a statement
+    /// about the flow, for whoever reads the alert.
     /// Not on the wire as long as it is false: the app and the central
     /// server do not know the field, and their literal tests pin the
     /// contract down.
