@@ -30,6 +30,12 @@ services:
       DEELPE_DATABASE_URL: postgres://deelpe:${POSTGRES_PASSWORD}@db/deelpe
       DEELPE_SERVER_NAMES: ${DEELPE_SERVER_NAMES:-localhost,127.0.0.1}
       DEELPE_LOG: ${DEELPE_LOG:-info,sqlx=warn}
+      # Behind a reverse proxy (INSTALL.md). Listed here on purpose: without
+      # the line the variable stays in .env and never reaches the server, and
+      # the origin check, the lockout and the passkeys then go quietly wrong.
+      # The `:-false` is not decoration — an empty value aborts the start.
+      DEELPE_TRUST_PROXY: ${DEELPE_TRUST_PROXY:-false}
+      DEELPE_UI_HTTP: ${DEELPE_UI_HTTP:-false}
     ports:
       - "8443:8443"        # dashboard (HTTPS)
       - "8444:8444"        # agents (mTLS)

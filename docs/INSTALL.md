@@ -214,7 +214,8 @@ server {
 }
 ```
 
-Then, in the server environment:
+Then, in the server environment — `.env` next to `docker-compose.yml`, or
+`/etc/deelpe-server/env` for the `.deb`:
 
 ```
 DEELPE_TRUST_PROXY=true
@@ -237,11 +238,17 @@ Two further points:
 
 - **Passkeys need a DNS name** at the proxy, not an IP, and the name has to
   stay — it is the key's identity. Same for the server certificate list
-  (`DEELPE_SERVER_NAMES`).
+  (`DEELPE_SERVER_NAMES`). A key is bound to the address it was registered
+  under: whoever then opens the dashboard by IP is not offered it and signs in
+  with a password, or registers a second key under that address.
 - The **enrollment command** (Agents → Enroll agent) builds its URL from the
   name in the address bar plus port 8444. If the proxy runs on a different
   machine than the server, that name has to resolve to the server for the
   agents as well — or correct the host name in the command by hand.
+  Shortcut for a lab where only the IP resolves: open the dashboard directly
+  under `https://<ip>:8443`, past the proxy, and the command comes out with
+  the IP already in it. The IP has to be in `DEELPE_SERVER_NAMES` for that —
+  enrolment verifies the certificate against the CA.
 
 `DEELPE_UI_HTTP=true` serves the dashboard as plain HTTP for the proxy to
 pick up. It saves the proxy the `proxy_ssl_verify off`, and costs nothing as
