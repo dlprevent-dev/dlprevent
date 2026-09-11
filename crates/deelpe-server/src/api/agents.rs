@@ -218,14 +218,17 @@ if ($LASTEXITCODE) {{ throw 'enrolment failed' }}; \
         _ => match sha {
             None => format!("sudo deelpe central enroll {url} {token} --ca-sha256 {ca}"),
             // On the Mac the service is installed from inside the app
-            // (password dialog), which is why the one-liner ends at opening
-            // the app; enrolment follows after that.
+            // (password dialog), which is why this command ends at opening
+            // the app. The enrolment after that is a second command of its
+            // own — `TokenCreated::enroll_command` — and deliberately not a
+            // line inside this one: a shell comment in a block that somebody
+            // pastes in one go is skipped in silence, and `deelpe` is not on
+            // the PATH until the app has put it there.
             Some(sha) => format!(
                 "curl -fsSLk -H 'X-Deelpe-Token: {token}' {url}/agent/binary/mac -o /tmp/DLPrevent.zip && \
 echo '{sha}  /tmp/DLPrevent.zip' | shasum -a 256 -c - && \
 sudo rm -rf /Applications/DLPrevent.app && sudo unzip -q /tmp/DLPrevent.zip -d /Applications && \
-open /Applications/DLPrevent.app\n\n# Then in the app: \"Install service…\", after that:\n\
-sudo deelpe central enroll {url} {token} --ca-sha256 {ca}"
+open /Applications/DLPrevent.app"
             ),
         },
     }
@@ -242,6 +245,10 @@ pub(super) struct TokenCreated {
     agent_url: String,
     ca_sha256: String,
     command: String,
+    /// macOS with the app on the server: the enrolment that only works once
+    /// "Install service…" in the app has created `/usr/local/bin/deelpe`.
+    /// Separate from `command` so the dashboard can show that step as a step.
+    enroll_command: Option<String>,
 }
 
 pub(super) async fn create_token(State(st): State<Shared>, Admin(user): Admin, headers: HeaderMap, Json(b): Json<TokenBody>) -> R<TokenCreated> {
@@ -270,8 +277,13 @@ pub(super) async fn create_token(State(st): State<Shared>, Admin(user): Admin, h
     let agent_url = format!("https://{host}:{}", st.agent_port);
     let sha = crate::binaries::platform_for(b.platform.as_deref()).and_then(|p| crate::binaries::sha256_of(&st, p));
     let command = enroll_command(b.platform.as_deref(), &agent_url, &token, &st.pki.ca_fingerprint, sha.as_deref());
+    // Without an uploaded app the mac command already is the enrolment; with
+    // one it stops at opening the app, and the enrolment is the same line
+    // again, for after "Install service…".
+    let enroll = (b.platform.as_deref() == Some("mac") && sha.is_some())
+        .then(|| enroll_command(b.platform.as_deref(), &agent_url, &token, &st.pki.ca_fingerprint, None));
     db::audit(&st.pool, (&user).into(), "token_create", json!({ "id": id, "label": label, "hours": hours, "platform": b.platform })).await;
-    Ok(Json(TokenCreated { id, token, expires_at, agent_url, ca_sha256: st.pki.ca_fingerprint.clone(), command }))
+    Ok(Json(TokenCreated { id, token, expires_at, agent_url, ca_sha256: st.pki.ca_fingerprint.clone(), command, enroll_command: enroll }))
 }
 
 pub(super) async fn delete_token(State(st): State<Shared>, Admin(user): Admin, Path(id): Path<Uuid>) -> Result<StatusCode, ApiError> {
@@ -316,6 +328,10 @@ mod tests {
         let m = enroll_command(Some("mac"), u, t, c, Some("aa11"));
         assert!(m.contains("/agent/binary/mac"), "{m}");
         assert!(m.contains("shasum -a 256 -c"), "{m}");
-        assert!(m.contains("central enroll"), "{m}");
+        // The enrolment is not in here. It needs the service that
+        // "Install service…" in the app installs, and a shell comment saying
+        // so is skipped without a word when the block is pasted whole.
+        assert!(m.ends_with("open /Applications/DLPrevent.app"), "{m}");
+        assert!(!m.contains("central enroll"), "{m}");
     }
 }

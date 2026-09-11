@@ -412,7 +412,10 @@ download, nothing goes out to devices already enrolled (see
 In the app (lock icon in the menu bar):
 
 1. **Install service…** — asks once for the admin password, creates
-   `/usr/local/bin/deelpe` and the LaunchDaemon, and starts it.
+   `/usr/local/bin/deelpe` and the LaunchDaemon, and starts it. Enrolment
+   comes after this step, never before: until here the program sits inside
+   the app bundle, and `sudo deelpe central enroll` answers `command not
+   found`.
 2. Red bar "Full Disk Access missing": **Open System Settings**, add
    `/usr/local/bin/deelpe` there with `+` and ⌘⇧G, then **Restart service…**
    back in the app. Without it the service sees no file access
