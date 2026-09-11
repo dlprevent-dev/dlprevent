@@ -18,6 +18,54 @@ Two parts, usable separately:
 **Language:** English throughout — app, dashboard, command line, protocol,
 this documentation and the comments in the source.
 
+## Scope, limits and your obligations
+
+Read this before the first agent goes out. None of it is a setting in the
+dashboard; all of it is the operator's decision.
+
+**It detects. It does not make data loss impossible.** DLPrevent watches the
+folders you name and reports when a program reads from one of them and then
+sends data outward. What it stops before the bytes move is narrow: a strict
+folder deletes the copy and cages the sender, and an upload is refused in
+Firefox only. Everything else is reported after the fact, or not seen at
+all — a photo of the screen, a private phone, an encrypted container, a
+channel nobody monitors. Treat it as one control among several, never as the
+one that makes the others unnecessary.
+
+**It is not an antivirus and replaces no part of your security stack.** No
+malware detection, no EDR, no backup, no patch management, no access
+control, no firewall. A folder the wrong people can read is a permissions
+problem, and DLPrevent will do no more than tell you it is being read.
+
+**The network is yours to segment.** The agent port (8444) belongs in the
+agent networks, the dashboard (8443) in the administration networks, and
+syslog (514) must never leave the internal network — it is unauthenticated
+and the sender address can be forged. The central server holds `ca.key`;
+whoever takes that can enrol as any agent. Put the server on a segment that
+matches what it is worth, keep its backups off the shared drive, and verify
+the firewall rules rather than assuming them. The documentation names the
+ports. Deciding where they may be reached from is your job, not the tool's.
+
+**Inform and train the people you are watching.** The tool records who read
+which file and where it went. In most jurisdictions that is personal data
+and monitoring at the workplace, and it is regulated — in Switzerland the
+DSG, Art. 26 ArGV 3 and Art. 328b OR, in the EU the GDPR and usually an
+agreement with the works council. Inform your staff before the rollout,
+obtain whatever approval applies to you, and train the people who read the
+alerts: an alert nobody understands is an accusation waiting to be made
+against the wrong person. Set `alert_retain_days` to a period you can
+justify — the default of two years is a default, not a recommendation. This
+paragraph is not legal advice; ask your own counsel.
+
+**No warranty.** The [licence](LICENSE) provides the software as is and
+disclaims all warranties, and that is meant literally. False positives,
+missed events and a sensor that the next Windows or macOS release changes
+underneath you are all possible; the checks built into the agent (`trace`,
+`check`, `probe`) exist because of it. Run them, and re-run them after every
+operating-system upgrade. Whether the tool is configured, segmented and
+staffed well enough for what it is guarding is something only the operator
+can judge, and it stays the operator's responsibility.
+
 ## Documentation
 
 | Topic | Where |

@@ -185,7 +185,8 @@ sudo journalctl -u deelpe-server | grep -i password    # initial password for 'a
    the file around. See chapter 4.
 4. Firewall: 8443 to the administration networks, 8444 to the agent networks,
    514 **internal only**. Syslog is unauthenticated and the sender address
-   can be forged.
+   can be forged. Which networks those are is a segmentation decision, and it
+   is yours — see [Scope, limits and your obligations](../README.md#scope-limits-and-your-obligations).
 
 ### Behind a reverse proxy
 
