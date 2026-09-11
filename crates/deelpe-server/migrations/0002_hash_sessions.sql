@@ -1,4 +1,4 @@
--- From now on `sessions.id` holds only the SHA-256 of the id from the cookie.
--- Old rows sit there in plain text and no longer match any request: drop
--- them, everyone signs in once more.
+-- `sessions.id` hält ab jetzt nur noch den SHA-256 der Kennung aus dem Cookie.
+-- Alte Zeilen stehen im Klartext da und passen zu keiner Anfrage mehr: weg
+-- damit, alle melden sich einmal neu an.
 DELETE FROM sessions;

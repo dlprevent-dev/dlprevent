@@ -1,7 +1,6 @@
--- IP reputation (AbuseIPDB). The central server's cache: one row per
--- address, so that the same address does not cost quota again in every
--- report. This used to live in the Mac client, every Mac with its own key
--- and its own cache.
+-- IP-Ruf (AbuseIPDB). Der Cache der Zentrale: eine Zeile je Adresse, damit
+-- dieselbe Adresse nicht in jedem Bericht erneut Kontingent kostet. Vorher
+-- lag das im Mac-Client, jeder Mac mit eigenem Schluessel und eigenem Cache.
 CREATE TABLE ip_reputations (
   ip             TEXT PRIMARY KEY,
   score          INT NOT NULL,
@@ -15,5 +14,5 @@ CREATE TABLE ip_reputations (
   checked_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Counting the daily budget and cleaning up both go by time.
+-- Tagesbudget zaehlen und aufraeumen gehen beide ueber die Zeit.
 CREATE INDEX ip_reputations_checked_at ON ip_reputations (checked_at);

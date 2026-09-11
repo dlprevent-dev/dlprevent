@@ -710,6 +710,22 @@ Test-Path 'HKLM:\SOFTWARE\Policies\Mozilla\Firefox\ContentAnalysis'  # → False
 & "C:\Program Files\deelpe\deelpe-winagent.exe" --version    # → not recognized
 ```
 
+**The service is still in `services.msc`.** Two different cases, and
+`sc.exe query deelpe-winagent` tells them apart:
+
+| Answer | Meaning | What helps |
+|---|---|---|
+| 1060, "does not exist" | gone, the console is showing a stale view | close every `services.msc` window and open it again — F5 does not do it |
+| `STOPPED`, or 1072 "marked for deletion" | the deletion is waiting on an open handle | close the consoles, then `sc.exe delete deelpe-winagent` again |
+
+The open handle is usually `services.msc` itself. On a machine with a
+dedicated service account also look for a process of that account that is
+still running (`Get-Process -IncludeUserName deelpe-winagent`). If 1072
+survives all of that, only a restart clears it — deleting
+`HKLM\SYSTEM\CurrentControlSet\Services\deelpe-winagent` by hand takes the
+registration away while the SCM keeps the service in memory, which is worse
+than waiting.
+
 The blocking ends with the service, and removing `C:\ProgramData\deelpe`
 takes the stored rule set with it — the workstation agent keeps its last
 accepted rules there so that it protects from the first second after a
