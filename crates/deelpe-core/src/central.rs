@@ -326,9 +326,10 @@ pub struct Rule {
     /// forbidden except `allow_destinations`.
     #[serde(default)]
     pub strict: bool,
-    /// In addition to the alert, stop the sending process (only with
-    /// `strict`). At the endpoint the only lever without a Network
-    /// Extension.
+    /// Switch the folder from reporting to acting (only with `strict`).
+    /// No process is stopped: the levers are the browser connector, the
+    /// WFP cage and deleting the copy, all of them on a Windows
+    /// workstation. See [`crate::config::Strict::enforce`].
     #[serde(default)]
     pub enforce: bool,
     pub hard_max_files: u32,
