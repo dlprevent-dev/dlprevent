@@ -1,0 +1,10 @@
+# Eight twelfths of the workstation agent is `cfg(windows)`: on a development
+# machine `cargo check` does not even type-check those modules. Touching
+# anything in there is therefore blind without the target build — hence this
+# as one word.
+#
+# Target triple as in docs/INSTALL.md; the tool for it is mingw-w64
+# (`brew install mingw-w64`, `rustup target add x86_64-pc-windows-gnu`).
+[alias]
+win = "check --target x86_64-pc-windows-gnu -p deelpe-winagent -p deelpe-sensors --all-targets"
+win-build = "build --release --target x86_64-pc-windows-gnu -p deelpe-winagent"

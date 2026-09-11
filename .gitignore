@@ -1,0 +1,21 @@
+/target
+*.db
+.DS_Store
+.serena/
+
+# Build of the interface (apps/web → server, embedded)
+crates/deelpe-server/ui-dist/
+apps/web/node_modules/
+
+# Local compose environment (passwords)
+.env
+dist/
+
+# Database dumps (INSTALL.md: pg_dump ... > deelpe-<date>.sql.gz)
+*.sql.gz
+
+# Agent working rules: stay local, do not belong in the published repo
+/CLAUDE.md
+/context.md
+/.claude/
+/docs/agents/

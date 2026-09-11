@@ -1,0 +1,9 @@
+target
+apps/web/node_modules
+apps/macos
+.git
+.serena
+.claude
+docs
+*.md
+.env

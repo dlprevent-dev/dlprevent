@@ -1,0 +1,43 @@
+# de-el-pe central server with Postgres. Before starting: set
+# POSTGRES_PASSWORD and DEELPE_SERVER_NAMES in .env (see
+# packaging/deelpe-server.env.example).
+services:
+  db:
+    image: postgres:18
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: deelpe
+      POSTGRES_USER: deelpe
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD in .env setzen}
+    volumes:
+      - db:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U deelpe -d deelpe"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  server:
+    build:
+      context: .
+      dockerfile: packaging/docker/Dockerfile
+    image: deelpe-server:latest
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DEELPE_DATABASE_URL: postgres://deelpe:${POSTGRES_PASSWORD}@db/deelpe
+      DEELPE_SERVER_NAMES: ${DEELPE_SERVER_NAMES:-localhost,127.0.0.1}
+      DEELPE_LOG: ${DEELPE_LOG:-info,sqlx=warn}
+    ports:
+      - "8443:8443"        # dashboard (HTTPS)
+      - "8444:8444"        # agents (mTLS)
+      - "514:5514/udp"     # syslog from NAS
+      - "514:5514/tcp"
+    volumes:
+      - server:/var/lib/deelpe-server
+
+volumes:
+  db:
+  server:

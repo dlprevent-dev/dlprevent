@@ -1,0 +1,12 @@
+#!/bin/sh
+set -e
+if ! getent passwd deelpe-server >/dev/null; then
+  adduser --system --group --home /var/lib/deelpe-server --no-create-home --shell /usr/sbin/nologin deelpe-server
+fi
+install -d -m 0700 -o deelpe-server -g deelpe-server /var/lib/deelpe-server
+install -d -m 0750 -o root -g deelpe-server /etc/deelpe-server
+if [ ! -f /etc/deelpe-server/env ]; then
+  echo "deelpe-server: /etc/deelpe-server/env is missing, template: /etc/deelpe-server/env.example" >&2
+fi
+#DEBHELPER#
+exit 0

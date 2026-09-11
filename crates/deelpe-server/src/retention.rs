@@ -1,0 +1,56 @@
+//! Cleaning up: expired sessions and tokens, old alerts (years), counts
+//! (weeks), the agent log (weeks) and the IP reputation cache, according to
+//! the settings.
+
+use crate::abuseipdb;
+use crate::db;
+use crate::state::Shared;
+use anyhow::Result;
+use tokio_util::sync::CancellationToken;
+use tracing::{info, warn};
+
+pub async fn run(state: Shared, stop: CancellationToken) -> Result<()> {
+    let mut first = true;
+    loop {
+        let wait = if first { 60 } else { 3600 };
+        first = false;
+        tokio::select! {
+            _ = tokio::time::sleep(std::time::Duration::from_secs(wait)) => {}
+            _ = stop.cancelled() => return Ok(()),
+        }
+        if let Err(e) = sweep(&state).await {
+            warn!("cleanup: {e:#}");
+        }
+    }
+}
+
+async fn sweep(state: &Shared) -> Result<()> {
+    let p = &state.pool;
+    let alert_days = db::setting_i64(p, "alert_retain_days", 730).await?;
+    let count_days = db::setting_i64(p, "count_retain_days", 30).await?;
+    // The agents' log is there for troubleshooting, not as evidence: two
+    // weeks are enough, and without a limit, at 200 lines per report, it
+    // fills the disk faster than anything else.
+    let log_days = db::setting_i64(p, "log_retain_days", 14).await?;
+    let sessions = sqlx::query("DELETE FROM sessions WHERE expires_at < now()").execute(p).await?.rows_affected();
+    let tokens = sqlx::query("DELETE FROM enroll_tokens WHERE (used_at IS NULL AND expires_at < now() - interval '7 days') OR used_at < now() - interval '30 days'")
+        .execute(p)
+        .await?
+        .rows_affected();
+    let alerts = sqlx::query("DELETE FROM alerts WHERE COALESCE(last_at, at) < now() - ($1::bigint * interval '1 day')").bind(alert_days).execute(p).await?.rows_affected();
+    let counts = sqlx::query("DELETE FROM access_counts WHERE bucket < now() - ($1::bigint * interval '1 day')").bind(count_days).execute(p).await?.rows_affected();
+    let log = sqlx::query("DELETE FROM agent_log WHERE at < now() - ($1::bigint * interval '1 day')").bind(log_days).execute(p).await?.rows_affected();
+    // IP reputation: an address that still turns up in alerts is fetched
+    // afresh weekly anyway (abuseipdb::CACHE_TTL_SECS). Whatever has not
+    // been touched for a multiple of that does not turn up any more —
+    // otherwise the cache would be the one table that grows without bound.
+    let reputations = sqlx::query("DELETE FROM ip_reputations WHERE checked_at < now() - ($1::bigint * interval '1 second')")
+        .bind(abuseipdb::CACHE_TTL_SECS * 12)
+        .execute(p)
+        .await?
+        .rows_affected();
+    if sessions + tokens + alerts + counts + log + reputations > 0 {
+        info!(sessions, tokens, alerts, counts, log, reputations, "cleaned up");
+    }
+    Ok(())
+}
