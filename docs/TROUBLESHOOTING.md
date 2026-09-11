@@ -45,6 +45,28 @@ with `curl -F`; a read from elsewhere is not a hit. The upload must exceed
 
 ## Windows
 
+**The service "started and then stopped".** The agent is installed but not
+enrolled. Without `C:\ProgramData\deelpe\central.json` it ends in its first
+line, and the service control manager only shows its generic dialog. The
+reason is in the log:
+
+```powershell
+& "C:\Program Files\deelpe\deelpe-winagent.exe" status
+Get-Content C:\ProgramData\deelpe\agent.log -Tail 5
+```
+
+`not enrolled — run 'deelpe-winagent enroll' first` means the enrolment step
+of the one-liner did not go through, usually because the agent URL does not
+resolve on this machine or the token has expired. Enrol again and start the
+service. `service install` answering *The specified service already exists*
+(error 1073) is expected on a second run and harmless — the service is
+already registered, only `service start` matters.
+
+The service display name reads "DLPrevent file server agent" for **both**
+roles. That is no evidence that `--endpoint` was lost; check the role in
+`agent.log` as described in
+[INSTALL.md → Agent on Windows](INSTALL.md#3-agent-on-windows).
+
 **Agent installed, no warnings.** Event tracing delivers different keywords
 per Windows release. Run
 `deelpe-winagent trace --seconds 30`, open a file on the share and upload

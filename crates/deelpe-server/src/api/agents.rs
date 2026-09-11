@@ -187,6 +187,15 @@ pub(super) struct TokenBody {
 /// `CertificateRequest` in the handshake. A fresh machine has no certificate
 /// yet, and SChannel then aborts instead of sending an empty one — the
 /// download fails before the first HTTP line.
+///
+/// The two `$LASTEXITCODE` checks are what make the one-liner stop at the
+/// step that actually failed. `$ErrorActionPreference='Stop'` does not cover
+/// a native program: without them a download that cannot resolve the host
+/// runs on into `Get-FileHash`, and a failed enrolment still installs and
+/// starts a service that has no credentials — which turns up later as a
+/// service that "started and then stopped". `service install` stays
+/// unguarded on purpose: on a second run it reports the service as already
+/// existing, and that is no reason to skip `service start`.
 fn enroll_command(platform: Option<&str>, url: &str, token: &str, ca: &str, sha: Option<&str>) -> String {
     let win = |endpoint: &str| match sha {
         None => format!("deelpe-winagent enroll {url} {token} --ca-sha256 {ca}{endpoint}"),
@@ -194,8 +203,10 @@ fn enroll_command(platform: Option<&str>, url: &str, token: &str, ca: &str, sha:
             "$ErrorActionPreference='Stop'; \
 $d='C:\\Program Files\\deelpe'; New-Item -ItemType Directory -Force $d | Out-Null; \
 curl.exe -k --fail -H \"X-Deelpe-Token: {token}\" -o \"$d\\deelpe-winagent.exe\" {url}/agent/binary/windows; \
+if ($LASTEXITCODE) {{ throw 'download failed' }}; \
 if ((Get-FileHash \"$d\\deelpe-winagent.exe\").Hash -ne '{upper}') {{ throw 'checksum mismatch' }}; \
 & \"$d\\deelpe-winagent.exe\" enroll {url} {token} --ca-sha256 {ca}{endpoint}; \
+if ($LASTEXITCODE) {{ throw 'enrolment failed' }}; \
 & \"$d\\deelpe-winagent.exe\" service install; \
 & \"$d\\deelpe-winagent.exe\" service start",
             upper = sha.to_uppercase()
@@ -297,6 +308,10 @@ mod tests {
         assert!(!w.contains("Invoke-WebRequest"), "{w}");
         assert!(w.contains("AA11"), "Get-FileHash liefert Grossbuchstaben: {w}");
         assert!(w.contains("service install"), "{w}");
+        // Without these the one-liner runs on after a failed step and leaves
+        // a service behind that has no credentials.
+        assert!(w.contains("throw 'download failed'"), "{w}");
+        assert!(w.contains("throw 'enrolment failed'"), "{w}");
         assert!(w.contains("--endpoint"), "{w}");
         let m = enroll_command(Some("mac"), u, t, c, Some("aa11"));
         assert!(m.contains("/agent/binary/mac"), "{m}");
