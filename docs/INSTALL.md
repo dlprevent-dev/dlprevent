@@ -838,20 +838,17 @@ the agent watches nothing, and a service running for nothing hides that.
 
 ### Connecting to the central server
 
-**The enrollment dialog has no Linux button** — it offers macOS and Windows
-(`Agents.svelte`). Pick **macOS** anyway: the token is not bound to a
-platform, the agent declares its own kind when it enrolls, and the table
-then shows it as Linux. What you are after is this line:
+**Agents → Enroll agent → Linux.** The dialog hands out the token and this
+command; install the `.deb` first, because nothing is downloaded from the
+server here:
 
 ```bash
 sudo deelpe central enroll https://dlp.company.local:8444 <token> --ca-sha256 <fingerprint>
 ```
 
-macOS and Linux share the `deelpe` CLI, so that command is correct as shown,
-character for character. Where it appears depends on whether a macOS bundle
-is stored on the server: if none is, it is the only command in the dialog;
-if one is, it is the **second** one, under the note about the menu-bar app —
-ignore that note and the first command, both are for the Mac.
+The platform button only picks which command is offered. The token itself is
+bound to no platform — the agent says what it is when it enrolls — so a
+token created before this button existed works just as well.
 
 Then:
 
