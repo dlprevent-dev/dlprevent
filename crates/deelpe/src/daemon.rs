@@ -152,6 +152,7 @@ pub async fn run() -> Result<()> {
     let mut integrity = restore_state(&mut corr);
     integrity.check(CONFIG);
     integrity.check(LEARNED);
+    arm_sensors(corr.config());
     let specs = deelpe_sensors::platform_sensors();
     let state = Arc::new(Mutex::new(State {
         corr,
@@ -744,9 +745,24 @@ fn update_config(st: &mut State, f: impl FnOnce(&mut Config)) -> Result<()> {
     f(&mut cfg);
     cfg.save(Path::new(CONFIG))?;
     st.corr.set_config(cfg);
+    arm_sensors(st.corr.config());
     st.integrity.written(CONFIG);
     st.integrity_dirty = true;
     Ok(())
+}
+
+/// Tell the sensors which folders matter — at startup and on every change
+/// to the configuration, because the folders come from the central server
+/// and arrive while the service is running.
+///
+/// Only the Linux sensor asks: fanotify sees the whole machine, and without
+/// this it pushes every open on the system through the channel and under
+/// load drops the one that mattered. That is the lesson from the Windows
+/// workstation (lab log 2026-09-07), and it holds here for the same reason.
+/// `eslogger` on the Mac ignores the filter and lets the correlator decide.
+fn arm_sensors(cfg: &Config) {
+    let paths: Vec<String> = cfg.watched.iter().map(|p| p.display().to_string()).collect();
+    deelpe_sensors::set_watched(deelpe_sensors::Watch::Folders { paths: &paths, taint_ttl: cfg.sensor_taint_ttl() });
 }
 
 /// Tighten an existing file to 0600 (older versions wrote 0644).

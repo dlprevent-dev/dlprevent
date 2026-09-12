@@ -1,9 +1,13 @@
 [Unit]
 Description=DLPrevent data-loss detection
+Documentation=https://github.com/dlprevent-dev/dlprevent
 After=network.target
 
 [Service]
-ExecStart=/usr/local/bin/deelpe daemon
+# Root, and not to be tidied away: fanotify needs CAP_SYS_ADMIN, and the
+# service reads the binary of every process it reports in order to identify
+# it by its hash.
+ExecStart=/usr/bin/deelpe daemon
 Restart=always
 RestartSec=2
 

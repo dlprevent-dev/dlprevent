@@ -8,6 +8,8 @@
 - A development Postgres with the `CREATEDB` right for the server's HTTP tests.
 - For the Windows agent: `brew install mingw-w64` and
   `rustup target add x86_64-pc-windows-gnu` (see `.cargo/config.toml`).
+- For the Linux sensors: `rustup target add x86_64-unknown-linux-gnu` for
+  `cargo linux`, plus Docker to run them — see below.
 
 ## How it works
 
@@ -20,7 +22,9 @@ deelpe daemon (root)              DLPrevent.app / deelpe CLI (no root)
 On macOS the sensors are Apple's own tools (`eslogger`, `nettop`), so no
 kernel extension and no entitlement are needed. On Windows they are event
 tracing (Kernel-File, Kernel-Network), which likewise needs no driver — only
-blocking does. The service has no outbound network access of its own; the one
+blocking does. On Linux it is `fanotify` in the kernel plus `ss` from
+iproute2, for the same reason: the counter we need is one the kernel already
+keeps. The service has no outbound network access of its own; the one
 exception is the connection to a central server, once the device has been
 enrolled. The menu-bar app reaches out only to the system resolver, for the
 reverse DNS of a destination address (`HostResolver`). The IP reputation
@@ -32,7 +36,7 @@ check is not in the app: it has been the central server's job since
 | Path | Contents |
 |---|---|
 | `crates/deelpe-core` | Event model, configuration, correlation (platform-independent) |
-| `crates/deelpe-sensors` | macOS: eslogger, nettop. Windows: ETW (Kernel-File, Kernel-Network). Linux: fanotify, /proc/net |
+| `crates/deelpe-sensors` | macOS: eslogger, nettop. Windows: ETW (Kernel-File, Kernel-Network). Linux: fanotify, `ss` |
 | `crates/deelpe` | Service, CLI, unix socket protocol, export, link to the central server |
 | `crates/deelpe-winagent` | Windows agent: workstation and file server roles |
 | `crates/deelpe-server` | Central server: dashboard API, agents, syslog, Postgres |
@@ -51,6 +55,13 @@ CLI and service:
 
 ```bash
 cargo build --release          # target/release/deelpe
+```
+
+The Linux agent as a package, from a Mac too (Docker, architecture spelled
+out — see the script's header for why that matters):
+
+```bash
+scripts/build-agent-deb.sh [amd64|arm64]   # → dist/
 ```
 
 macOS app (builds the service too, bundles it with the plists):
@@ -163,6 +174,35 @@ Windows-only code, and two of them (`rights`, `service`) do not exist off
 Windows at all; `cargo check` and `cargo test` on a development machine
 therefore never type-check the bulk of it. Without the target build, any
 change there is blind.
+
+**The same for `crates/deelpe-sensors/src/linux`: run `cargo linux`.** Both
+modules are `cfg(target_os = "linux")`, so a Mac build does not read them
+either (`rustup target add x86_64-unknown-linux-gnu`, no linker needed).
+
+Type-checking is not running, though — fanotify needs a real kernel and
+root. Docker, which is how the sensors were checked out in the first place
+(2026-09-12); the `nc` must **not** have `-N`, or the connection is gone
+before the network sensor polls again:
+
+```bash
+docker volume create dlp-linux-target
+docker run --rm --privileged -v "$PWD":/src -v dlp-linux-target:/target -w /src \
+  -e CARGO_TARGET_DIR=/target rust:1.90-slim-bookworm bash -c '
+  export PATH=/usr/local/cargo/bin:$PATH
+  cargo test -p deelpe-sensors && cargo build -p deelpe
+  apt-get update -qq && apt-get install -y -qq iproute2 netcat-openbsd
+  ip link add dummy0 type dummy && ip addr add 10.99.0.1/24 dev dummy0 && ip link set dummy0 up
+  mkdir -p /srv/GL && head -c 2000000 /dev/urandom | base64 > /srv/GL/zahlen.csv
+  /target/debug/deelpe daemon & sleep 3
+  /target/debug/deelpe watch add /srv/GL && sleep 2
+  (nc -l -s 10.99.0.1 -p 9999 >/dev/null &) && sleep 1
+  nc 10.99.0.1 9999 < /srv/GL/zahlen.csv & sleep 15
+  /target/debug/deelpe status && /target/debug/deelpe alerts'
+```
+
+One alert has to come out of that. If it does not, `deelpe status` says
+which sensor is red, and the first log line says which filesystems fanotify
+got a mark on.
 
 Bitdefender: add an exception for `/usr/local/bin/deelpe`.
 

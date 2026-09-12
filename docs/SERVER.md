@@ -188,12 +188,13 @@ The download runs on the **agent port** (8444) and is authenticated by the
 enrollment token in the `X-Deelpe-Token` header; the token is not consumed by
 it, only by the enrollment itself.
 
-Two artefacts cover three roles:
+Two artefacts cover three of the four roles:
 
 | File | Covers |
 |---|---|
 | `deelpe-winagent.exe` | Windows workstation **and** Windows file server — the role is decided at enrollment (`--endpoint`), not by the file |
 | `DLPrevent.zip` | the macOS app bundle; the app installs the `deelpe` service itself |
+| — | **Linux has no artefact here.** `binaries::platform_for` returns `None` for it: nothing to download, and no update the dashboard can order. The `.deb` goes out through your own channel; only the token and the fingerprint come from here. |
 
 Where the files come from: `scripts/publish-agent.sh` (or
 `scripts/release-agent.sh`) for the Windows one, `apps/macos/DeelpeBar/build.sh`

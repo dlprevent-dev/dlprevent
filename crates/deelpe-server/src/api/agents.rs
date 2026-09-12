@@ -159,8 +159,13 @@ pub(super) struct TokenBody {
     label: String,
     #[serde(default = "d24")]
     hours: i64,
-    /// Which kind of device the command is for: `mac`, `windows_server` or
-    /// `windows_client`. Without a value, the Mac — the way it was before.
+    /// Which kind of device the command is for: `mac`, `linux`,
+    /// `windows_server` or `windows_client`. Without a value, the Mac — the
+    /// way it was before.
+    ///
+    /// It only picks the command that is offered for copying. The token
+    /// itself is bound to no platform: the agent says what it is when it
+    /// enrolls (`EnrollRequest::kind`).
     #[serde(default)]
     platform: Option<String>,
 }
@@ -305,6 +310,12 @@ mod tests {
         // Without an uploaded program it stays at the bare enrolment command.
         assert!(enroll_command(None, u, t, c, None).starts_with("sudo deelpe central enroll"));
         assert!(enroll_command(Some("mac"), u, t, c, None).starts_with("sudo deelpe central enroll"));
+        // Linux shares the `deelpe` CLI with the Mac, and nothing is ever
+        // stored for it (`binaries::platform_for` → `None`), so this is the
+        // command the dialog shows — and the one INSTALL.md tells people to
+        // run. It has to stay a bare enrolment.
+        assert_eq!(enroll_command(Some("linux"), u, t, c, None), "sudo deelpe central enroll https://s:8444 tok --ca-sha256 ab12");
+        assert_eq!(crate::binaries::platform_for(Some("linux")), None);
         assert_eq!(enroll_command(Some("windows_server"), u, t, c, None), "deelpe-winagent enroll https://s:8444 tok --ca-sha256 ab12");
         // The workstation needs --endpoint, otherwise the agent reads a
         // server's security log, which does not exist there.

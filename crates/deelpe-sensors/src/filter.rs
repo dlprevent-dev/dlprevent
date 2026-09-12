@@ -70,6 +70,26 @@ fn matches(list: Option<&[String]>, path: &str) -> bool {
     list.iter().any(|b| deelpe_core::path::under_norm(&p, b))
 }
 
+/// Is there anything to watch at all?
+///
+/// An empty list means "no file events" — the state of every agent that
+/// has not been enrolled yet and has no folder of its own. A sensor that
+/// sees the whole machine can spare itself the entire resolution of an
+/// event in that state, and that is not a micro-optimisation: without it,
+/// a freshly installed agent resolves every open on the machine only to
+/// throw it away at the end.
+///
+/// No filter at all (`None`) is not this state: that means "everything".
+pub fn watches_nothing() -> bool {
+    FILTER.read().map(|g| nothing(g.as_deref())).unwrap_or(false)
+}
+
+/// The verdict without the global list — same reason as [`matches`]: a test
+/// that changed the `static` would decide what a parallel test sees.
+fn nothing(list: Option<&[String]>) -> bool {
+    list.is_some_and(<[String]>::is_empty)
+}
+
 /// How many events have been thrown away so far.
 pub fn dropped() -> u64 {
     DROPPED.load(Ordering::Relaxed)
@@ -162,6 +182,17 @@ mod tests {
     fn an_empty_list_wants_nothing_but_no_filter_wants_everything() {
         assert!(!matches(Some(&[]), r"C:\Freigaben\GL\Zahlen.xlsx"));
         assert!(matches(None, r"C:\irgendwas"));
+    }
+
+    /// The three states are different, and a sensor acts differently on
+    /// each: no filter means everything, an empty list means nothing, a
+    /// filled one means these folders. Only the middle one lets a sensor
+    /// skip the work entirely.
+    #[test]
+    fn watching_nothing_is_not_the_same_as_having_no_filter() {
+        assert!(nothing(Some(&[])));
+        assert!(!nothing(Some(&["/srv/gl".to_string()])));
+        assert!(!nothing(None), "no filter means everything, not nothing");
     }
 
     #[test]

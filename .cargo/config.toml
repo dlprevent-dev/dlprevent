@@ -8,4 +8,16 @@
 # (`brew install mingw-w64`, `rustup target add x86_64-pc-windows-gnu`).
 [alias]
 win = "check --target x86_64-pc-windows-gnu -p deelpe-winagent -p deelpe-sensors --all-targets"
+# The same blind spot on the other side: the Linux sensors are
+# `cfg(target_os = "linux")`, so a Mac build does not read them either.
+# Type-checking needs nothing but the target's std (`rustup target add
+# x86_64-unknown-linux-gnu`) — no linker, `check` does not link.
+#
+# What this does **not** do is run them: fanotify needs a real kernel and
+# root. The recipe for that is in docs/DEVELOPMENT.md.
+#
+# Only the sensors: `deelpe` itself pulls in `ring` through reqwest, and its
+# build script wants a cross gcc. The blind spot is in the sensors anyway —
+# everything else in that binary is platform-neutral.
+linux = "check --target x86_64-unknown-linux-gnu -p deelpe-sensors --all-targets"
 win-build = "build --release --target x86_64-pc-windows-gnu -p deelpe-winagent"

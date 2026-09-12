@@ -128,9 +128,15 @@ export function certState(notAfter: string): 'ok' | 'due' | 'expired' {
 
 /** Which binary belongs to a role. Workstation and file server share the
  *  same EXE on Windows. The same mapping as `binaries::platform_for` on the
- *  server. */
-export function platformFor(kind: string | undefined): 'windows' | 'mac' {
-  return kind === 'windows_server' || kind === 'windows_client' ? 'windows' : 'mac';
+ *  server, and it has to give the same answer — `null` included.
+ *
+ *  Linux has no binary here and that is deliberate: the `.deb` is built per
+ *  architecture and `apt` owns the updates. The server learned this already;
+ *  falling through to `'mac'` the way this did would offer a Linux machine
+ *  the macOS bundle. */
+export function platformFor(kind: string | undefined): 'windows' | 'mac' | null {
+  if (kind === 'windows_server' || kind === 'windows_client') return 'windows';
+  return kind === 'linux' ? null : 'mac';
 }
 
 /** Roles whose running binary can be compared against the uploaded one. The

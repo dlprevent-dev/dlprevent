@@ -879,7 +879,9 @@ its own (it cannot block), and multi-tenancy "retrofitted later".
 
 ## Milestones
 
-1. **M3:** Linux sensors, the systemd unit.
+1. **M3 (done, 2026-09-12):** Linux sensors and the systemd unit. fanotify
+   for file access, `ss` for the bytes sent. What is deliberately missing is
+   named in the sensors themselves; blocking on Linux is M4.
 2. **M4 (v2):** blocking at the endpoint's network. (USB/AirDrop shipped with
    the macOS agent on 2026-09-05.) Corresponds to Z5 above.
 3. **Z1–Z5:** the central server and the server agents, see the section above.

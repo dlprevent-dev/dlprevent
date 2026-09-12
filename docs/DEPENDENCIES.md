@@ -65,7 +65,13 @@ Workspace: anyhow, serde_json, tokio, tracing, chrono. Plus `deelpe-core`.
 | Package | Declared | Resolved | Target |
 |---|---|---|---|
 | async-trait | 0.1 | 0.1.92 | all |
+| libc | 0.2 | 0.2.180 | `cfg(target_os = "linux")` |
+| sha2 | 0.11 | 0.11.0 | `cfg(target_os = "linux")` |
 | windows | 0.62.2 | 0.62.2 | `cfg(windows)` |
+
+`libc` covers three syscalls (`fanotify_init`, `fanotify_mark`, `fstat`);
+`sha2` gives a Linux process its identity, since there is no signature the
+kernel would vouch for.
 
 `windows` features here: Win32_Foundation, Win32_System_Diagnostics_Etw,
 Win32_System_Diagnostics_ToolHelp, Win32_System_Time, Win32_System_Threading,
@@ -187,8 +193,10 @@ target. Updating it means updating Swift/Xcode, nothing else.
 | | `debian` | trixie-slim | runtime base |
 | | `ca-certificates`, `libssl3t64` | from trixie | libssl for webauthn-rs |
 | `docker-compose.yml` | `postgres` | 18 | the server needs 18 or newer |
-| `.deb` (`[package.metadata.deb]`) | `$auto`, `adduser` | | `$auto` resolves libssl3 |
+| `.deb` server (`[package.metadata.deb]`) | `$auto`, `adduser` | | `$auto` resolves libssl3 |
+| `.deb` agent (`[package.metadata.deb]`) | `$auto`, `iproute2` | | `ss` for the network sensor; `$auto` does not find it, it is not a library |
 | Windows cross build | mingw-w64 | brew | plus rustup target `x86_64-pc-windows-gnu` |
+| Linux check on the Mac | — | | rustup target `x86_64-unknown-linux-gnu`, `cargo linux`; the tests need a real kernel, see DEVELOPMENT.md |
 
 ## Reverse index — one bump, how many artifacts
 
@@ -202,6 +210,7 @@ target. Updating it means updating Swift/Xcode, nothing else.
 | sha2 | ✅ | ✅ | ✅ |
 | reqwest, rcgen, rustls-pemfile, x509-parser, time | ✅ (core/net) | ✅ (core/net) | ✅ (direct) |
 | async-trait (via deelpe-sensors) | ✅ | ✅ | — |
+| libc | ✅ | — | — |
 | windows | — | ✅ | — |
 
 So: a `tokio` or `serde` bump means rebuilding and re-testing all three
@@ -215,6 +224,8 @@ Windows agent — and can only be verified with `cargo win`.
 cargo tree --depth 1 -e normal --workspace          # direct crates, resolved
 cargo tree --depth 1 -e normal -p deelpe-sensors \
   --target x86_64-pc-windows-gnu                    # the Windows-only ones
+cargo tree --depth 1 -e normal -p deelpe-sensors \
+  --target x86_64-unknown-linux-gnu                 # the Linux-only ones
 cargo update --dry-run                              # what would move
 cd apps/web && npm outdated                         # UI packages
 ```

@@ -20,7 +20,11 @@ test('the agent list marks who runs a different program than the one uploaded', 
     assert.equal(platformFor('windows_server'), 'windows');
     assert.equal(platformFor('windows_client'), 'windows');
     assert.equal(platformFor('mac'), 'mac');
-    assert.equal(platformFor('linux'), 'mac');
+    // `null`, not `'mac'`: there is no Linux program in the store, and
+    // falling through to the Mac branch would offer a Linux machine the
+    // macOS bundle. The server fixed exactly this in `platform_for`; this
+    // side kept the old answer until the Linux agent shipped.
+    assert.equal(platformFor('linux'), null);
     assert.equal(selfReplacing('windows_server'), true);
     assert.equal(selfReplacing('windows_client'), true);
     assert.equal(selfReplacing('mac'), false);

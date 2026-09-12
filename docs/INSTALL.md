@@ -25,6 +25,7 @@ Where the data lives — this is also the checklist for uninstalling:
 |---|---|
 | Central server | `DEELPE_DATA_DIR` (default `/var/lib/deelpe-server`: `ca.pem`, `ca.key`, `server.pem`, `server.key`, `agents/` with the installers the enrollment command hands out), Postgres database `deelpe`, `/etc/deelpe-server/env` |
 | Mac | `/usr/local/bin/deelpe`, `/Library/LaunchDaemons/ch.deelpe.daemon.plist`, `~/Library/LaunchAgents/ch.deelpe.bar.plist`, `/etc/deelpe/` (`config.json`, `central.json`), `/var/lib/deelpe/` (warnings, state, learning phase, `agent.log`), `/var/log/deelpe.log`, `/var/run/deelpe.sock`, `/Applications/DLPrevent.app` |
+| Linux | `/usr/bin/deelpe`, `/lib/systemd/system/deelpe.service`, `/etc/deelpe/` (`config.json`, `central.json`), `/var/lib/deelpe/` (warnings, state, learning phase, `agent.log`), `/var/run/deelpe.sock` |
 | Windows | the EXE (recommended `C:\Program Files\deelpe\`), service `deelpe-winagent`, `C:\ProgramData\deelpe\` (`central.json`, `state.json`, `agent.log`, `agent.log.1`), registry key `HKLM\SOFTWARE\Policies\Mozilla\Firefox\ContentAnalysis` |
 
 ---
@@ -805,7 +806,159 @@ Auditing (entry "Everyone", Read).
 
 ---
 
-## 4. Mass rollout
+## 4. Agent on Linux
+
+The same program as on the Mac — `deelpe`, one binary, service plus CLI.
+Underneath it is **fanotify** for file access and **`ss`** for the bytes
+sent. No kernel module, but root: fanotify needs `CAP_SYS_ADMIN`.
+
+### Building the package
+
+```bash
+scripts/build-agent-deb.sh          # → dist/deelpe_<version>-1_amd64.deb + SHA-256
+scripts/build-agent-deb.sh arm64    # Raspberry Pi, Graviton, Ampere
+```
+
+Runs in Docker and works from a Mac as well. **Not** `cargo deb -p deelpe`
+straight away: a `.deb` carries a Linux binary, and its architecture comes
+from where it was built. On a Mac that packages a macOS binary; in Docker on
+Apple Silicon without `--platform` it packages arm64, which no amd64 server
+installs — and `dpkg` only says so at the far end, after the rollout. The
+script spells the architecture out every time.
+
+### Installing
+
+```bash
+# The architecture is in the glob on purpose: with both builds in one
+# directory, a plain deelpe_*.deb takes whichever comes first.
+sudo apt install ./deelpe_*_amd64.deb            # Debian/Ubuntu, pulls iproute2
+systemctl is-active deelpe                       # → active
+deelpe status                                    # → both sensors green
+```
+
+**The package enables and starts the service itself.** If `is-active` says
+anything else, start it by hand and look at why it did not come up:
+
+```bash
+sudo systemctl enable --now deelpe
+journalctl -u deelpe -n 50 --no-pager
+```
+
+The usual reason is a container or an image build, where
+`/usr/sbin/policy-rc.d` suppresses service starts. On an ordinary host that
+file does not exist.
+
+On any other distribution the same binary works on its own:
+
+```bash
+sudo install -m 755 deelpe /usr/local/bin/deelpe
+sudo install -m 644 packaging/deelpe.service /etc/systemd/system/
+sudo sed -i 's#/usr/bin/deelpe#/usr/local/bin/deelpe#' /etc/systemd/system/deelpe.service
+sudo systemctl daemon-reload && sudo systemctl enable --now deelpe
+```
+
+The package does not start the service: without a folder or an enrollment
+the agent watches nothing, and a service running for nothing hides that.
+
+### Connecting to the central server
+
+**Agents → Enroll agent → Linux.** The dialog hands out the token and this
+command; install the `.deb` first, because nothing is downloaded from the
+server here:
+
+```bash
+sudo deelpe central enroll https://dlp.company.local:8444 <token> --ca-sha256 <fingerprint>
+```
+
+The platform button only picks which command is offered. The token itself is
+bound to no platform — the agent says what it is when it enrolls — so a
+token created before this button existed works just as well.
+
+Then the protected folders, unless the dashboard distributes them:
+
+```bash
+sudo deelpe watch add /srv/GL
+sudo deelpe watch add /home/ubuntu     # a whole home directory — see below
+sudo deelpe watch list
+deelpe alerts
+```
+
+**A whole home directory works, and it is noisy.** Every read below it
+counts, `.cache`, `.config` and `.mozilla` included — a browser taints itself
+at start-up by reading its own profile, and from then on every upload it
+makes is a candidate. The dot-folder exemption in the correlator applies to
+copy *targets* only, not to reads.
+
+Where you can, name the folder the data is actually in
+(`/home/ubuntu/Documents`). If it has to be the whole home directory, leave
+the learning phase running for a day before you confirm it, or it learns the
+noise as normal.
+
+Only the token and the fingerprint come from the dashboard, never the
+program: there is no Linux installer stored there and no update it can order
+(`binaries::platform_for` returns `None`). The `.deb` goes out through your
+own channel, and an update is `apt install` plus a restart.
+
+### Checking that it works
+
+```bash
+echo test > /srv/GL/probe.md          # a write that actually writes
+sleep 5 && deelpe alerts              # → one alert, verdict "inbound"
+```
+
+**`touch` and `mkdir` produce nothing, and that is not a fault.** fanotify
+reports a write when a byte is written; `touch` creates an empty file
+without writing one, so no event comes into being at all. Directories are
+deliberately not reported either — browsing a folder carries nothing out. A
+`mv` from elsewhere on the same filesystem is invisible for the same reason:
+the content never moves, and the file keeps its creation time (see
+`deelpe_core::inbound`, which names that ceiling on all three platforms).
+Test with content, or with `cp`.
+
+Measured on 2026-09-12: `mkdir` and `touch` → nothing, `echo … >` and `cp`
+→ an `inbound` alert within three seconds.
+
+For the other direction — the one the agent is really for, reading out of a
+protected folder and sending it — two conditions have to be met or you will
+watch nothing happen: at least `min_bytes_out` bytes (4096 by default), and
+the connection has to still be open when the network sensor next polls
+(every three seconds). A `curl` that uploads two kilobytes and hangs up is
+correctly invisible.
+
+### What Linux sees and what it does not
+
+| | Linux | Windows workstation |
+|---|---|---|
+| Read from a protected folder | ✅ fanotify | ✅ ETW |
+| The copy elsewhere | ✅ | ✅ |
+| Bytes sent per process | ✅ TCP, out of `tcp_info` | ✅ TCP and UDP |
+| Upload over QUIC/HTTP/3 | ❌ no byte counter in the kernel for UDP | ✅ |
+| A connection that opens and closes between two polls | ❌ (as on the Mac) | ✅ |
+| Rename, hard link as such | ❌ (a copy still shows as read + write) | ✅ |
+| Mounted CIFS/NFS share | depends on the kernel | ✅ |
+| Blocking, network cage, killing the sender | ❌ | ✅ |
+| USB / external volume | ❌ | ✅ |
+
+Whether a share was covered is not a guess: the first log line after every
+start names the filesystems that took a mark (`journalctl -u deelpe`). A
+protected folder on a filesystem missing from that list is not watched.
+
+### Updating and uninstalling
+
+```bash
+sudo apt install ./deelpe_<new>.deb && sudo systemctl restart deelpe
+```
+
+```bash
+sudo systemctl disable --now deelpe && sudo apt purge deelpe
+sudo rm -rf /etc/deelpe /var/lib/deelpe /var/run/deelpe.sock
+```
+
+Revoke the agent in the dashboard afterwards.
+
+---
+
+## 5. Mass rollout
 
 ### Read this first: enrollment does not scale yet
 
@@ -818,7 +971,7 @@ So a rollout has two halves, and only the first one automates cleanly:
 
 | Step | Automatable today |
 |---|---|
-| Distribute the EXE / app bundle, install the service | **yes** — GPO, Ansible, Intune, SCCM |
+| Distribute the EXE / app bundle / `.deb`, install the service | **yes** — GPO, Ansible, Intune, SCCM |
 | Enroll (token, certificate) | **no** — one token per device, by hand |
 
 Two ways to live with that until bulk tokens exist:
@@ -955,7 +1108,8 @@ sc.exe qfailure deelpe-winagent
 
 Three routes into the central server's store, and all of them end there — from
 there it reaches the devices by the routes below. Which one fits depends on a
-single question: **who compiles**.
+single question: **who compiles**. Windows and macOS, that is: the Linux
+`.deb` is not kept here and takes your own channel, see section 4.
 
 | Who builds | Route | Effort per version |
 |---|---|---|
@@ -1161,6 +1315,65 @@ Three parts, and the third is the one people forget:
 Enrollment again per device:
 `sudo deelpe central enroll https://… <token> --ca-sha256 <fp>`.
 
+### Linux via Ansible (or your own apt repo)
+
+Nothing comes from the dashboard here — there is no Linux artefact in its
+store, see "Where the program comes from". The `.deb` travels the way your
+other packages do.
+
+Build it with `scripts/build-agent-deb.sh` (see section 4 — the architecture
+is the part that goes wrong silently). If you already run an internal apt
+repository, put it in there and the whole job is `ansible.builtin.apt:
+name=deelpe state=latest`. Without one, copy the file:
+
+```yaml
+- name: DLPrevent agent
+  hosts: linux
+  become: true
+  tasks:
+    - name: Copy package
+      ansible.builtin.copy:
+        src: files/deelpe_0.1.3-1_amd64.deb
+        dest: /tmp/deelpe.deb
+      register: copied
+
+    - name: Install
+      ansible.builtin.apt:
+        deb: /tmp/deelpe.deb
+      notify: restart deelpe
+
+    - name: Service enabled and running
+      ansible.builtin.systemd_service:
+        name: deelpe
+        enabled: true
+        state: started
+
+  handlers:
+    - name: restart deelpe
+      ansible.builtin.systemd_service:
+        name: deelpe
+        state: restarted
+```
+
+`apt` pulls `iproute2` along and starts the service. The play enables it all
+the same: it costs nothing when the package already did, and it is what makes
+the copy-the-binary route work as well.
+
+Enrollment stays out of the playbook for the same reason as on Windows: a
+token in a playbook is a token in version control, and it only works once.
+
+Check afterwards, across all machines:
+
+```yaml
+- name: Status
+  ansible.builtin.command: deelpe status
+  register: st
+  changed_when: false
+- debug: var=st.stdout_lines
+```
+
+What to look for in that output is below, under "After the rollout".
+
 ### After the rollout: what to check
 
 - Dashboard → Agents: every device online, with a plausible **address**.
@@ -1176,10 +1389,16 @@ Enrollment again per device:
   deleting the copy are unaffected. See
   [TROUBLESHOOTING.md → Windows](TROUBLESHOOTING.md#windows).
 - Run `trace --seconds 30` on one machine per Windows version, once.
+- Linux: `systemctl is-active deelpe` on every host — an agent that never
+  appears in the dashboard is nearly always a service that is not running,
+  not a network problem. Then both sensors green (`fanotify`, `procnet` — a
+  red `procnet` is usually a missing `ss`), and `journalctl -u deelpe | grep 'filesystems
+  marked'` on one machine per filesystem layout. A protected folder on a
+  filesystem missing from that line is not being watched.
 
 ---
 
-## 5. The central server gets a different address
+## 6. The central server gets a different address
 
 Three things hang off the address, and you only have to touch the first two:
 

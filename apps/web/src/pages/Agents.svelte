@@ -19,7 +19,10 @@
   let hours = $state(24);
   /// Only decides which command the dashboard offers for copying — the token
   /// itself is valid for every kind.
-  let platform = $state<'mac' | 'windows_server' | 'windows_client'>('mac');
+  let platform = $state<'mac' | 'linux' | 'windows_server' | 'windows_client'>('mac');
+  /// Windows is the only platform with a role underneath it, so the dialog
+  /// asks this twice and the answer belongs in one place.
+  const isWindows = $derived(platform === 'windows_client' || platform === 'windows_server');
   let showToken = $state(false);
   let expanded = $state<string | null>(null);
   // Log of the expanded agent. Only one: it is fetched on expanding and
@@ -35,6 +38,14 @@
   const tokenSort = createSort('created', { descFirst: true });
   const admin = $derived(isAdmin());
   const kinds: Record<string, string> = { mac: 'macOS', linux: 'Linux', windows_server: 'Windows Server', windows_client: 'Windows Client' };
+  /// Not the same list: `kinds` names an agent's role, this one names the
+  /// binary's platform (`Binary.platform`), where the two Windows roles share
+  /// a single file.
+  const platformNames: Record<string, string> = { windows: 'Windows', mac: 'macOS' };
+  /// The glob names the architecture on purpose: a plain `deelpe_*.deb` in a
+  /// directory holding both builds matches the wrong one just as happily,
+  /// and `dpkg` only says so once it is on the target machine.
+  const DEB_INSTALL = 'sudo apt install ./deelpe_*_amd64.deb\nsystemctl is-active deelpe';
 
   const res = resource(async () => {
     const r = await Promise.all([api<Agent[]>('/api/agents'), api<Token[]>('/api/tokens'), api<Binary[]>('/api/binaries')]);
@@ -271,6 +282,7 @@
          value as in the "Version" column of the table below, so you can see
          without any arithmetic who is already on it. -->
     <div class="bins">
+      <div class="binhead">Agent programs<span class="spacer"></span><span class="muted">what the enrollment command installs</span></div>
       <!-- Windows only, as long as nothing else is staged. The Mac service
            sits inside a bundle and cannot replace itself
            (`binaries::self_replacing_platform`) — a row saying "nothing
@@ -279,6 +291,7 @@
            still works from the enrollment dialog. -->
       {#each binaries.filter((b) => b.platform === 'windows' || b.present) as b (b.platform)}
         <div class="bin">
+          <b class="plat">{platformNames[b.platform] ?? b.platform}</b>
           <div>
             <span class="mono">{b.file_name}</span>
             {#if b.present}
@@ -297,6 +310,18 @@
           </button>
         </div>
       {/each}
+      <!-- Not a gap and not a "nothing stored yet": Linux never gets a file
+           here. The `.deb` is built per architecture, and `apt` owns the
+           updates — `binaries::platform_for` returns `None` for it. Saying so
+           beats letting somebody hunt for an upload button that would be
+           wrong even if it existed. -->
+      <div class="bin">
+        <b class="plat">Linux</b>
+        <div>
+          <span class="muted">not kept here — <span class="mono">apt</span> owns it</span>
+          <div class="cell-2 muted">The <span class="mono">.deb</span> is per architecture and goes out through your own channel; from here comes only the enrollment command.</div>
+        </div>
+      </div>
     </div>
     <div class="rel-row">
       <div>
@@ -516,14 +541,20 @@
         <div class="field" style="margin-top:10px"><span class="lbl">Device</span>
           <div class="seg">
             <button type="button" class:on={platform === 'mac'} onclick={() => (platform = 'mac')}>macOS</button>
-            <button type="button" class:on={platform !== 'mac'} onclick={() => (platform = 'windows_client')}>Windows</button>
+            <button type="button" class:on={platform === 'linux'} onclick={() => (platform = 'linux')}>Linux</button>
+            <button type="button" class:on={isWindows} onclick={() => (platform = 'windows_client')}>Windows</button>
           </div>
           {#if platform === 'mac'}
             <div class="hint">Watches reads from the protected folders and outbound traffic of the same process.</div>
+          {:else if platform === 'linux'}
+            <div class="hint">
+              The same, through fanotify and <span class="mono">ss</span>. The next screen gives you both commands:
+              installing the <span class="mono">.deb</span>, which does not come from this server, and enrolling.
+            </div>
           {/if}
         </div>
 
-        {#if platform !== 'mac'}
+        {#if isWindows}
           <!-- One binary, two loops. The role is fixed at enrollment time;
                pick the wrong one and it silently reports nothing (b2f776c).
                Hence one level deeper instead of next to the platform. -->
@@ -553,6 +584,20 @@
           <span class="mono">{binFor(platform)!.file_name}</span> ({fmtBytes(binFor(platform)!.size)}) from this
           server, checks the fingerprint and {created.enroll_command ? 'installs the app' : 'enrolls'}:
         </p>
+      {:else if platform === 'linux'}
+        <!-- Two commands, not one, and the first one says where the file
+             comes from. Windows and macOS get their program from this server,
+             Linux never does — so a dialog that only prints the enrolment
+             leaves the reader with "install what, from where?", which is
+             exactly the question this platform kept raising. -->
+        <p style="margin-top:0">
+          <b>1.</b> Install the package on the device. It does <b>not</b> come from this server — build it with
+          <span class="mono">scripts/build-agent-deb.sh</span> or take it from your own apt repository
+          (<span class="mono">apt install deelpe</span>), see INSTALL.md section 4. For arm64 machines, the
+          <span class="mono">arm64</span> package instead:
+        </p>
+        <div class="copy"><code style="white-space:pre-wrap">{DEB_INSTALL}</code><button class="btn sm" onclick={() => copy(DEB_INSTALL)}><Icon name="copy" size={14} /> Copy</button></div>
+        <p style="margin-bottom:6px"><b>2.</b> Enroll. Updates afterwards are <span class="mono">apt</span>'s job, not this dashboard's:</p>
       {:else}
         <p class="hint" style="margin-top:0">
           No agent program stored on the server for this platform, so the command below only enrolls — you have to
@@ -599,6 +644,10 @@
   .rel-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
   .bins { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
   .bin { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  /* A fixed width, so the file names line up under one another and the eye
+     finds the platform before it reads anything. */
+  .bin .plat { min-width: 74px; flex: none; }
+  .binhead { display: flex; align-items: baseline; gap: 10px; font-weight: 600; margin-bottom: 2px; }
   .bin .spacer { flex: 1; }
   .rel-row .spacer { flex: 1; }
 
