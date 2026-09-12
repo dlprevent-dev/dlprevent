@@ -376,13 +376,30 @@ pub struct Access {
     pub path: String,
     pub user: UserRef,
     pub client_ip: Option<String>,
+    /// Opened for reading: this is what the access counter counts.
+    pub read: bool,
+    /// Opened for writing: a candidate for an arrival in the folder. An
+    /// open can be both — Word opens a document for reading and writing.
+    pub write: bool,
 }
 
 pub fn access_from(e: &evtlog::RawEvent) -> Option<Access> {
     if e.get("ObjectType").map(|t| !t.eq_ignore_ascii_case("File")).unwrap_or(false) {
         return None;
     }
-    if evtlog::parse_mask(e.get("AccessMask")?) & FILE_READ_DATA == 0 {
+    let mask = evtlog::parse_mask(e.get("AccessMask")?);
+    let read = mask & FILE_READ_DATA != 0;
+    // **Not yet seen on the real machine.** That a 5145 carries the write
+    // bits when a file is put into the share comes from the manifest, not
+    // from the lab log — unlike everything around it, which was measured on
+    // 2026-09-06. `deelpe-winagent probe` shows the mask of the last events;
+    // copy a file into the share and look for one that is not 0x12008
+    // something. The SACL on the folder only audits reading
+    // (`audit::SACL_AUDIT_READ`), so a **local** write on the server
+    // console produces no 4663 either — over SMB, the case this is about,
+    // 5145 arises without a SACL.
+    let write = mask & (evtlog::FILE_WRITE_DATA | evtlog::FILE_APPEND_DATA) != 0;
+    if !read && !write {
         return None;
     }
     let name = e.get("SubjectUserName")?;
@@ -409,12 +426,17 @@ pub fn access_from(e: &evtlog::RawEvent) -> Option<Access> {
             sid: e.get("SubjectUserSid").map(str::to_string),
         },
         client_ip: e.get("IpAddress").map(str::to_string),
+        read,
+        write,
     })
 }
 
 fn observe(a: Access, rules: &[Rule], learn_days: u32, meters: &mut HashMap<String, AccessMeter>, agg: &mut Aggregator, alerts: &mut Vec<AccessAlert>) {
-    let Access { path, user, client_ip } = a;
+    let Access { path, user, client_ip, read, write } = a;
     let now = Utc::now();
+    // Asked at the first matching rule, not for every event: a `stat` on
+    // a file nobody has a rule for is a syscall for nothing.
+    let mut arrived: Option<bool> = None;
 
     for r in rules.iter().filter(|r| rule_matches(&r.path, &path)) {
         let rule = RuleView {
@@ -422,19 +444,44 @@ fn observe(a: Access, rules: &[Rule], learn_days: u32, meters: &mut HashMap<Stri
             path: &r.path,
             params: AccessParams { hard_max_files: r.hard_max_files.max(1), window_secs: r.window_secs.max(1), learn_days },
         };
+        let arrived = *arrived.get_or_insert_with(|| {
+            write && deelpe_core::inbound::just_created(std::path::Path::new(&path), std::time::SystemTime::now(), deelpe_core::inbound::FRESH)
+        });
+        if arrived {
+            if let Some(alert) = agg.inbound(&rule, &user, &path, client_ip.as_deref(), now) {
+                if push(alerts, alert) {
+                    info!(user = %user.display(), path = %r.path, "a file landed in the folder");
+                }
+            }
+        }
+        if !read {
+            continue;
+        }
         // One meter per rule: a newly distributed rule gets its own learning
         // phase that way, instead of inheriting the device's.
         let meter = meters.entry(r.id.clone()).or_insert_with(|| AccessMeter::new(now));
         // The file server knows no bytes: the security log says *that*
         // something was read, not how much.
         let Some(alert) = agg.observe(meter, &rule, &user, &path, 0, client_ip.as_deref(), now) else { continue };
-        // Within one round, send only the most recent version of each.
-        match alerts.iter_mut().find(|x| x.external_id == alert.external_id) {
-            Some(prev) => *prev = alert,
-            None => {
-                warn!(user = %user.display(), path = %r.path, "mass access: {}", alert.reason.as_deref().unwrap_or(""));
-                alerts.push(alert);
-            }
+        let reason = alert.reason.clone().unwrap_or_default();
+        if push(alerts, alert) {
+            warn!(user = %user.display(), path = %r.path, "mass access: {reason}");
+        }
+    }
+}
+
+/// Within one round, send only the most recent version of each alert.
+/// Returns `true` if this one is the first of its kind in the round — the
+/// log line hangs off that, otherwise every further file writes one.
+fn push(alerts: &mut Vec<AccessAlert>, alert: AccessAlert) -> bool {
+    match alerts.iter_mut().find(|x| x.external_id == alert.external_id) {
+        Some(prev) => {
+            *prev = alert;
+            false
+        }
+        None => {
+            alerts.push(alert);
+            true
         }
     }
 }
@@ -454,6 +501,95 @@ mod tests {
         assert!(is_absolute("/volume1/daten"));
         assert!(!is_absolute("Finance"));
         assert_eq!(resolve(r"C:\Freigaben\GL", &[]), vec![r"C:\Freigaben\GL".to_string()]);
+    }
+
+    fn raw(mask: &str, path: &str) -> evtlog::RawEvent {
+        let mut data = HashMap::new();
+        for (k, v) in [
+            ("SubjectUserSid", "S-1-5-21-1-2-3-1108"),
+            ("SubjectUserName", "dl-anna"),
+            ("SubjectDomainName", "CORP"),
+            ("ShareName", r"\\*\GL"),
+            ("ShareLocalPath", r"\??\C:\Freigaben\GL"),
+            ("AccessMask", mask),
+            ("IpAddress", "192.0.2.10"),
+        ] {
+            data.insert(k.to_string(), v.to_string());
+        }
+        data.insert("RelativeTargetName".into(), path.into());
+        evtlog::RawEvent { event_id: 5145, record_id: 1, data }
+    }
+
+    /// Until now the agent threw away everything that was not a read — and
+    /// with it every file that somebody put into the share.
+    #[test]
+    fn a_write_over_smb_is_an_access_too() {
+        let w = access_from(&raw("0x120116", "neu.xlsx")).expect("write");
+        assert!(w.write && !w.read);
+        assert_eq!(w.path, r"C:\Freigaben\GL\neu.xlsx");
+        let r = access_from(&raw("0x120089", "Zahlen.xlsx")).expect("read");
+        assert!(r.read && !r.write);
+        // Attribute access alone stays what it was: nothing.
+        assert!(access_from(&raw("0x80", "Zahlen.xlsx")).is_none());
+    }
+
+    /// A file that has just come into being is an arrival; the same file
+    /// opened for writing a second time is not a second one, and an old
+    /// document that gets saved over is none at all.
+    #[test]
+    fn a_new_file_in_the_folder_becomes_an_arrival_alert() {
+        let dir = std::env::temp_dir().join(format!("deelpe-arrival-agent-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let rules = vec![Rule {
+            id: "11111111-1111-1111-1111-111111111111".into(),
+            name: "GL".into(),
+            path: dir.to_string_lossy().to_string(),
+            allowed_groups: Vec::new(),
+            lockdown: false,
+            allow_destinations: Vec::new(),
+            strict: false,
+            enforce: false,
+            hard_max_files: 100,
+            window_secs: 60,
+            ad_lock: false,
+            enabled: true,
+        }];
+        let mut agg = Aggregator::new();
+        let mut meters = HashMap::new();
+        let mut alerts = Vec::new();
+        let file = dir.join("neu.xlsx");
+        std::fs::write(&file, b"x").unwrap();
+
+        let access = |write: bool, path: &std::path::Path| Access {
+            path: path.to_string_lossy().to_string(),
+            user: UserRef { source: "srv".into(), name: "dl-anna".into(), domain: Some("CORP".into()), sid: None },
+            client_ip: Some("192.0.2.10".into()),
+            read: !write,
+            write,
+        };
+
+        observe(access(true, &file), &rules, 7, &mut meters, &mut agg, &mut alerts);
+        assert_eq!(alerts.len(), 1, "{alerts:?}");
+        assert_eq!(alerts[0].verdict.label(), "inbound");
+        assert_eq!(alerts[0].files, 1);
+        assert_eq!(alerts[0].sample_files, vec![file.to_string_lossy().to_string()]);
+
+        // The same file once more: one alert, still one file.
+        observe(access(true, &file), &rules, 7, &mut meters, &mut agg, &mut alerts);
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].files, 1);
+
+        // A second file counts up in the same alert.
+        let second = dir.join("noch-eine.xlsx");
+        std::fs::write(&second, b"x").unwrap();
+        observe(access(true, &second), &rules, 7, &mut meters, &mut agg, &mut alerts);
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].files, 2);
+
+        // Reading produces no arrival — that is the counter's business.
+        observe(access(false, &file), &rules, 7, &mut meters, &mut agg, &mut alerts);
+        assert_eq!(alerts.len(), 1);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// The bug from the lab: a relative rule never found a folder, so no

@@ -123,6 +123,7 @@ fn verdict_text(v: Verdict) -> &'static str {
         Verdict::Deviation => "deviation",
         Verdict::Flagged => "flagged",
         Verdict::Denied => "denied",
+        Verdict::Inbound => "inbound",
     }
 }
 
@@ -132,6 +133,9 @@ fn verdict_color(v: Verdict) -> Color {
         Verdict::New | Verdict::Deviation => Color::Red,
         Verdict::Flagged => Color::Yellow,
         Verdict::Learning => Color::DarkGrey,
+        // A notice, not an alarm: it says that something came in, not that
+        // something got out.
+        Verdict::Inbound => Color::Cyan,
     }
 }
 

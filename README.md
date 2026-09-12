@@ -154,6 +154,20 @@ can judge, and it stays the operator's responsibility.
   Copying out of the folder is itself a warning, including from Finder or a
   Nextcloud folder; a later upload of the copy is reported as well, naming
   the source.
+- **Arrivals in the folder.** A file that lands *in* a protected folder is
+  reported too, as a notice ("Arrived") rather than an alarm: who put it
+  there, in which folder, and how many. It is the only direction the rest of
+  this list does not cover — everything else follows the data outward. On
+  the Mac the copy, move or hardlink names source and target, so the
+  comparison alone decides. On Windows there is no copy event: the agents
+  see the write and ask the file itself whether it has just come into being,
+  so that saving a document that was already there stays quiet. A *move*
+  inside the same drive keeps its creation time and is therefore not
+  reported on Windows; over SMB — a file put into the share from a
+  workstation — a new file comes into being on the server and is caught.
+  Nothing is deleted or blocked for an arrival, and the learning phase never
+  silences one. A process that puts files there constantly can be silenced on
+  the allow list.
 - **USB sticks and network drives.** A program that read from the folder
   writes or copies to an external or mounted volume. One warning per program
   and volume, with the file count.

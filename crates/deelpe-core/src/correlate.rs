@@ -26,6 +26,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 /// How many parent generations inherit a touch, and how many are checked.
 const CHAIN_DEPTH: usize = 2;
@@ -253,6 +254,25 @@ struct LocalAlert {
     last_at: DateTime<Utc>,
 }
 
+/// One alert per process and protected folder: the files that landed
+/// there while the touch held.
+#[derive(Debug)]
+struct Arrival {
+    id: u64,
+    first_at: DateTime<Utc>,
+    last_at: DateTime<Utc>,
+    /// Total number of files, also beyond the ones named in `files`.
+    count: u32,
+    /// The most recent arrivals, at most [`MAX_ARRIVAL_FILES`]. Doubles as
+    /// the guard against counting the same file twice: a write arrives per
+    /// block, not per file, and a copy produces hundreds of them.
+    files: Vec<PathBuf>,
+}
+
+/// This many file names an arrival alert carries. The same five as
+/// everywhere else in an alert.
+const MAX_ARRIVAL_FILES: usize = 5;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Touched {
     identity: ProcessIdentity,
@@ -401,6 +421,9 @@ pub struct Correlator {
     mounts: std::collections::HashSet<PathBuf>,
     /// (PID, mount point or target folder) → running local alert.
     volume_alerts: HashMap<(u32, PathBuf), LocalAlert>,
+    /// (PID, protected folder) → what landed in it. The other direction,
+    /// see [`crate::inbound`].
+    arrivals: HashMap<(u32, PathBuf), Arrival>,
     last_derived_sweep: DateTime<Utc>,
     next_id: u64,
     /// Touches that have been set or renewed since the last query. The
@@ -435,6 +458,7 @@ impl Correlator {
             inodes: HashMap::new(),
             mounts: std::collections::HashSet::new(),
             volume_alerts: HashMap::new(),
+            arrivals: HashMap::new(),
             last_derived_sweep: DateTime::<Utc>::MIN_UTC,
             next_id: next_id.max(1),
         }
@@ -530,6 +554,7 @@ impl Correlator {
                 self.identities.remove(&e.pid);
                 self.flows.retain(|k, _| k.0 != e.pid);
                 self.volume_alerts.retain(|k, _| k.0 != e.pid);
+                self.arrivals.retain(|k, _| k.0 != e.pid);
                 None
             }
         }
@@ -541,6 +566,9 @@ impl Correlator {
             return None;
         }
         self.expire_derived(f.at);
+        // The other direction, and it needs no origin: a file that lands
+        // *in* the protected folder. See [`crate::inbound`].
+        let arrived = self.arrived_in(f);
         // Where does the file come from: protected folder, a copy of it, a hardlink, or nothing?
         // What Windows itself puts into every folder touches nobody:
         // otherwise browsing the share is enough to poison a process.
@@ -625,6 +653,9 @@ impl Correlator {
             (dest, is_volume, target, origin.clone())
         });
         let Some(origin) = origin else {
+            if let Some(folder) = arrived {
+                return self.arrival_alert(f, folder);
+            }
             // A touched process writing to a volume: source out of the touch.
             return volume.and_then(|(dest, is_volume, target, _)| {
                 let src = self.touched.get(&f.process.pid).and_then(|t| t.files.last().cloned());
@@ -664,7 +695,110 @@ impl Correlator {
             }
             self.touch(parent, identity, f.at, &origin, copy.as_deref(), Some(format!("{reader} (PID {})", f.process.pid)));
         }
+        // The write into the protected folder is not a flow out of it: the
+        // two are mutually exclusive, and `volume` is empty here.
+        if let Some(folder) = arrived {
+            return self.arrival_alert(f, folder);
+        }
         volume.and_then(|(dest, is_volume, target, src)| self.local_alert(f, dest, is_volume, target, src))
+    }
+
+    /// Did this event bring a file **into** a protected folder? Returns the
+    /// folder it landed in.
+    ///
+    /// Two ways there, because the platforms see different things
+    /// ([`crate::inbound`]): the Mac names source and target, so the
+    /// comparison alone decides. Windows sees only the write on the target,
+    /// and there the file's creation time has to say whether something new
+    /// came into being or a document was saved.
+    fn arrived_in(&self, f: &FileEvent) -> Option<PathBuf> {
+        let target: &Path = match f.action {
+            FileAction::Copy | FileAction::Rename | FileAction::Link => f.target.as_deref()?,
+            FileAction::Write => &f.path,
+            FileAction::Open | FileAction::Exec => return None,
+        };
+        if !self.cfg.is_watched(target) || !write_target_counts(target) {
+            return None;
+        }
+        match f.action {
+            FileAction::Write => {
+                // Measured against the time of the event, not the wall
+                // clock: between the write and this line lie a channel and
+                // a lock, and under load that is not nothing.
+                let at = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(f.at.timestamp().max(0) as u64);
+                if !crate::inbound::just_created(target, at, crate::inbound::FRESH) {
+                    return None;
+                }
+            }
+            // Out of the folder into the folder: that is the user
+            // working, moving a file from one subfolder to the next.
+            // Nothing arrives there that was not already inside.
+            _ if self.cfg.is_watched(&f.path) => return None,
+            _ => {}
+        }
+        target.parent().map(Path::to_path_buf)
+    }
+
+    /// One alert per process and folder, as long as the touch holds;
+    /// further files count up.
+    ///
+    /// Deliberately **no** `denies`: what comes into the folder does not
+    /// leave it, so there is nothing here to forbid or to undo. The verdict
+    /// says so too — [`crate::enforce::action_for`] answers only `Denied`,
+    /// and `Inbound` never becomes that.
+    fn arrival_alert(&mut self, f: &FileEvent, folder: PathBuf) -> Option<Outcome> {
+        let ttl = self.touch_ttl();
+        self.arrivals.retain(|_, a| f.at - a.last_at <= ttl);
+        let file = f.target.clone().unwrap_or_else(|| f.path.clone());
+        let key = (f.process.pid, folder.clone());
+        let (is_new, id) = match self.arrivals.get_mut(&key) {
+            Some(a) => {
+                a.last_at = f.at;
+                // A write arrives per block; only a file not among the last
+                // ones counts as another arrival.
+                if !a.files.contains(&file) {
+                    a.count += 1;
+                    a.files.push(file.clone());
+                    if a.files.len() > MAX_ARRIVAL_FILES {
+                        a.files.remove(0);
+                    }
+                }
+                (false, a.id)
+            }
+            None => {
+                let id = self.next_id;
+                self.next_id += 1;
+                self.arrivals.insert(key.clone(), Arrival { id, first_at: f.at, last_at: f.at, count: 1, files: vec![file.clone()] });
+                (true, id)
+            }
+        };
+        let a = self.arrivals.get(&key)?;
+        let alert = Alert {
+            id,
+            at: a.first_at,
+            pid: f.process.pid,
+            identity: f.process.identity.clone(),
+            files: a.files.clone(),
+            remote: None,
+            remote_port: None,
+            bytes_out: 0,
+            via: Some(format!(
+                "{} file{} landed in the protected folder {}, last {}",
+                a.count,
+                if a.count == 1 { "" } else { "s" },
+                folder.display(),
+                file.display()
+            )),
+            last_at: if is_new { None } else { Some(f.at) },
+            verdict: Verdict::Inbound,
+            reason: None,
+            // Neither volume nor copy target: nothing left the folder.
+            volume: None,
+            copy_to: None,
+            sender_read_directly: true,
+            upload_url: None,
+        };
+        Some(if is_new { Outcome::New(alert) } else { Outcome::Updated(alert) })
     }
 
     /// External volume: under `/Volumes/` (except snapshots) or a mount
@@ -2077,6 +2211,79 @@ mod tests {
         c.ingest(&file(proc_named(5, Some(1), "/bin/cp", "com.apple.cp"), "/Users/me/Steuern/a.pdf", FileAction::Copy, Some("/tmp/x.pdf"), now));
         c.ingest(&open(proc_named(6, Some(1), "/usr/bin/curl", "com.apple.curl"), "/tmp/x.pdf", now + Duration::seconds(120)));
         assert!(c.ingest(&net(6, "curl", now + Duration::seconds(121))).is_none());
+    }
+
+    /// The Mac case: source and target are in the event, so the comparison
+    /// alone decides. Nothing is deleted for it — an arrival is not a flow
+    /// out of the folder.
+    #[test]
+    fn a_copy_into_the_protected_folder_is_reported_as_an_arrival() {
+        let mut c = Correlator::new(cfg());
+        let now = Utc::now();
+        let o = c
+            .ingest(&file(proc_named(5, Some(1), "/bin/cp", "com.apple.cp"), "/Users/me/Downloads/x.pdf", FileAction::Copy, Some("/Users/me/Steuern/x.pdf"), now))
+            .expect("arrival");
+        assert!(o.is_new());
+        let a = o.into_alert();
+        assert_eq!(a.verdict, Verdict::Inbound);
+        assert_eq!(a.files, vec![PathBuf::from("/Users/me/Steuern/x.pdf")]);
+        assert!(a.via.as_deref().unwrap().contains("landed in the protected folder /Users/me/Steuern"), "{:?}", a.via);
+        // Nothing to intervene against, no matter how strict the folder is.
+        assert_eq!(crate::enforce::action_for(c.config(), &a), crate::enforce::Action::None);
+
+        // A second file counts up in the same alert instead of opening a
+        // new one.
+        let o = c
+            .ingest(&file(proc_named(5, Some(1), "/bin/cp", "com.apple.cp"), "/Users/me/Downloads/y.pdf", FileAction::Copy, Some("/Users/me/Steuern/y.pdf"), now + Duration::seconds(1)))
+            .expect("second arrival");
+        assert!(!o.is_new());
+        assert!(o.via.as_deref().unwrap().starts_with("2 files"), "{:?}", o.via);
+    }
+
+    /// Moving inside the protected folder is the user working, not an
+    /// arrival — and a copy *out* of it stays what it was.
+    #[test]
+    fn moving_within_the_protected_folder_is_no_arrival() {
+        let mut c = Correlator::new(cfg());
+        let now = Utc::now();
+        assert!(c
+            .ingest(&file(proc_named(5, Some(1), "/bin/mv", "com.apple.mv"), "/Users/me/Steuern/a.pdf", FileAction::Rename, Some("/Users/me/Steuern/alt/a.pdf"), now))
+            .is_none());
+        let out = c
+            .ingest(&file(proc_named(5, Some(1), "/bin/cp", "com.apple.cp"), "/Users/me/Steuern/a.pdf", FileAction::Copy, Some("/tmp/a.pdf"), now))
+            .expect("copy out");
+        assert_eq!(out.verdict, Verdict::New);
+    }
+
+    /// The Windows case: no copy event, only the write on the target. A
+    /// file that has just come into being is an arrival, an old one that
+    /// gets saved over is not.
+    #[test]
+    fn a_write_into_the_protected_folder_counts_only_for_a_new_file() {
+        // Not below `/var`: the correlator ignores writes there on purpose
+        // (`NEVER_DERIVED_PREFIXES`), and that is where the system's
+        // temporary directory lies on the Mac. A protected folder never
+        // lies there, a test folder must not either.
+        let dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../target")).join(format!("arrival-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = dir.canonicalize().unwrap();
+        let mut c = Correlator::new(Config { watched: vec![dir.clone()], min_bytes_out: 1000, ..Default::default() });
+        let now = Utc::now();
+        let fresh = dir.join("neu.xlsx");
+        std::fs::write(&fresh, b"x").unwrap();
+        let p = proc_named(7, Some(1), r"C:\Windows\explorer.exe", "explorer.exe");
+        let o = c.ingest(&file(p.clone(), fresh.to_str().unwrap(), FileAction::Write, None, now)).expect("arrival");
+        assert_eq!(o.verdict, Verdict::Inbound);
+        // The write comes per block: the same file does not count twice.
+        let again = c.ingest(&file(p.clone(), fresh.to_str().unwrap(), FileAction::Write, None, now)).expect("same file again");
+        assert!(again.via.as_deref().unwrap().starts_with("1 file "), "{:?}", again.via);
+        // A file that is not new: saving a document, not an arrival.
+        let old = dir.join("alt.xlsx");
+        std::fs::write(&old, b"x").unwrap();
+        let mut c2 = Correlator::new(Config { watched: vec![dir.clone()], min_bytes_out: 1000, ..Default::default() });
+        let later = now + Duration::hours(2);
+        assert!(c2.ingest(&file(p, old.to_str().unwrap(), FileAction::Write, None, later)).is_none());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

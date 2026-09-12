@@ -96,7 +96,9 @@ public struct Alert: Equatable, Identifiable {
     /// Last measurement, when the alert kept running after the first report;
     /// `bytesOut` is the total then. Absent on one-off reports.
     public let lastAt: Date?
-    /// Verdict of the learning phase: "new", "learning", "deviation", "flagged".
+    /// Verdict of the learning phase: "new", "learning", "deviation",
+    /// "flagged", "denied" — or "inbound": a file landed *in* the protected
+    /// folder, which the learning phase has nothing to say about.
     public let verdict: String
     /// Reason for "deviation".
     public let reason: String?
@@ -117,6 +119,7 @@ public struct Alert: Equatable, Identifiable {
         case "deviation": return "deviation"
         case "flagged": return "always"
         case "denied": return "denied"
+        case "inbound": return "arrived"
         default: return "new"
         }
     }
@@ -124,6 +127,11 @@ public struct Alert: Equatable, Identifiable {
     public var target: String {
         if let v = volume { return "volume \(v)" }
         if let d = copyTo { return "copy to \(d)" }
+        // An arrival has no destination outside; what it has is the folder
+        // the file landed in.
+        if verdict == "inbound", let f = files.first {
+            return "into \((f as NSString).deletingLastPathComponent)"
+        }
         guard let r = remote else { return "?" }
         return "\(r):\(remotePort ?? 0)"
     }

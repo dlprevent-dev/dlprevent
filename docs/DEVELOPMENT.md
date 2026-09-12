@@ -86,12 +86,47 @@ it on their next report — if *Update agents from here* is on, otherwise it
 waits there for the button.
 
 It expects a central server from this repository's `docker-compose.yml`
-(container `dlp-server-1`). Other setups:
+(container `dlp-server-1`) on the machine you are building on. Other setups:
 
 ```bash
+DEELPE_SSH=root@dashboard.example      scripts/publish-agent.sh   # server on another host
 DEELPE_CONTAINER=my-central            scripts/publish-agent.sh   # other container
 DEELPE_DATA_DIR=/var/lib/deelpe-server scripts/publish-agent.sh   # without Docker
+DEELPE_DOCKER="sudo docker"            scripts/publish-agent.sh   # account not in the docker group
 ```
+
+They combine: the central server usually runs on a Linux host while the
+building happens on a workstation, so `DEELPE_SSH` plus, if need be,
+`DEELPE_CONTAINER`. Over SSH the script copies the program to `/tmp` on the
+server and stores it there with the same two steps as locally — beside it
+first, then rename. It needs nothing on the far side but an SSH login that
+may use `docker`.
+
+Two things cost a run each the first time:
+
+- **The container is not called `dlp-server-1` everywhere.** Compose names it
+  after the directory the clone sits in, so a clone in `/opt/dlprevent` gives
+  `dlprevent-server-1`. `docker ps --format '{{.Names}}'` on the server says
+  which, and it goes into `DEELPE_CONTAINER`.
+- **The variables have to reach the script.** On the same line as the call,
+  or `export`ed beforehand. A terminal that wraps a pasted line turns it into
+  an assignment that stays in your shell and a script that never sees it —
+  and the script then quietly takes the local route with the default name.
+
+```bash
+export DEELPE_SSH=root@192.0.2.90 DEELPE_CONTAINER=dlprevent-server-1
+scripts/publish-agent.sh
+```
+
+`scp` and `ssh` are two connections and therefore two password prompts;
+`ssh-copy-id` once and there are none.
+
+**Why SSH and not the dashboard's own upload.** `POST /api/binaries/windows`
+wants an administrator session; an API key is read-only on four monitoring
+paths (`auth::API_KEY_PATHS`) and cannot upload. An HTTP upload from the
+development machine would therefore need the dashboard's administrator
+password in a file — and with a second factor demanded it would not work
+unattended at all. SSH is the access that already exists.
 
 The file goes straight into the store, without signing in. That is not a hole:
 whoever can run this script operates the central server anyway and could just

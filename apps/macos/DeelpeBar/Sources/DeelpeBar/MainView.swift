@@ -278,6 +278,7 @@ struct AlertDetail: View {
         case "deviation": return "known pair, but " + (alert.reason ?? "deviates")
         case "flagged": return "always reported (your choice)"
         case "denied": return alert.reason ?? "destination is not on the allowlist of a strict folder"
+        case "inbound": return alert.via ?? "a file landed in the protected folder"
         default: return alert.identity.isTrustedForm ? "new process–destination pair" : "unsigned process, always reported"
         }
     }
@@ -359,6 +360,8 @@ func verdictColor(_ verdict: String) -> Color {
     case "learning": return .secondary
     case "flagged": return .orange
     case "denied": return .purple
+    // Something came in, nothing went out: not an alarm colour.
+    case "inbound": return .blue
     default: return .red
     }
 }
