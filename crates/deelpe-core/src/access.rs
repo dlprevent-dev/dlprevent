@@ -44,6 +44,10 @@ pub enum AccessVerdict {
     HardLimit { files: u32, limit: u32 },
     /// Daily total above four times the baseline.
     Deviation { files: u32, baseline: u32 },
+    /// Files have landed **in** the protected folder ([`crate::inbound`]).
+    /// Not an access to the data and not measured against a baseline: an
+    /// arrival is reported as a notice, from the first file on.
+    Inbound { files: u32 },
 }
 
 impl AccessVerdict {
@@ -57,6 +61,7 @@ impl AccessVerdict {
             AccessVerdict::NoProfile => "no_profile",
             AccessVerdict::HardLimit { .. } => "hard_limit",
             AccessVerdict::Deviation { .. } => "deviation",
+            AccessVerdict::Inbound { .. } => "inbound",
         }
     }
 }
@@ -247,7 +252,31 @@ pub struct Aggregator {
     counts: HashMap<(String, String, DateTime<Utc>), CountBucket>,
     /// "{rule}|{user}" → most recently seen files, for the alert.
     samples: HashMap<String, VecDeque<String>>,
+    /// "{rule}|{user}" → what has landed in the folder, see
+    /// [`Aggregator::inbound`].
+    arrivals: HashMap<String, Arrivals>,
 }
+
+/// Arrivals of one user in one folder within one episode.
+#[derive(Debug, Clone)]
+struct Arrivals {
+    episode: DateTime<Utc>,
+    count: u32,
+    /// The most recent file names, at most [`SAMPLE_FILES`]. They go into
+    /// the alert and at the same time keep the same file from counting
+    /// twice when it is opened several times for writing.
+    files: VecDeque<String>,
+}
+
+/// One arrival alert covers this much time; after that a new one starts.
+/// An hour, not the window of the emergency brake: that one asks how fast
+/// somebody reads, this one only says what came in.
+const ARRIVAL_EPISODE_SECS: i64 = 3600;
+
+/// Upper bound for the arrival bookkeeping, in the same spirit as
+/// `MAX_WINDOW_ENTRIES`: a file server with many users must not let the
+/// agent grow.
+const MAX_ARRIVAL_KEYS: usize = 10_000;
 
 impl Aggregator {
     pub fn new() -> Self {
@@ -315,6 +344,48 @@ impl Aggregator {
             client_ip: client_ip.map(str::to_string),
             verdict: o.verdict,
             reason: Some(reason),
+        })
+    }
+
+    /// A file that has just come into being in a protected folder.
+    ///
+    /// Deliberately past the meter and past the counts: an arrival is not
+    /// an access, and the learned baseline (how many files does this user
+    /// read per day) says nothing about it. One alert per user, folder and
+    /// episode; further files count up in it.
+    ///
+    /// `None` means the file was already counted in this episode — a file
+    /// is opened for writing more than once.
+    pub fn inbound(&mut self, rule: &RuleView<'_>, user: &UserRef, file: &str, client_ip: Option<&str>, now: DateTime<Utc>) -> Option<AccessAlert> {
+        let ukey = user.key();
+        let skey = format!("{}|{}", rule.id, ukey);
+        if self.arrivals.len() >= MAX_ARRIVAL_KEYS {
+            self.arrivals.retain(|_, a| now - a.episode < Duration::seconds(ARRIVAL_EPISODE_SECS));
+        }
+        let a = self.arrivals.entry(skey).or_insert_with(|| Arrivals { episode: now, count: 0, files: VecDeque::new() });
+        if now - a.episode >= Duration::seconds(ARRIVAL_EPISODE_SECS) {
+            *a = Arrivals { episode: now, count: 0, files: VecDeque::new() };
+        } else if a.files.iter().any(|f| f == file) {
+            return None;
+        }
+        a.count += 1;
+        a.files.push_back(file.to_string());
+        while a.files.len() > SAMPLE_FILES {
+            a.files.pop_front();
+        }
+        Some(AccessAlert {
+            external_id: format!("inbound:{}:{}:{}", rule.id, ukey, a.episode.timestamp()),
+            at: a.episode,
+            last_at: Some(now),
+            user: user.clone(),
+            rule_id: Some(rule.id.to_string()),
+            path: rule.path.to_string(),
+            files: a.count,
+            bytes: 0,
+            sample_files: a.files.iter().cloned().collect(),
+            client_ip: client_ip.map(str::to_string),
+            verdict: AccessVerdict::Inbound { files: a.count },
+            reason: Some(format!("{} file{} landed in {}", a.count, if a.count == 1 { "" } else { "s" }, rule.path)),
         })
     }
 

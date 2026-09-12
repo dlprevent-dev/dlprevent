@@ -65,6 +65,12 @@ pub enum Verdict {
     /// learned and never silenced — otherwise "block all" would be exactly
     /// that no longer after the learning phase.
     Denied,
+    /// A file has landed *in* a protected folder ([`crate::inbound`]).
+    /// Not a flow out of the folder, so the learning phase has nothing to
+    /// say about it: it knows pairs of (process, destination), and an
+    /// arrival has no destination outside. It is reported as a notice, not
+    /// as an alarm, and no intervention hangs off it.
+    Inbound,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -177,6 +183,14 @@ impl Learner {
         // and no known pair silences it.
         if a.verdict == Verdict::Denied {
             return Decision::Store { verdict: Verdict::Denied, reason: a.reason.clone() };
+        }
+        // An arrival goes past the learning phase for the same reason as
+        // the strict folder, only the other way round: there is no pair to
+        // learn here. Whoever finds it too loud silences the process on the
+        // allow list — that question is asked one layer up, in
+        // `pipeline::judge`, and this fast path deliberately sits behind it.
+        if a.verdict == Verdict::Inbound {
+            return Decision::Store { verdict: Verdict::Inbound, reason: a.reason.clone() };
         }
         if !a.identity.is_trusted_form() {
             return Decision::Store { verdict: Verdict::New, reason: None };

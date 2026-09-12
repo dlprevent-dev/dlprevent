@@ -550,7 +550,7 @@ What the role decides:
 | | File server | Workstation (`--endpoint`) |
 |---|---|---|
 | Sees | the security event log (4663/5145), SACLs on the rule folders | its own file and network events (ETW) |
-| Reports | accesses per user against the hard limit | correlated flows out of a protected folder, learning phase |
+| Reports | accesses per user against the hard limit, and files that land in a rule folder | correlated flows out of a protected folder, files that land in one, learning phase |
 | Acts | no intervention against a flow — it observes and reports (it does set the audit policy and the SACLs it needs) | strict folder: removes the copy, cages the sender, asks before a browser upload |
 | Gets rules | as they stand — it resolves a share name itself | translated: `GL` becomes `\\srv01\GL`; a rule it cannot resolve is skipped and reported |
 

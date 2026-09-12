@@ -11,6 +11,7 @@ pub mod correlate;
 pub mod enforce;
 pub mod event;
 pub mod identity;
+pub mod inbound;
 pub mod learn;
 pub mod rules;
 #[cfg(feature = "net")]

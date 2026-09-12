@@ -167,8 +167,15 @@ pub fn parse_mask(s: &str) -> u32 {
     }
 }
 
-/// `FILE_READ_DATA`. Only read accesses count — as in the NAS path of the central.
+/// `FILE_READ_DATA`. Reading is what the access counter counts — as in the
+/// NAS path of the central.
 pub const FILE_READ_DATA: u32 = 0x0001;
+/// `FILE_WRITE_DATA` and `FILE_APPEND_DATA`. Writing says nothing about
+/// mass access; it is the only sign the server gets that something is
+/// landing in the folder. Whether the file is *new* is a question only the
+/// file itself answers, see [`deelpe_core::inbound`].
+pub const FILE_WRITE_DATA: u32 = 0x0002;
+pub const FILE_APPEND_DATA: u32 = 0x0004;
 
 /// Removes an alternate data stream (`datei.dat:AFP_AfpInfo`).
 ///
@@ -269,6 +276,20 @@ mod tests {
         }
         // The mask from a real 5145, on the other hand, does.
         assert_eq!(parse_mask("0x120089") & FILE_READ_DATA, FILE_READ_DATA);
+    }
+
+    /// The mask of a 5145 for writing. Whoever filters on
+    /// `FILE_READ_DATA` alone sees a file being put into the share and
+    /// discards the event.
+    #[test]
+    fn a_write_mask_is_recognised_next_to_the_read_mask() {
+        let m = parse_mask("0x120116");
+        assert_eq!(m & FILE_READ_DATA, 0);
+        assert_ne!(m & (FILE_WRITE_DATA | FILE_APPEND_DATA), 0);
+        // Read and write at once — Word opens a document that way.
+        let rw = parse_mask("0x12019f");
+        assert_ne!(rw & FILE_READ_DATA, 0);
+        assert_ne!(rw & FILE_WRITE_DATA, 0);
     }
 
     #[test]

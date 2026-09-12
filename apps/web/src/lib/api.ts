@@ -182,7 +182,7 @@ export function updateStuck(agent: { update_requested: string | null; last_seen:
 
 /** Verdicts in the order they should appear in the filter: first what
  *  intervenes, then what stands out, last what merely tags along. */
-export const VERDICTS = ['denied', 'hard_limit', 'deviation', 'flagged', 'new', 'no_profile', 'known', 'learning'] as const;
+export const VERDICTS = ['denied', 'hard_limit', 'deviation', 'inbound', 'flagged', 'new', 'no_profile', 'known', 'learning'] as const;
 
 export function isAlarm(verdict: string): boolean {
   return verdict === 'denied' || verdict === 'hard_limit' || verdict === 'deviation';
@@ -229,7 +229,7 @@ export function interventionOf(a: Alert): Intervention | null {
 export function verdictLabel(v: string): string {
   const m: Record<string, string> = {
     denied: 'Denied', hard_limit: 'Hard limit', deviation: 'Deviation', new: 'New', flagged: 'Flagged', learning: 'Learning',
-    known: 'Known', no_profile: 'No profile', ok: 'OK',
+    known: 'Known', no_profile: 'No profile', ok: 'OK', inbound: 'Arrived',
   };
   return m[v] ?? v;
 }
