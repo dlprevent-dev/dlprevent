@@ -139,7 +139,7 @@ can judge, and it stays the operator's responsibility.
 | Central server: dashboard, roles, rules, agents, NAS, API | [docs/SERVER.md](docs/SERVER.md) |
 | Something does not work | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) |
 | Building, layout, tests | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) |
-| Design and decisions | [docs/DESIGN.md](docs/DESIGN.md), [docs/adr/](docs/adr/) |
+| Design and decisions | [docs/DESIGN.md](docs/DESIGN.md) |
 
 ## What it detects
 
@@ -248,14 +248,12 @@ Detection at the file level is **after the fact**. A copy exists for a second
 or two before the agent removes it, and a rename or repackaging escapes the
 user-mode agent entirely. Closing that would take a kernel driver; one was
 built and measured, and removed again on 2026-09-09 because it never loaded
-outside a lab with Secure Boot off. What that costs, and which ways out of a
-strict folder are open because of it, is written down in
-[ADR 0001](docs/adr/0001-endpoint-blocking-minifilter.md).
+outside a lab with Secure Boot off. Until a signed one ships, those ways out
+of a strict folder stay open.
 
 What does stop an upload works before the first byte and needs no driver: the
 browser connector refuses and knows the target URL, and the network cage takes
-the network from a program that has read from a strict folder
-([ADR 0002](docs/adr/0002-upload-blocking-splits-by-egress-channel.md)).
+the network from a program that has read from a strict folder.
 
 ## Status
 
@@ -280,8 +278,7 @@ browser connector and the network cage.
 
 - **Windows kernel driver for customers.** A minifilter is the only way to
   refuse a copy *before* it happens. The lab version is removed; a shippable
-  one needs an EV certificate and Microsoft attestation signing. See
-  [ADR 0001](docs/adr/0001-endpoint-blocking-minifilter.md).
+  one needs an EV certificate and Microsoft attestation signing.
 - **Linux agent (M3).** Sensors for Linux workstations and file servers, so
   a third platform reports into the same dashboard instead of only being
   seen over syslog. Read-then-send detection first, strict folders after.

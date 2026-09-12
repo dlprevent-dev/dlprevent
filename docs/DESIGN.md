@@ -830,8 +830,7 @@ its NAS devices after the update.
    EXE, set at the touch and open again after 60 s without a further touch.
    It needs no signed driver and lives in a dynamic session — if the
    service dies, it opens by itself. Since 2026-09-09 the agent no longer
-   terminates the sending process; what the cage can and cannot do is in
-   ADR 0002, together with the update there.
+   terminates the sending process.
 
    **First lab run on 2026-09-07** (Windows 11 Enterprise 10.0.26200,
    workgroup, an account with admin rights, over SSH). Both providers deliver:
@@ -880,12 +879,8 @@ its own (it cannot block), and multi-tenancy "retrofitted later".
 
 ## Milestones
 
-1. **M1 (macOS):** sensors + correlation + the alert as a notification and a
-   table. Without the learning phase, in order to see the real noise.
-2. **M2:** the learning phase, the confirmation list, deviation detection
-   (done 2026-09-05). The live view is still open.
-3. **M3:** Linux sensors, the systemd unit.
-4. **M4 (v2):** blocking at the endpoint's network. (USB/AirDrop have been
-   part of M1 since 2026-09-05.) Corresponds to Z5 above.
-5. **Z1–Z5:** the central server and the server agents, see the section above.
+1. **M3:** Linux sensors, the systemd unit.
+2. **M4 (v2):** blocking at the endpoint's network. (USB/AirDrop shipped with
+   the macOS agent on 2026-09-05.) Corresponds to Z5 above.
+3. **Z1–Z5:** the central server and the server agents, see the section above.
    Z1 begins after the user confirms.

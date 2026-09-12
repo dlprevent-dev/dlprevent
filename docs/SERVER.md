@@ -384,8 +384,7 @@ at start-up, so a running browser has to be restarted once. Chrome speaks the
 same protocol but reads its own policy keys, which the agent does not write
 yet. Edge cannot be done at all from here: Microsoft only accepts DLP
 connectors from onboarded partners, and `EdgeFileUploadBlockedForUrls` — which
-would do exactly this per URL — is not supported on Windows. See
-[ADR 0002](adr/0002-upload-blocking-splits-by-egress-channel.md).
+would do exactly this per URL — is not supported on Windows.
 
 So an upload to an AI service **in Chrome or Edge is not blocked**. It is
 still reported afterwards, like every other send, and the copy rules above
@@ -435,12 +434,11 @@ policy into a port nobody answered. A blocking layer that is dark and says
 nothing about being dark is worse than none. Shipping a real one needs an EV
 certificate and Microsoft attestation signing; Azure Trusted Signing does not
 cover drivers, and cross-signed drivers lost their default trust in April
-2026. Cost, timeline, the measurements and the ways out that are open because
-of this: [ADR 0001](adr/0001-endpoint-blocking-minifilter.md).
+2026.
 
 What stops an upload does not need a driver and is unaffected: the browser
 connector refuses before the first byte, and the network cage takes the
-network from a program that has read from a strict folder (ADR 0002).
+network from a program that has read from a strict folder.
 
 ### Check once before first use
 
