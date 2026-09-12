@@ -282,6 +282,9 @@ browser connector and the network cage.
   refuse a copy *before* it happens. The lab version is removed; a shippable
   one needs an EV certificate and Microsoft attestation signing. See
   [ADR 0001](docs/adr/0001-endpoint-blocking-minifilter.md).
+- **Linux agent (M3).** Sensors for Linux workstations and file servers, so
+  a third platform reports into the same dashboard instead of only being
+  seen over syslog. Read-then-send detection first, strict folders after.
 - **macOS app signing.** Developer ID signature and notarization, so
   installation works without Gatekeeper overrides.
 - **Cloud hosting on request.** A hosted central server per customer,
