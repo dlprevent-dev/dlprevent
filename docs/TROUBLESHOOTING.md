@@ -76,8 +76,7 @@ it: both `file` **and** `net` lines must appear. See
 **Red sensor "network cage".** Arming the cage failed for the program named
 in the message — the filtering platform refused the filters (no LocalSystem,
 `FwpmEngineOpen0`/`FwpmGetAppIdFromFileName0` in the log with the error code,
-"Base Filtering Engine" service stopped). The cage fails **open** by design
-(see [ADR 0002](adr/0002-upload-blocking-splits-by-egress-channel.md)), so
+"Base Filtering Engine" service stopped). The cage fails **open** by design, so
 that program keeps its network: reads from a strict folder are still reported
 and the copy is still deleted, but an upload out of a strict folder is no
 longer stopped. The message stays until the next cage

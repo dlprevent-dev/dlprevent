@@ -406,8 +406,7 @@ broken ("a sealed resource is missing or invalid").
 Two limits: `build.sh` builds for the architecture of the build machine, so
 a zip from an Apple-Silicon Mac does not run on an Intel one. And macOS
 agents do not update themselves — the upload serves the enrollment
-download, nothing goes out to devices already enrolled (see
-`docs/adr/0004-agent-update-from-the-dashboard.md`).
+download, nothing goes out to devices already enrolled.
 
 In the app (lock icon in the menu bar):
 
