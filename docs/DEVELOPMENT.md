@@ -57,6 +57,13 @@ CLI and service:
 cargo build --release          # target/release/deelpe
 ```
 
+The Linux agent as a package, from a Mac too (Docker, architecture spelled
+out — see the script's header for why that matters):
+
+```bash
+scripts/build-agent-deb.sh [amd64|arm64]   # → dist/
+```
+
 macOS app (builds the service too, bundles it with the plists):
 
 ```bash

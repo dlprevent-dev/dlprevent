@@ -812,11 +812,21 @@ The same program as on the Mac — `deelpe`, one binary, service plus CLI.
 Underneath it is **fanotify** for file access and **`ss`** for the bytes
 sent. No kernel module, but root: fanotify needs `CAP_SYS_ADMIN`.
 
-### Installing
+### Building the package
 
 ```bash
-cargo install cargo-deb && cargo deb -p deelpe   # build machine
+scripts/build-agent-deb.sh          # → dist/deelpe_<version>-1_amd64.deb + SHA-256
+scripts/build-agent-deb.sh arm64    # Raspberry Pi, Graviton, Ampere
 ```
+
+Runs in Docker and works from a Mac as well. **Not** `cargo deb -p deelpe`
+straight away: a `.deb` carries a Linux binary, and its architecture comes
+from where it was built. On a Mac that packages a macOS binary; in Docker on
+Apple Silicon without `--platform` it packages arm64, which no amd64 server
+installs — and `dpkg` only says so at the far end, after the rollout. The
+script spells the architecture out every time.
+
+### Installing
 
 ```bash
 sudo apt install ./deelpe_*.deb                  # Debian/Ubuntu, pulls iproute2
@@ -1258,9 +1268,10 @@ Nothing comes from the dashboard here — there is no Linux artefact in its
 store, see "Where the program comes from". The `.deb` travels the way your
 other packages do.
 
-If you already run an internal apt repository, put it in there and the whole
-job is `ansible.builtin.apt: name=deelpe state=latest`. Without one, copy the
-file:
+Build it with `scripts/build-agent-deb.sh` (see section 4 — the architecture
+is the part that goes wrong silently). If you already run an internal apt
+repository, put it in there and the whole job is `ansible.builtin.apt:
+name=deelpe state=latest`. Without one, copy the file:
 
 ```yaml
 - name: DLPrevent agent
