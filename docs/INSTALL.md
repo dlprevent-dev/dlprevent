@@ -829,7 +829,9 @@ script spells the architecture out every time.
 ### Installing
 
 ```bash
-sudo apt install ./deelpe_*.deb                  # Debian/Ubuntu, pulls iproute2
+# The architecture is in the glob on purpose: with both builds in one
+# directory, a plain deelpe_*.deb takes whichever comes first.
+sudo apt install ./deelpe_*_amd64.deb            # Debian/Ubuntu, pulls iproute2
 sudo systemctl enable --now deelpe
 deelpe status
 ```

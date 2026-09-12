@@ -42,6 +42,10 @@
   /// binary's platform (`Binary.platform`), where the two Windows roles share
   /// a single file.
   const platformNames: Record<string, string> = { windows: 'Windows', mac: 'macOS' };
+  /// The glob names the architecture on purpose: a plain `deelpe_*.deb` in a
+  /// directory holding both builds matches the wrong one just as happily,
+  /// and `dpkg` only says so once it is on the target machine.
+  const DEB_INSTALL = 'sudo apt install ./deelpe_*_amd64.deb\nsudo systemctl enable --now deelpe';
 
   const res = resource(async () => {
     const r = await Promise.all([api<Agent[]>('/api/agents'), api<Token[]>('/api/tokens'), api<Binary[]>('/api/binaries')]);
@@ -544,8 +548,8 @@
             <div class="hint">Watches reads from the protected folders and outbound traffic of the same process.</div>
           {:else if platform === 'linux'}
             <div class="hint">
-              The same, through fanotify and <span class="mono">ss</span>. Install the <span class="mono">.deb</span>
-              first — it does not come from here — then run the command this dialog gives you.
+              The same, through fanotify and <span class="mono">ss</span>. The next screen gives you both commands:
+              installing the <span class="mono">.deb</span>, which does not come from this server, and enrolling.
             </div>
           {/if}
         </div>
@@ -581,10 +585,19 @@
           server, checks the fingerprint and {created.enroll_command ? 'installs the app' : 'enrolls'}:
         </p>
       {:else if platform === 'linux'}
+        <!-- Two commands, not one, and the first one says where the file
+             comes from. Windows and macOS get their program from this server,
+             Linux never does — so a dialog that only prints the enrolment
+             leaves the reader with "install what, from where?", which is
+             exactly the question this platform kept raising. -->
         <p style="margin-top:0">
-          Run on the device, after <span class="mono">apt install ./deelpe_*.deb</span>. Nothing is downloaded from
-          here — the package travels your own way, and updates are <span class="mono">apt</span>'s job:
+          <b>1.</b> Install the package on the device. It does <b>not</b> come from this server — build it with
+          <span class="mono">scripts/build-agent-deb.sh</span> or take it from your own apt repository
+          (<span class="mono">apt install deelpe</span>), see INSTALL.md section 4. For arm64 machines, the
+          <span class="mono">arm64</span> package instead:
         </p>
+        <div class="copy"><code style="white-space:pre-wrap">{DEB_INSTALL}</code><button class="btn sm" onclick={() => copy(DEB_INSTALL)}><Icon name="copy" size={14} /> Copy</button></div>
+        <p style="margin-bottom:6px"><b>2.</b> Enroll. Updates afterwards are <span class="mono">apt</span>'s job, not this dashboard's:</p>
       {:else}
         <p class="hint" style="margin-top:0">
           No agent program stored on the server for this platform, so the command below only enrolls — you have to
