@@ -102,6 +102,25 @@ server and stores it there with the same two steps as locally — beside it
 first, then rename. It needs nothing on the far side but an SSH login that
 may use `docker`.
 
+Two things cost a run each the first time:
+
+- **The container is not called `dlp-server-1` everywhere.** Compose names it
+  after the directory the clone sits in, so a clone in `/opt/dlprevent` gives
+  `dlprevent-server-1`. `docker ps --format '{{.Names}}'` on the server says
+  which, and it goes into `DEELPE_CONTAINER`.
+- **The variables have to reach the script.** On the same line as the call,
+  or `export`ed beforehand. A terminal that wraps a pasted line turns it into
+  an assignment that stays in your shell and a script that never sees it —
+  and the script then quietly takes the local route with the default name.
+
+```bash
+export DEELPE_SSH=root@192.0.2.90 DEELPE_CONTAINER=dlprevent-server-1
+scripts/publish-agent.sh
+```
+
+`scp` and `ssh` are two connections and therefore two password prompts;
+`ssh-copy-id` once and there are none.
+
 **Why SSH and not the dashboard's own upload.** `POST /api/binaries/windows`
 wants an administrator session; an API key is read-only on four monitoring
 paths (`auth::API_KEY_PATHS`) and cannot upload. An HTTP upload from the

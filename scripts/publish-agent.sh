@@ -87,7 +87,10 @@ store_local() {
     echo "   $DATA_DIR/agents/$NAME"
   else
     $DOCKER inspect "$CONTAINER" >/dev/null 2>&1 \
-      || die "container '$CONTAINER' is not running. Different setup? Set DEELPE_CONTAINER=... or DEELPE_DATA_DIR=..."
+      || die "container '$CONTAINER' is not running on this machine. The central server somewhere
+       else? DEELPE_SSH=user@host (and export it, or put it on the same line as the script — an
+       assignment on a line of its own stays in your shell). Other container: DEELPE_CONTAINER=...,
+       without Docker: DEELPE_DATA_DIR=..."
     $DOCKER exec "$CONTAINER" mkdir -p /var/lib/deelpe-server/agents
     $DOCKER cp "$src" "$CONTAINER:/var/lib/deelpe-server/agents/$NAME.part"
     $DOCKER exec "$CONTAINER" mv "/var/lib/deelpe-server/agents/$NAME.part" "/var/lib/deelpe-server/agents/$NAME"
