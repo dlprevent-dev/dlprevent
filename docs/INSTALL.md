@@ -838,19 +838,32 @@ the agent watches nothing, and a service running for nothing hides that.
 
 ### Connecting to the central server
 
-Exactly as on the Mac; the command comes out of the dashboard under
-**Agents → Enroll agent**:
+**The enrollment dialog has no Linux button** — it offers macOS and Windows
+(`Agents.svelte`). Pick **macOS** anyway: the token is not bound to a
+platform, the agent declares its own kind when it enrolls, and the table
+then shows it as Linux. What you are after is this line:
 
 ```bash
 sudo deelpe central enroll https://dlp.company.local:8444 <token> --ca-sha256 <fingerprint>
+```
+
+macOS and Linux share the `deelpe` CLI, so that command is correct as shown,
+character for character. Where it appears depends on whether a macOS bundle
+is stored on the server: if none is, it is the only command in the dialog;
+if one is, it is the **second** one, under the note about the menu-bar app —
+ignore that note and the first command, both are for the Mac.
+
+Then:
+
+```bash
 sudo deelpe watch add /srv/GL      # or let the dashboard distribute folders
 deelpe alerts
 ```
 
-Only the token and the fingerprint come from the dashboard, not the program:
-there is no Linux installer stored there and no update it can order (see
-`binaries::platform_for`). The `.deb` goes out through your own channel, and
-an update is `apt install` plus a restart.
+Only the token and the fingerprint come from the dashboard, never the
+program: there is no Linux installer stored there and no update it can order
+(`binaries::platform_for` returns `None`). The `.deb` goes out through your
+own channel, and an update is `apt install` plus a restart.
 
 ### What Linux sees and what it does not
 
@@ -898,7 +911,7 @@ So a rollout has two halves, and only the first one automates cleanly:
 
 | Step | Automatable today |
 |---|---|
-| Distribute the EXE / app bundle, install the service | **yes** — GPO, Ansible, Intune, SCCM |
+| Distribute the EXE / app bundle / `.deb`, install the service | **yes** — GPO, Ansible, Intune, SCCM |
 | Enroll (token, certificate) | **no** — one token per device, by hand |
 
 Two ways to live with that until bulk tokens exist:
@@ -1242,6 +1255,63 @@ Three parts, and the third is the one people forget:
 Enrollment again per device:
 `sudo deelpe central enroll https://… <token> --ca-sha256 <fp>`.
 
+### Linux via Ansible (or your own apt repo)
+
+Nothing comes from the dashboard here — there is no Linux artefact in its
+store, see "Where the program comes from". The `.deb` travels the way your
+other packages do.
+
+If you already run an internal apt repository, put it in there and the whole
+job is `ansible.builtin.apt: name=deelpe state=latest`. Without one, copy the
+file:
+
+```yaml
+- name: DLPrevent agent
+  hosts: linux
+  become: true
+  tasks:
+    - name: Copy package
+      ansible.builtin.copy:
+        src: files/deelpe_0.1.3-1_amd64.deb
+        dest: /tmp/deelpe.deb
+      register: copied
+
+    - name: Install
+      ansible.builtin.apt:
+        deb: /tmp/deelpe.deb
+      notify: restart deelpe
+
+    - name: Service enabled and running
+      ansible.builtin.systemd_service:
+        name: deelpe
+        enabled: true
+        state: started
+
+  handlers:
+    - name: restart deelpe
+      ansible.builtin.systemd_service:
+        name: deelpe
+        state: restarted
+```
+
+`apt` pulls `iproute2` along; the package itself does not start the service,
+which is why the play enables it explicitly.
+
+Enrollment stays out of the playbook for the same reason as on Windows: a
+token in a playbook is a token in version control, and it only works once.
+
+Check afterwards, across all machines:
+
+```yaml
+- name: Status
+  ansible.builtin.command: deelpe status
+  register: st
+  changed_when: false
+- debug: var=st.stdout_lines
+```
+
+What to look for in that output is below, under "After the rollout".
+
 ### After the rollout: what to check
 
 - Dashboard → Agents: every device online, with a plausible **address**.
@@ -1257,6 +1327,10 @@ Enrollment again per device:
   deleting the copy are unaffected. See
   [TROUBLESHOOTING.md → Windows](TROUBLESHOOTING.md#windows).
 - Run `trace --seconds 30` on one machine per Windows version, once.
+- Linux: both sensors green (`fanotify`, `procnet` — a red `procnet` is
+  usually a missing `ss`), and `journalctl -u deelpe | grep 'filesystems
+  marked'` on one machine per filesystem layout. A protected folder on a
+  filesystem missing from that line is not being watched.
 
 ---
 
