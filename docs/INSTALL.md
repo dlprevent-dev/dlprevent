@@ -832,9 +832,21 @@ script spells the architecture out every time.
 # The architecture is in the glob on purpose: with both builds in one
 # directory, a plain deelpe_*.deb takes whichever comes first.
 sudo apt install ./deelpe_*_amd64.deb            # Debian/Ubuntu, pulls iproute2
-sudo systemctl enable --now deelpe
-deelpe status
+systemctl is-active deelpe                       # → active
+deelpe status                                    # → both sensors green
 ```
+
+**The package enables and starts the service itself.** If `is-active` says
+anything else, start it by hand and look at why it did not come up:
+
+```bash
+sudo systemctl enable --now deelpe
+journalctl -u deelpe -n 50 --no-pager
+```
+
+The usual reason is a container or an image build, where
+`/usr/sbin/policy-rc.d` suppresses service starts. On an ordinary host that
+file does not exist.
 
 On any other distribution the same binary works on its own:
 
@@ -1304,8 +1316,9 @@ name=deelpe state=latest`. Without one, copy the file:
         state: restarted
 ```
 
-`apt` pulls `iproute2` along; the package itself does not start the service,
-which is why the play enables it explicitly.
+`apt` pulls `iproute2` along and starts the service. The play enables it all
+the same: it costs nothing when the package already did, and it is what makes
+the copy-the-binary route work as well.
 
 Enrollment stays out of the playbook for the same reason as on Windows: a
 token in a playbook is a token in version control, and it only works once.
@@ -1337,8 +1350,10 @@ What to look for in that output is below, under "After the rollout".
   deleting the copy are unaffected. See
   [TROUBLESHOOTING.md → Windows](TROUBLESHOOTING.md#windows).
 - Run `trace --seconds 30` on one machine per Windows version, once.
-- Linux: both sensors green (`fanotify`, `procnet` — a red `procnet` is
-  usually a missing `ss`), and `journalctl -u deelpe | grep 'filesystems
+- Linux: `systemctl is-active deelpe` on every host — an agent that never
+  appears in the dashboard is nearly always a service that is not running,
+  not a network problem. Then both sensors green (`fanotify`, `procnet` — a
+  red `procnet` is usually a missing `ss`), and `journalctl -u deelpe | grep 'filesystems
   marked'` on one machine per filesystem layout. A protected folder on a
   filesystem missing from that line is not being watched.
 

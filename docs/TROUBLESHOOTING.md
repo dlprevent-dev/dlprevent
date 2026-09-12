@@ -85,6 +85,53 @@ trigger a read from a strict folder to see whether it is still true.
 Programs that are never caged (shell, browsers, critical processes) do not
 turn this red; that is the browser connector's job, not the cage's.
 
+## Linux
+
+**The agent never appears in the dashboard, or shows as offline.** Almost
+always the service, almost never the network. In this order:
+
+```bash
+systemctl is-active deelpe                              # 1
+sudo deelpe central status                              # 2
+sudo grep 'central:' /var/lib/deelpe/agent.log | tail   # 3
+```
+
+1. Not `active`: `sudo systemctl enable --now deelpe`, then
+   `journalctl -u deelpe -n 50 --no-pager` for why it did not come up on its
+   own. A package built before 2026-09-12 did not start the service at all,
+   so on a host installed from one of those this is always the reason. Those
+   packages carry the same version number as the ones that do start it —
+   `apt install` of the same version is a no-op, so use
+   `apt install --reinstall ./deelpe_*_amd64.deb` to replace one.
+2. "Not connected": the enrolment never landed. A token works once, so make
+   a new one in the dashboard.
+3. Every failure towards the central server is logged with this prefix —
+   certificate, fingerprint, refused connection.
+
+"Offline" in the dashboard means no report for three times the reporting
+interval, so about 90 seconds. A row that is there with "never seen" means
+the enrolment worked and only the reporting is failing; no row at all means
+the enrolment never reached the server (`nc -vz <server> 8444`).
+
+**`deelpe status` shows `fanotify` red.** The service needs root
+(`CAP_SYS_ADMIN`); a `User=` in the unit takes it away. The message names
+whether the mount table could not be read or whether no filesystem accepted
+a mark.
+
+**`procnet` red.** `ss` is missing — `apt install iproute2`. The package
+depends on it, so this only happens after a manual install of the binary.
+
+**A protected folder produces nothing.** Check it is on a filesystem
+fanotify actually marked:
+
+```bash
+journalctl -u deelpe | grep 'filesystems marked' | tail -1
+```
+
+Network filesystems are the ones to look for. Whether a CIFS or NFS mount
+takes a mark depends on the kernel, and a folder on one that did not is not
+being watched.
+
 ## Central server
 
 **Admin password lost.** No reset command; see

@@ -43,12 +43,27 @@ depends = "$auto, iproute2"
 section = "admin"
 priority = "optional"
 extended-description = "DLPrevent agent for Linux workstations and servers: watches which process reads from a protected folder and where it sends the data. Reports to the central server (deelpe-server). Needs root for fanotify."
+# The unit is not in here: cargo-deb installs it itself, see
+# `systemd-units` below. Listed in both places it would be packaged twice.
 assets = [
   ["target/release/deelpe", "usr/bin/", "755"],
-  ["../../packaging/deelpe.service", "lib/systemd/system/", "644"],
   ["../../docs/INSTALL.md", "usr/share/doc/deelpe/", "644"],
 ]
 maintainer-scripts = "../../packaging/deb-agent"
-# Not started by the installation: without enrollment the agent watches
-# nothing, and a service that runs for nothing only hides that.
-systemd-units = { enable = false }
+# Enabled and started by the installation, and restarted on upgrade — the
+# cargo-deb defaults.
+#
+# This used to be off, on the argument that an agent without an enrollment
+# watches nothing and a service running for nothing hides that. It hides
+# nothing: `deelpe status` and the dashboard both say "not connected" in
+# plain words. What it did instead was leave a dead service behind on every
+# machine that installed the package, showing up as an agent that never
+# appears — which is what happened on 2026-09-12. Windows starts its service
+# during the install and macOS lets the app do it; Linux was the one platform
+# where a finished install left nothing running.
+#
+# `unit-scripts` has to be said out loud: cargo-deb looks for the unit next
+# to the maintainer scripts, not among the assets, and silently ships a
+# package without any systemd handling at all when it finds none — which is
+# how the service came to need starting by hand.
+systemd-units = { unit-scripts = "../../packaging", unit-name = "deelpe" }

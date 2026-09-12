@@ -67,5 +67,5 @@ echo
 echo "   dist/$DEB"
 echo "   ${SHA%% *}"
 echo
-echo "   sudo apt install ./$DEB && sudo systemctl enable --now deelpe"
+echo "   sudo apt install ./$DEB        # enables and starts the service"
 echo "   then enroll: dashboard -> Agents -> Enroll agent -> Linux"

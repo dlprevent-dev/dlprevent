@@ -45,7 +45,7 @@
   /// The glob names the architecture on purpose: a plain `deelpe_*.deb` in a
   /// directory holding both builds matches the wrong one just as happily,
   /// and `dpkg` only says so once it is on the target machine.
-  const DEB_INSTALL = 'sudo apt install ./deelpe_*_amd64.deb\nsudo systemctl enable --now deelpe';
+  const DEB_INSTALL = 'sudo apt install ./deelpe_*_amd64.deb\nsystemctl is-active deelpe';
 
   const res = resource(async () => {
     const r = await Promise.all([api<Agent[]>('/api/agents'), api<Token[]>('/api/tokens'), api<Binary[]>('/api/binaries')]);
