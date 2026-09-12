@@ -959,6 +959,16 @@ the correlator follows a process and its children, not its brothers.
 | Blocking, network cage, killing the sender | ❌ | ✅ |
 | USB / external volume | ❌ | ✅ |
 
+**How a Linux process is identified, and what the learning phase does with
+it.** macOS has Apple's signature and Windows has a verified code signature;
+Linux has neither, so a process is the path of its binary plus that binary's
+SHA-256. The learning phase keys its pairs on exactly that
+(`hash:/usr/bin/curl:a1b2c3…` → destination), so an `apt upgrade` that
+replaces a program makes it a **new** identity: its traffic is reported as
+`new` once and has to be learned again. That is the security property doing
+its job — a changed binary is a different program — but expect a burst of
+`new` alerts after a large update round, and do not confirm them blindly.
+
 Whether a share was covered is not a guess: the first log line after every
 start names the filesystems that took a mark (`journalctl -u deelpe`). A
 protected folder on a filesystem missing from that list is not watched.
