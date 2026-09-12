@@ -899,6 +899,32 @@ program: there is no Linux installer stored there and no update it can order
 (`binaries::platform_for` returns `None`). The `.deb` goes out through your
 own channel, and an update is `apt install` plus a restart.
 
+### Checking that it works
+
+```bash
+echo test > /srv/GL/probe.md          # a write that actually writes
+sleep 5 && deelpe alerts              # → one alert, verdict "inbound"
+```
+
+**`touch` and `mkdir` produce nothing, and that is not a fault.** fanotify
+reports a write when a byte is written; `touch` creates an empty file
+without writing one, so no event comes into being at all. Directories are
+deliberately not reported either — browsing a folder carries nothing out. A
+`mv` from elsewhere on the same filesystem is invisible for the same reason:
+the content never moves, and the file keeps its creation time (see
+`deelpe_core::inbound`, which names that ceiling on all three platforms).
+Test with content, or with `cp`.
+
+Measured on 2026-09-12: `mkdir` and `touch` → nothing, `echo … >` and `cp`
+→ an `inbound` alert within three seconds.
+
+For the other direction — the one the agent is really for, reading out of a
+protected folder and sending it — two conditions have to be met or you will
+watch nothing happen: at least `min_bytes_out` bytes (4096 by default), and
+the connection has to still be open when the network sensor next polls
+(every three seconds). A `curl` that uploads two kilobytes and hangs up is
+correctly invisible.
+
 ### What Linux sees and what it does not
 
 | | Linux | Windows workstation |

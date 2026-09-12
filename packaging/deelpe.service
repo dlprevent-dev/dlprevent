@@ -1,6 +1,6 @@
 [Unit]
 Description=DLPrevent data-loss detection
-Documentation=https://git.example.com/owner/dlprevent
+Documentation=https://github.com/dlprevent-dev/dlprevent
 After=network.target
 
 [Service]
