@@ -919,11 +919,31 @@ Measured on 2026-09-12: `mkdir` and `touch` → nothing, `echo … >` and `cp`
 → an `inbound` alert within three seconds.
 
 For the other direction — the one the agent is really for, reading out of a
-protected folder and sending it — two conditions have to be met or you will
-watch nothing happen: at least `min_bytes_out` bytes (4096 by default), and
-the connection has to still be open when the network sensor next polls
-(every three seconds). A `curl` that uploads two kilobytes and hangs up is
-correctly invisible.
+protected folder and sending it — the same host can play both ends. Its own
+LAN address, not `127.0.0.1`: the sensor skips loopback, because nothing
+leaves the machine there.
+
+```bash
+head -c 300000 /dev/urandom | base64 > /srv/GL/probe.bin
+nc -l -p 9999 >/dev/null &
+nc "$(hostname -I | awk '{print $1}')" 9999 < /srv/GL/probe.bin &
+sleep 12 && deelpe alerts             # → one alert, the sender is `nc`
+```
+
+Three things have to hold, and missing any of them looks exactly like a
+broken agent:
+
+- **`deelpe status` shows `procnet` green.** Red means `ss` is missing, and
+  then no outbound alert can ever appear. `apt install iproute2`.
+- **At least `min_bytes_out` bytes** (4096 by default).
+- **The connection is still open at the next poll** (every three seconds).
+  Note the missing `-N` above: `nc -N` hangs up the moment the file is
+  through, the socket is gone before the sensor looks, and nothing is
+  reported. That is the polling ceiling, and the Mac has it too.
+
+One process has to do both the reading and the sending, as `nc` does here.
+`cat file | nc …` does not work: the reader and the sender are siblings, and
+the correlator follows a process and its children, not its brothers.
 
 ### What Linux sees and what it does not
 
