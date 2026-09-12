@@ -973,8 +973,9 @@ distributes.
 
 - **Built yourself, from the cloned repository:** `scripts/publish-agent.sh`
   builds the agent and puts it straight into the store of your own central
-  server. The route for everyone who stays current with `git pull` — see
-  [DEVELOPMENT.md](DEVELOPMENT.md).
+  server — on the build machine itself, or with `DEELPE_SSH=user@host` on the
+  server over there. The route for everyone who stays current with `git pull`
+  — see [DEVELOPMENT.md](DEVELOPMENT.md).
 - **Upload** under *Agents → agent program*. Always possible, nothing else
   needed.
 
