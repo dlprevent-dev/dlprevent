@@ -874,12 +874,25 @@ The platform button only picks which command is offered. The token itself is
 bound to no platform — the agent says what it is when it enrolls — so a
 token created before this button existed works just as well.
 
-Then:
+Then the protected folders, unless the dashboard distributes them:
 
 ```bash
-sudo deelpe watch add /srv/GL      # or let the dashboard distribute folders
+sudo deelpe watch add /srv/GL
+sudo deelpe watch add /home/ubuntu     # a whole home directory — see below
+sudo deelpe watch list
 deelpe alerts
 ```
+
+**A whole home directory works, and it is noisy.** Every read below it
+counts, `.cache`, `.config` and `.mozilla` included — a browser taints itself
+at start-up by reading its own profile, and from then on every upload it
+makes is a candidate. The dot-folder exemption in the correlator applies to
+copy *targets* only, not to reads.
+
+Where you can, name the folder the data is actually in
+(`/home/ubuntu/Documents`). If it has to be the whole home directory, leave
+the learning phase running for a day before you confirm it, or it learns the
+noise as normal.
 
 Only the token and the fingerprint come from the dashboard, never the
 program: there is no Linux installer stored there and no update it can order
