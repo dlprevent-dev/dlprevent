@@ -13,6 +13,13 @@ tracing.workspace = true
 chrono.workspace = true
 async-trait = "0.1"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# fanotify, fstat: the raw syscalls, no wrapper crate for three of them.
+libc = "0.2"
+# Linux has no signature the kernel vouches for, so the identity of a
+# process is the hash of its binary (`ProcessIdentity::Hashed`).
+sha2 = "0.11"
+
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62.2", features = [
   "Win32_Foundation",

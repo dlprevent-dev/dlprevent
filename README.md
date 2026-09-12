@@ -281,9 +281,14 @@ Stopping such an upload before it moves needs the browser to ask, and today
 only **Firefox** does — Chrome and Edge are reported after the fact, see
 [SERVER.md](docs/SERVER.md).
 
+The **Linux agent** (M3) reports as of 2026-09-12: fanotify for file access,
+`ss` for the bytes sent, the same binary and the same dashboard as the Mac,
+as a `.deb` for Debian and Ubuntu. It watches; blocking on Linux is not
+built.
+
 Next up is the Windows server agent (Z2, observe only), then locking down at
 the file server (Z3: lockdown by permission, blocking on mass access,
-emergency stop). Linux sensors (M3) follow. Blocking at the endpoint on macOS
+emergency stop). Blocking at the endpoint on macOS
 needs an Apple Developer account and is v2; on Windows the file-level layer
 reports and deletes the copy, while the upload itself is stopped by the
 browser connector and the network cage.
@@ -293,9 +298,9 @@ browser connector and the network cage.
 - **Windows kernel driver for customers.** A minifilter is the only way to
   refuse a copy *before* it happens. The lab version is removed; a shippable
   one needs an EV certificate and Microsoft attestation signing.
-- **Linux agent (M3).** Sensors for Linux workstations and file servers, so
-  a third platform reports into the same dashboard instead of only being
-  seen over syslog. Read-then-send detection first, strict folders after.
+- **Linux, the rest of it.** Read-then-send detection is in. Still missing:
+  the strict folder (no network cage, no stopping the sender), uploads over
+  QUIC — the kernel keeps no byte counter for UDP — and external volumes.
 - **macOS app signing.** Developer ID signature and notarization, so
   installation works without Gatekeeper overrides.
 - **Cloud hosting on request.** A hosted central server per customer,

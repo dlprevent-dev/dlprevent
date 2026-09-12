@@ -25,6 +25,7 @@ Where the data lives — this is also the checklist for uninstalling:
 |---|---|
 | Central server | `DEELPE_DATA_DIR` (default `/var/lib/deelpe-server`: `ca.pem`, `ca.key`, `server.pem`, `server.key`, `agents/` with the installers the enrollment command hands out), Postgres database `deelpe`, `/etc/deelpe-server/env` |
 | Mac | `/usr/local/bin/deelpe`, `/Library/LaunchDaemons/ch.deelpe.daemon.plist`, `~/Library/LaunchAgents/ch.deelpe.bar.plist`, `/etc/deelpe/` (`config.json`, `central.json`), `/var/lib/deelpe/` (warnings, state, learning phase, `agent.log`), `/var/log/deelpe.log`, `/var/run/deelpe.sock`, `/Applications/DLPrevent.app` |
+| Linux | `/usr/bin/deelpe`, `/lib/systemd/system/deelpe.service`, `/etc/deelpe/` (`config.json`, `central.json`), `/var/lib/deelpe/` (warnings, state, learning phase, `agent.log`), `/var/run/deelpe.sock` |
 | Windows | the EXE (recommended `C:\Program Files\deelpe\`), service `deelpe-winagent`, `C:\ProgramData\deelpe\` (`central.json`, `state.json`, `agent.log`, `agent.log.1`), registry key `HKLM\SOFTWARE\Policies\Mozilla\Firefox\ContentAnalysis` |
 
 ---
@@ -805,7 +806,112 @@ Auditing (entry "Everyone", Read).
 
 ---
 
-## 4. Mass rollout
+## 4. Agent on Linux
+
+The same program as on the Mac — `deelpe`, one binary, service plus CLI. What
+differs is underneath: the sensors are **fanotify** for file access and
+**`ss`** for the bytes sent, both built into Linux the way `eslogger` and
+`nettop` are built into macOS. No kernel module.
+
+### Installing
+
+Build machine (any Linux with Rust, or the Docker recipe in
+[DEVELOPMENT.md](DEVELOPMENT.md)):
+
+```bash
+cargo install cargo-deb
+cargo deb -p deelpe                        # → target/debian/deelpe_*.deb
+```
+
+Target machine, Debian or Ubuntu:
+
+```bash
+sudo apt install ./deelpe_*.deb            # pulls iproute2 along
+sudo systemctl enable --now deelpe
+deelpe status
+```
+
+Without `apt`, on any other distribution, the same binary works on its own:
+
+```bash
+sudo install -m 755 deelpe /usr/local/bin/deelpe
+sudo install -m 644 packaging/deelpe.service /etc/systemd/system/
+sudo sed -i 's#/usr/bin/deelpe#/usr/local/bin/deelpe#' /etc/systemd/system/deelpe.service
+sudo systemctl daemon-reload && sudo systemctl enable --now deelpe
+```
+
+The package deliberately does not start the service: without a protected
+folder or an enrollment the agent watches nothing, and a service running for
+nothing only hides that.
+
+### Why root
+
+`fanotify` needs `CAP_SYS_ADMIN`, and the agent reads the binary of every
+process it reports in order to identify it by its hash — Linux has no
+signature the kernel would vouch for. A `User=` in the unit would take both
+away.
+
+### Connecting to the central server
+
+Exactly as on the Mac; the command comes out of the dashboard under
+**Agents → Enroll agent**:
+
+```bash
+sudo deelpe central enroll https://dlp.company.local:8444 <token> --ca-sha256 <fingerprint>
+deelpe central status
+```
+
+Protected folders then come from the dashboard. Locally:
+
+```bash
+sudo deelpe watch add /srv/GL
+deelpe alerts
+```
+
+### What Linux sees and what it does not
+
+| | Linux | Windows workstation |
+|---|---|---|
+| Read from a protected folder | ✅ fanotify | ✅ ETW |
+| The copy elsewhere | ✅ (writes by a process that has just read) | ✅ |
+| Bytes sent per process | ✅ TCP, out of `tcp_info` | ✅ TCP and UDP |
+| Upload over QUIC/HTTP/3 | ❌ no byte counter in the kernel for UDP | ✅ |
+| A connection that opens and closes between two polls | ❌ (as on the Mac) | ✅ |
+| Rename, hard link as such | ❌ (a copy still shows as read + write) | ✅ |
+| Mounted CIFS/NFS share | depends on the kernel — the agent logs which filesystems took a mark | ✅ |
+| Blocking, network cage, killing the sender | ❌ | ✅ |
+| USB / external volume | ❌ | ✅ |
+
+The first line of the log after every start says what is actually being
+watched:
+
+```
+fanotify: 8 filesystems marked: / /dev /dev/shm /srv ...
+```
+
+If the share the protected folder lives on is missing there, the kernel
+refused the mark and the agent cannot see that folder. `journalctl -u deelpe`
+shows the reason at debug level.
+
+### Updating
+
+```bash
+sudo apt install ./deelpe_<new>.deb && sudo systemctl restart deelpe
+```
+
+### Uninstalling
+
+```bash
+sudo systemctl disable --now deelpe
+sudo apt purge deelpe
+sudo rm -rf /etc/deelpe /var/lib/deelpe /var/run/deelpe.sock
+```
+
+Revoke the agent in the dashboard afterwards.
+
+---
+
+## 5. Mass rollout
 
 ### Read this first: enrollment does not scale yet
 
@@ -1179,7 +1285,7 @@ Enrollment again per device:
 
 ---
 
-## 5. The central server gets a different address
+## 6. The central server gets a different address
 
 Three things hang off the address, and you only have to touch the first two:
 

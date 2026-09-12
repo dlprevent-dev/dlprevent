@@ -1,0 +1,9 @@
+#!/bin/sh
+set -e
+# The service creates both itself on the first start, but with the default
+# permissions. Alert file names come out of protected folders — they belong
+# to root and to nobody else.
+install -d -m 0700 /var/lib/deelpe
+install -d -m 0700 /etc/deelpe
+#DEBHELPER#
+exit 0
