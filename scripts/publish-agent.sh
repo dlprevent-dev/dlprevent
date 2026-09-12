@@ -38,9 +38,28 @@ NAME="deelpe-winagent.exe"
 
 die() { echo "error: $*" >&2; exit 1; }
 
+# The Windows program is cross-compiled, and this is where the three
+# prerequisites for that are checked — one at a time, because "cross build
+# failed" used to cover all three and the most common case of all: running
+# this script on the central server, which has no compiler on purpose and
+# never will. That one belongs on the machine that builds, with DEELPE_SSH
+# pointing over here.
+TARGET="x86_64-pc-windows-gnu"
+LINKER="x86_64-w64-mingw32-gcc"
+command -v cargo >/dev/null \
+  || die "no Rust toolchain on this machine. Build where the compiler is and let it reach the
+       central server: DEELPE_SSH=$(id -un)@$(hostname -f 2>/dev/null || hostname) scripts/publish-agent.sh"
+if command -v rustup >/dev/null && ! rustup target list --installed | grep -qx "$TARGET"; then
+  die "the target $TARGET is not installed: rustup target add $TARGET"
+fi
+command -v "$LINKER" >/dev/null \
+  || die "the mingw-w64 linker ($LINKER) is missing: brew install mingw-w64, or apt install gcc-mingw-w64-x86-64"
+
 echo "== building"
-( cd "$ROOT" && cargo build --release --target x86_64-pc-windows-gnu -p deelpe-winagent >/dev/null ) \
-  || die "cross build failed — is mingw-w64 missing? see docs/INSTALL.md"
+# Only the progress goes to /dev/null; whatever cargo has to say about a
+# failure belongs on the screen, not behind a guess of ours.
+( cd "$ROOT" && cargo build --release --target "$TARGET" -p deelpe-winagent >/dev/null ) \
+  || die "cross build failed — cargo's reason is above this line"
 [ -f "$EXE" ] || die "$EXE is missing"
 
 # The same check the server does on upload: it does not catch the malicious
