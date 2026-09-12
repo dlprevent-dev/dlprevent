@@ -282,9 +282,8 @@ only **Firefox** does — Chrome and Edge are reported after the fact, see
 [SERVER.md](docs/SERVER.md).
 
 The **Linux agent** (M3) reports as of 2026-09-12: fanotify for file access,
-`ss` for the bytes sent, the same binary and the same dashboard as the Mac,
-as a `.deb` for Debian and Ubuntu. It watches; blocking on Linux is not
-built.
+`ss` for the bytes sent, same binary and same dashboard as the Mac, as a
+`.deb` for Debian and Ubuntu. It watches; it does not block.
 
 Next up is the Windows server agent (Z2, observe only), then locking down at
 the file server (Z3: lockdown by permission, blocking on mass access,

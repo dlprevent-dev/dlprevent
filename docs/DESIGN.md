@@ -880,11 +880,8 @@ its own (it cannot block), and multi-tenancy "retrofitted later".
 ## Milestones
 
 1. **M3 (done, 2026-09-12):** Linux sensors and the systemd unit. fanotify
-   for file access, `ss` for the bytes sent. Two things are deliberately
-   missing and are named in the sensors themselves: an upload over QUIC
-   (UDP carries no byte counter in the kernel) and rename/hard link as
-   such — a copy still shows up as read plus write, which is what the
-   correlator works with. Blocking on Linux is not built; that is M4.
+   for file access, `ss` for the bytes sent. What is deliberately missing is
+   named in the sensors themselves; blocking on Linux is M4.
 2. **M4 (v2):** blocking at the endpoint's network. (USB/AirDrop shipped with
    the macOS agent on 2026-09-05.) Corresponds to Z5 above.
 3. **Z1–Z5:** the central server and the server agents, see the section above.

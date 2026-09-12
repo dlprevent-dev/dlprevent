@@ -69,10 +69,9 @@ Workspace: anyhow, serde_json, tokio, tracing, chrono. Plus `deelpe-core`.
 | sha2 | 0.11 | 0.11.0 | `cfg(target_os = "linux")` |
 | windows | 0.62.2 | 0.62.2 | `cfg(windows)` |
 
-`libc` covers three syscalls (`fanotify_init`, `fanotify_mark`, `fstat`) —
-a wrapper crate for that would be a dependency for nothing. `sha2` gives the
-Linux process its identity: there is no signature the kernel would vouch
-for, so it is the hash of the binary.
+`libc` covers three syscalls (`fanotify_init`, `fanotify_mark`, `fstat`);
+`sha2` gives a Linux process its identity, since there is no signature the
+kernel would vouch for.
 
 `windows` features here: Win32_Foundation, Win32_System_Diagnostics_Etw,
 Win32_System_Diagnostics_ToolHelp, Win32_System_Time, Win32_System_Threading,

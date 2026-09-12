@@ -170,30 +170,19 @@ change there is blind.
 
 **The same for `crates/deelpe-sensors/src/linux`: run `cargo linux`.** Both
 modules are `cfg(target_os = "linux")`, so a Mac build does not read them
-either. The alias type-checks them (`rustup target add
-x86_64-unknown-linux-gnu`, no linker needed).
+either (`rustup target add x86_64-unknown-linux-gnu`, no linker needed).
 
-Type-checking is not running, though — fanotify needs a real kernel and root.
-For that, Docker, which is also how the sensors were checked out in the first
-place (2026-09-12):
+Type-checking is not running, though — fanotify needs a real kernel and
+root. Docker, which is how the sensors were checked out in the first place
+(2026-09-12); the `nc` must **not** have `-N`, or the connection is gone
+before the network sensor polls again:
 
 ```bash
 docker volume create dlp-linux-target
-docker run --rm -v "$PWD":/src -v dlp-linux-target:/target -w /src \
-  -e CARGO_TARGET_DIR=/target rust:1.90-slim-bookworm \
-  bash -c 'cargo test -p deelpe-sensors'          # the pure parts
-```
-
-End to end, with the sensors actually running — `--privileged` for
-`CAP_SYS_ADMIN`, and a destination that is not loopback, because the network
-sensor skips those. The source tree stays mounted: the same container builds
-the binary it then starts.
-
-```bash
 docker run --rm --privileged -v "$PWD":/src -v dlp-linux-target:/target -w /src \
   -e CARGO_TARGET_DIR=/target rust:1.90-slim-bookworm bash -c '
   export PATH=/usr/local/cargo/bin:$PATH
-  cargo build -p deelpe
+  cargo test -p deelpe-sensors && cargo build -p deelpe
   apt-get update -qq && apt-get install -y -qq iproute2 netcat-openbsd
   ip link add dummy0 type dummy && ip addr add 10.99.0.1/24 dev dummy0 && ip link set dummy0 up
   mkdir -p /srv/GL && head -c 2000000 /dev/urandom | base64 > /srv/GL/zahlen.csv
@@ -204,14 +193,9 @@ docker run --rm --privileged -v "$PWD":/src -v dlp-linux-target:/target -w /src 
   /target/debug/deelpe status && /target/debug/deelpe alerts'
 ```
 
-One alert has to come out of that, with the reader as the sender. If it does
-not, `deelpe status` says which of the two sensors is red, and the first log
-line says which filesystems fanotify actually got a mark on.
-
-**No `-N` on that `nc`.** With it, the connection is gone before the network
-sensor polls again, and nothing is reported — correctly so, see the note in
-`linux/procnet.rs`. A test that hangs up immediately tests the hole, not the
-sensor.
+One alert has to come out of that. If it does not, `deelpe status` says
+which sensor is red, and the first log line says which filesystems fanotify
+got a mark on.
 
 Bitdefender: add an exception for `/usr/local/bin/deelpe`.
 
