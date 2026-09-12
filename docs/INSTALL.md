@@ -1035,7 +1035,8 @@ sc.exe qfailure deelpe-winagent
 
 Three routes into the central server's store, and all of them end there — from
 there it reaches the devices by the routes below. Which one fits depends on a
-single question: **who compiles**.
+single question: **who compiles**. Windows and macOS, that is: the Linux
+`.deb` is not kept here and takes your own channel, see section 4.
 
 | Who builds | Route | Effort per version |
 |---|---|---|
