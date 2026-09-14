@@ -531,8 +531,10 @@ report → update). Instructions: `docs/SERVER.md`.
   like every change to the service. The state comes over the new socket
   request `CentralStatus` → `Central(null | {url, agent_id, …})`, without the
   key and the certificate, readable by any local client. The token stands
-  briefly in the command line of the admin dialog (visible in `ps`); it is
-  single-use and burned after enrollment, so that is acceptable. An older
+  briefly in the command line of the admin dialog (visible in `ps`); a
+  single-use token is burned by the enrollment, so that is acceptable. A
+  rollout token (`max_uses` > 1) stays valid, which is why the dashboard
+  asks to delete it once the rollout is done. An older
   service answers `CentralStatus` with `Err`; the app then shows "Reinstall
   service…".
 - The interface `apps/web`: Svelte 5, Vite 8, TypeScript, no UI framework,

@@ -724,6 +724,38 @@ mod tests {
         assert_eq!(put(set).await.status(), StatusCode::OK);
     }
 
+    /// A rollout token: weeks instead of the one day a single machine needs,
+    /// and a count. Still usable after the first enrollment — including for
+    /// fetching the installer, which is the first line of the command.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_rollout_token_lasts_weeks_and_serves_many_devices(pool: sqlx::PgPool) {
+        let admin = test_session(&pool, "admin").await;
+        let st = test_app(pool.clone());
+        let app = router(st.clone());
+        let cookie = (header::COOKIE.as_str(), admin.as_str());
+        let created = response_json(send(&app, "POST", "/api/tokens", cookie, json!({ "label": "rollout", "hours": 24 * 7 * 8, "max_uses": 2000 })).await).await;
+        let expires: chrono::DateTime<chrono::Utc> = created["expires_at"].as_str().unwrap().parse().unwrap();
+        let weeks = (expires - chrono::Utc::now()).num_days();
+        assert!((55..=56).contains(&weeks), "eight weeks, not capped at two: {weeks} days");
+
+        let listed = response_json(get(&app, "/api/tokens", &admin).await).await;
+        assert_eq!((listed[0]["max_uses"].as_i64(), listed[0]["uses"].as_i64()), (Some(2000), Some(0)), "{listed}");
+
+        // Neither a count nor a lifetime without bounds.
+        let silly = response_json(send(&app, "POST", "/api/tokens", cookie, json!({ "label": "x", "hours": 1_000_000, "max_uses": 0 })).await).await;
+        let expires: chrono::DateTime<chrono::Utc> = silly["expires_at"].as_str().unwrap().parse().unwrap();
+        assert!((expires - chrono::Utc::now()).num_days() <= 365);
+        let min: i32 = sqlx::query_scalar("SELECT max_uses FROM enroll_tokens WHERE label = 'x'").fetch_one(&pool).await.unwrap();
+        assert_eq!(min, 1);
+
+        sqlx::query("UPDATE enroll_tokens SET uses = 1, used_at = now() WHERE label = 'rollout'").execute(&pool).await.unwrap();
+        let agent = crate::binaries::agent_router().with_state(st);
+        let token = created["token"].as_str().unwrap();
+        let download = send(&agent, "GET", "/agent/binary/windows", ("x-deelpe-token", token), serde_json::Value::Null).await;
+        // No program uploaded in the test: 404 means the token got through.
+        assert_eq!(download.status(), StatusCode::NOT_FOUND, "a partly used token still fetches the installer");
+    }
+
     #[sqlx::test(migrations = "./migrations")]
     async fn api_key_reads_only_and_only_while_switched_on(pool: sqlx::PgPool) {
         let admin = test_session(&pool, "admin").await;
