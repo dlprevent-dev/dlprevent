@@ -234,7 +234,8 @@ Ubuntu/Debian package.
   once; the command shown in the dashboard downloads it onto the device,
   checks its checksum and enrols in one go. The agent generates its own key,
   the dashboard's fingerprint pins the server, and a token is good for
-  exactly one enrolment. Enrolled agents report every 30 seconds and pick up
+  one device or, for a mass rollout, for as many as you set, for hours, days
+  or weeks. Enrolled agents report every 30 seconds and pick up
   protected folders from the server.
 - **Three roles from two artefacts:** Windows workstation and Windows file
   server share the same EXE, the role is chosen at enrolment; macOS gets the

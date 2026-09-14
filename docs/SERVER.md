@@ -885,7 +885,7 @@ are marked *(admin)*. Bodies and responses are JSON.
 | `GET /api/binaries`, `GET/POST/DELETE /api/binaries/{platform}` | agent installers: list; download, upload, remove *(upload/remove: admin)* |
 
 The agent port (8444) speaks a separate, smaller protocol: `GET /agent/ca`
-(the CA, no authentication), `POST /agent/enroll` (one-time token in, client
+(the CA, no authentication), `POST /agent/enroll` (token in, one use counted, client
 certificate out), `GET /agent/binary/{platform}` (the installer, checked by
 the enrollment command against its SHA-256), and with client certificate
 `POST /agent/report` and `POST /agent/renew`. The wire format is pinned in

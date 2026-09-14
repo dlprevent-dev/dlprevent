@@ -472,7 +472,8 @@ sudo deelpe central enroll https://dlp.company.local:8444 <token> --ca-sha256 <f
 deelpe central status
 ```
 
-A token is good for exactly one enrollment. From then on the service reports
+A token is good for as many enrollments as it was created for — one, unless
+you set **Devices** higher. From then on the service reports
 every 30 seconds and picks up the absolute rule paths from the central
 server.
 
@@ -990,37 +991,47 @@ Revoke the agent in the dashboard afterwards.
 
 ## 5. Mass rollout
 
-### Read this first: enrollment does not scale yet
+### Enrollment: one token for the whole rollout
 
-Deploying the software scales fine. **Enrollment does not.** A token is good
-for exactly one enrollment and is burned afterwards
-(`enroll_tokens.used_at`). For 200 machines that means 200 tokens created by
-hand in the dashboard — there is no bulk token today.
+Under **Agents → Enroll agent**, set **Devices** to the size of the rollout
+and **Valid for** to as many days or weeks as it will take (a year at most).
+The dashboard then shows one command that enrolls up to that many machines;
+each one gets its own key and certificate, only the token is shared. The token
+list shows how many have used it (`12/2000`).
 
-So a rollout has two halves, and only the first one automates cleanly:
-
-| Step | Automatable today |
+| Step | Automatable |
 |---|---|
 | Distribute the EXE / app bundle / `.deb`, install the service | **yes** — GPO, Ansible, Intune, SCCM |
-| Enroll (token, certificate) | **no** — one token per device, by hand |
+| Enroll (token, certificate) | **yes** — one rollout token, the same command everywhere |
 
-Two ways to live with that until bulk tokens exist:
+Three things to keep in mind:
 
-- **Staged rollout.** Deploy the software to everything, then enroll in
-  batches: create a token, run one command per machine. An agent without
-  enrollment does nothing and harms nothing — it simply stays offline.
-- **Enroll at provisioning time.** Where machines are set up individually
-  anyway (new hire, re-image), the enrollment is one more line in that
-  runbook and costs nothing extra.
+- **The token is a secret for as long as it is valid.** Anyone who has it can
+  enroll a device of their own until the count or the time runs out. Keep it
+  where your deployment tool keeps secrets, size it to the rollout rather than
+  to "plenty", and **delete it in the token list** once the rollout is done —
+  agents already enrolled are not affected. Every enrollment is in the audit
+  log with the token's label and the device's IP.
+- **Enroll only once per machine.** Every run of the enrollment command uses
+  up one enrollment and creates one more agent. A startup script that runs at
+  every boot has to check first — on Windows the enrollment lives in
+  `C:\ProgramData\deelpe\central.json`:
+
+  ```powershell
+  if (-not (Test-Path 'C:\ProgramData\deelpe\central.json')) {
+      & 'C:\Program Files\deelpe\deelpe-winagent.exe' enroll https://dlp.company.local:8444 <token> --ca-sha256 <fingerprint> --endpoint
+  }
+  ```
+
+  Leave out `--endpoint` for a file server.
+- **One token per role is clearer.** The token itself works for every kind of
+  device, but the command decides the role (`--endpoint`), and separate
+  tokens for workstations and file servers keep the count readable.
 
 Do **not** try to bake one enrollment into an image: `central.json` holds the
 device's private key. Clone it and every clone shares one identity — one
 `Revoke` then kills all of them, and the central server cannot tell them
-apart.
-
-> **Open item.** Bulk enrollment (a token with a use count and an expiry,
-> optionally bound to a network) is the missing piece. Until then, plan the
-> enrollment effort per device.
+apart. Put the rollout token into the image's first-boot script instead.
 
 ### Windows via group policy
 
@@ -1051,7 +1062,8 @@ if ($need) {
     Copy-Item $src $exe -Force
 }
 
-# Install the service once; enrollment stays manual (see above).
+# Install the service once. Enroll with the guarded command from the rollout
+# section above, before `service start`.
 if (-not (Get-Service deelpe-winagent -ErrorAction SilentlyContinue)) {
     & $exe service install | Out-Null
 }

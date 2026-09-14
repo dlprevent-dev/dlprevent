@@ -165,10 +165,10 @@ async fn agent_download(
         return Err(ApiError(StatusCode::UNAUTHORIZED, "enrollment token required".into()));
     }
     let hash = crate::auth::sha256_hex(&token);
-    let row: Option<(Option<chrono::DateTime<chrono::Utc>>, chrono::DateTime<chrono::Utc>)> =
-        sqlx::query_as("SELECT used_at, expires_at FROM enroll_tokens WHERE token_hash = $1").bind(&hash).fetch_optional(&st.pool).await?;
+    let row: Option<(bool, chrono::DateTime<chrono::Utc>)> =
+        sqlx::query_as("SELECT uses >= max_uses, expires_at FROM enroll_tokens WHERE token_hash = $1").bind(&hash).fetch_optional(&st.pool).await?;
     match row {
-        Some((None, exp)) if exp >= chrono::Utc::now() => {}
+        Some((false, exp)) if exp >= chrono::Utc::now() => {}
         _ => return Err(ApiError(StatusCode::UNAUTHORIZED, "token unknown, used or expired".into())),
     }
     let (name, bytes) = read(&st, &platform).ok_or_else(not_found)?;

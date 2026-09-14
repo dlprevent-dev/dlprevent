@@ -33,7 +33,14 @@ async fn sweep(state: &Shared) -> Result<()> {
     // fills the disk faster than anything else.
     let log_days = db::setting_i64(p, "log_retain_days", 14).await?;
     let sessions = sqlx::query("DELETE FROM sessions WHERE expires_at < now()").execute(p).await?.rows_affected();
-    let tokens = sqlx::query("DELETE FROM enroll_tokens WHERE (used_at IS NULL AND expires_at < now() - interval '7 days') OR used_at < now() - interval '30 days'")
+    // Never used: a week after expiry. Used: kept a month for the record,
+    // counted from when it stopped working — the last enrollment or the
+    // expiry, whichever came first. LEAST skips the NULL of a token that is
+    // not used up.
+    let tokens = sqlx::query(
+        "DELETE FROM enroll_tokens WHERE (uses = 0 AND expires_at < now() - interval '7 days') \
+         OR (uses > 0 AND LEAST(expires_at, CASE WHEN uses >= max_uses THEN used_at END) < now() - interval '30 days')",
+    )
         .execute(p)
         .await?
         .rows_affected();

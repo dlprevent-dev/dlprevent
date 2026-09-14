@@ -16,7 +16,11 @@
   let uploading = $state<string | null>(null);
   let created = $state<TokenCreated | null>(null);
   let label = $state('');
-  let hours = $state(24);
+  let validFor = $state(24);
+  let unit = $state<'hours' | 'days' | 'weeks'>('hours');
+  const UNIT_HOURS = { hours: 1, days: 24, weeks: 24 * 7 };
+  /// 1 is a token per device; more is one token for a whole rollout.
+  let maxUses = $state(1);
   /// Only decides which command the dashboard offers for copying — the token
   /// itself is valid for every kind.
   let platform = $state<'mac' | 'linux' | 'windows_server' | 'windows_client'>('mac');
@@ -190,12 +194,12 @@
 
   const tokenView = $derived(sortRows(tokens, tokenSort, (t, k) => ({
     label: t.label, created: t.created_at, expires: t.expires_at,
-    state: t.used_at ? 'used' : new Date(t.expires_at) < new Date() ? 'expired' : 'open',
+    state: t.uses >= t.max_uses ? 'used' : new Date(t.expires_at) < new Date() ? 'expired' : 'open',
   }[k])));
 
   async function createToken(e: Event) {
     e.preventDefault();
-    try { created = await api<TokenCreated>('/api/tokens', { method: 'POST', body: { label, hours, platform } }); label = ''; load(); } catch (err) { notify((err as Error).message, true); }
+    try { created = await api<TokenCreated>('/api/tokens', { method: 'POST', body: { label, hours: validFor * UNIT_HOURS[unit], max_uses: maxUses, platform } }); label = ''; load(); } catch (err) { notify((err as Error).message, true); }
   }
   async function copy(t: string) { await navigator.clipboard.writeText(t); notify('Copied'); }
   async function revoke(a: Agent) {
@@ -503,7 +507,7 @@
 </div>
 
 <div class="card">
-  <div class="card-head"><h2>Enrollment tokens</h2><span class="spacer"></span><span class="muted small">good for exactly one enrollment</span></div>
+  <div class="card-head"><h2>Enrollment tokens</h2><span class="spacer"></span><span class="muted small">good for as many enrollments as they were created for</span></div>
   {#if tokens.length === 0}
     <div class="empty"><span class="ico"><Icon name="key" size={24} /></span><b>No tokens</b><span>Open tokens stay here until they are used or expire.</span></div>
   {:else}
@@ -520,8 +524,8 @@
         {#each tokenView as t (t.id)}
           <tr>
             <td><strong>{t.label}</strong></td><td class="nowrap">{fmtTime(t.created_at)}</td><td class="nowrap">{fmtTime(t.expires_at)}</td>
-            <td>{#if t.used_at}<span class="badge ok">used {ago(t.used_at)}</span>{:else if new Date(t.expires_at) < new Date()}<span class="badge">expired</span>{:else}<span class="badge accent">open</span>{/if}</td>
-            <td class="nowrap">{#if admin && !t.used_at}<button class="btn sm ghost danger" onclick={() => delToken(t)} title="Delete" aria-label="Delete"><Icon name="trash" size={14} /></button>{/if}</td>
+            <td>{#if t.uses >= t.max_uses}<span class="badge ok">used {t.max_uses > 1 ? `up ${t.uses}/${t.max_uses}` : ''} {ago(t.used_at)}</span>{:else if new Date(t.expires_at) < new Date()}<span class="badge">expired{t.uses ? ` · ${t.uses}/${t.max_uses}` : ''}</span>{:else}<span class="badge accent">open{t.max_uses > 1 ? ` · ${t.uses}/${t.max_uses}` : ''}</span>{/if}</td>
+            <td class="nowrap">{#if admin && t.uses < t.max_uses}<button class="btn sm ghost danger" onclick={() => delToken(t)} title="Delete" aria-label="Delete"><Icon name="trash" size={14} /></button>{/if}</td>
           </tr>
         {/each}
       </tbody>
@@ -531,12 +535,18 @@
 </div>
 
 {#if showToken}
-  <Modal title="Enroll agent" subtitle={created ? 'The token is shown only once.' : 'One token per device.'} onclose={() => (showToken = false)}>
+  <Modal title="Enroll agent" subtitle={created ? 'The token is shown only once.' : 'One token per device, or one for a whole rollout.'} onclose={() => (showToken = false)}>
     {#if !created}
       <form id="token-form" onsubmit={createToken}>
         <div class="row">
           <div class="field"><label for="tl">Label (device)</label><input id="tl" type="text" bind:value={label} placeholder="mac-hans, fileserver-01" required /></div>
-          <div class="field" style="max-width:150px"><label for="th">Valid (hours)</label><input id="th" type="number" min="1" max="336" bind:value={hours} /></div>
+          <div class="field" style="max-width:110px"><label for="tu">Devices</label><input id="tu" type="number" min="1" max="100000" bind:value={maxUses} required /></div>
+        </div>
+        <div class="row" style="margin-top:10px">
+          <div class="field" style="max-width:110px"><label for="th">Valid for</label><input id="th" type="number" min="1" max={Math.floor(24 * 365 / UNIT_HOURS[unit])} bind:value={validFor} required /></div>
+          <div class="field" style="max-width:130px"><label for="tn">&nbsp;</label>
+            <select id="tn" bind:value={unit}><option value="hours">hours</option><option value="days">days</option><option value="weeks">weeks</option></select>
+          </div>
         </div>
         <div class="field" style="margin-top:10px"><span class="lbl">Device</span>
           <div class="seg">
@@ -575,7 +585,7 @@
             </div>
           </div>
         {/if}
-        <p class="hint" style="margin:0">The token is good for exactly one enrollment and is burned afterwards. The agent creates its own key; the central server only signs.</p>
+        <p class="hint" style="margin:0">{maxUses > 1 ? `The same command enrolls up to ${maxUses} devices; anyone holding it can enroll one until then, so keep it where your deployment tool keeps secrets and delete it when the rollout is done.` : 'The token is good for exactly one enrollment and is burned afterwards.'} The agent creates its own key; the central server only signs.</p>
       </form>
     {:else}
       {#if binFor(platform)?.present}

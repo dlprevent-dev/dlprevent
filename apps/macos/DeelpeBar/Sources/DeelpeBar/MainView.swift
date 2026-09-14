@@ -601,7 +601,7 @@ struct SettingsView: View {
                 }
             TextField("Server: IP, host name or https://host:8444", text: $enroll.url)
                 .textFieldStyle(.roundedBorder).font(.caption)
-            SecureField("Token (single use)", text: $enroll.token)
+            SecureField("Token", text: $enroll.token)
                 .textFieldStyle(.roundedBorder).font(.caption)
             TextField("CA SHA-256 fingerprint", text: $enroll.caSha256)
                 .textFieldStyle(.roundedBorder).font(.caption.monospaced())

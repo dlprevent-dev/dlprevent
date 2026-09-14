@@ -57,14 +57,14 @@ async fn enroll(State(st): State<Shared>, Extension(peer): Extension<PeerAddr>, 
         return Err(bad(format!("expects API version {}", API_VERSION)));
     }
     let hash = crate::auth::sha256_hex(req.token.trim());
-    type TokenRow = (Uuid, String, chrono::DateTime<Utc>, Option<chrono::DateTime<Utc>>);
+    type TokenRow = (Uuid, String, chrono::DateTime<Utc>, bool);
     let row: Option<TokenRow> =
-        sqlx::query_as("SELECT id, label, expires_at, used_at FROM enroll_tokens WHERE token_hash = $1").bind(&hash).fetch_optional(&st.pool).await?;
-    let Some((token_id, label, expires_at, used_at)) = row else {
+        sqlx::query_as("SELECT id, label, expires_at, uses >= max_uses FROM enroll_tokens WHERE token_hash = $1").bind(&hash).fetch_optional(&st.pool).await?;
+    let Some((token_id, label, expires_at, spent)) = row else {
         warn!(peer = %peer.0, "enrollment with an unknown token");
         return Err(ApiError(StatusCode::UNAUTHORIZED, "unknown token".into()));
     };
-    if used_at.is_some() {
+    if spent {
         return Err(ApiError(StatusCode::UNAUTHORIZED, "token already used".into()));
     }
     if expires_at < Utc::now() {
@@ -78,9 +78,9 @@ async fn enroll(State(st): State<Shared>, Extension(peer): Extension<PeerAddr>, 
     let (cert_pem, fp, not_after) = st.pki.sign_agent(&req.csr_pem, agent_id).map_err(|e| bad(format!("CSR: {e}")))?;
     let kind = serde_json::to_value(req.kind).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_else(|| "mac".into());
     let mut tx = st.pool.begin().await?;
-    // Burn the token atomically: two simultaneous enrollments with the same
-    // token end with exactly one agent.
-    let burned = sqlx::query("UPDATE enroll_tokens SET used_at = now(), used_by = $2 WHERE id = $1 AND used_at IS NULL")
+    // Count the use atomically: the row lock makes simultaneous enrollments
+    // queue up, so a token for N devices ends with at most N agents.
+    let burned = sqlx::query("UPDATE enroll_tokens SET uses = uses + 1, used_at = now(), used_by = $2 WHERE id = $1 AND uses < max_uses")
         .bind(token_id)
         .bind(agent_id)
         .execute(&mut *tx)
@@ -670,5 +670,60 @@ mod report_tests {
         let resp = report_with(&st, &fp, Some(g)).await;
         assert_eq!(resp.config.generation, g + 1);
         assert_eq!(resp.config.rules.len(), 1, "nach der Aenderung muss er sie bekommen");
+    }
+
+    async fn token_with_uses(pool: &PgPool, token: &str, max_uses: Option<i32>) {
+        let sql = match max_uses {
+            Some(_) => "INSERT INTO enroll_tokens (token_hash, label, expires_at, max_uses) VALUES ($1, 'T', now() + interval '1 day', $2)",
+            None => "INSERT INTO enroll_tokens (token_hash, label, expires_at) VALUES ($1, 'T', now() + interval '1 day')",
+        };
+        let q = sqlx::query(sql).bind(crate::auth::sha256_hex(token));
+        let q = match max_uses {
+            Some(n) => q.bind(n),
+            None => q,
+        };
+        q.execute(pool).await.unwrap();
+    }
+
+    async fn enroll_as(st: &Shared, token: &str, host: &str) -> Result<(), String> {
+        let key = rcgen::KeyPair::generate().unwrap();
+        let csr_pem = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap().serialize_request(&key).unwrap().pem().unwrap();
+        let req = EnrollRequest {
+            api_version: API_VERSION,
+            token: token.into(),
+            hostname: host.into(),
+            kind: deelpe_core::central::AgentKind::WindowsClient,
+            version: "0.1.0".into(),
+            csr_pem,
+        };
+        match enroll(State(st.clone()), Extension(PeerAddr("10.0.0.9:1".parse().unwrap())), Json(req)).await {
+            Ok(_) => Ok(()),
+            Err(ApiError(_, msg)) => Err(msg),
+        }
+    }
+
+    /// A mass rollout hands one token to every machine. It must stop at the
+    /// count it was created with, and a token created without one must stay
+    /// what it always was: good for exactly one enrollment.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_token_enrolls_as_many_devices_as_it_was_created_for(pool: PgPool) {
+        let st = state(pool.clone());
+        token_with_uses(&pool, "fleet", Some(2)).await;
+        token_with_uses(&pool, "single", None).await;
+
+        assert_eq!(enroll_as(&st, "fleet", "PC-1").await, Ok(()));
+        assert_eq!(enroll_as(&st, "fleet", "PC-2").await, Ok(()));
+        assert_eq!(enroll_as(&st, "fleet", "PC-3").await, Err("token already used".into()), "the third is one too many");
+
+        assert_eq!(enroll_as(&st, "single", "PC-4").await, Ok(()));
+        assert_eq!(enroll_as(&st, "single", "PC-5").await, Err("token already used".into()));
+
+        let (uses, used_by): (i32, Option<Uuid>) =
+            sqlx::query_as("SELECT uses, used_by FROM enroll_tokens WHERE label = 'T' AND max_uses = 2").fetch_one(&pool).await.unwrap();
+        assert_eq!(uses, 2);
+        let last: Uuid = sqlx::query_scalar("SELECT id FROM agents WHERE name = 'PC-2'").fetch_one(&pool).await.unwrap();
+        assert_eq!(used_by, Some(last), "used_by names the latest agent");
+        let agents: i64 = sqlx::query_scalar("SELECT count(*) FROM agents").fetch_one(&pool).await.unwrap();
+        assert_eq!(agents, 3);
     }
 }
