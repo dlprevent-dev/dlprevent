@@ -548,6 +548,9 @@ mod tests {
         let overview = response_json(get(&app, "/api/overview", &viewer).await).await;
         assert_eq!(overview["alerts_open"], 3, "new/flagged/no_profile/known are notices, not alarms");
         assert_eq!(overview["alerts_24h"], 3, "24h includes closed alarms but not old alarms or notices");
+        // The Central server card names the version this server runs.
+        assert_eq!(overview["server_version"], env!("CARGO_PKG_VERSION"));
+        assert!(overview["server_build"].as_str().is_some_and(|b| b.len() == 12), "{}", overview["server_build"]);
         let mut recent_ids: Vec<_> = overview["recent"].as_array().unwrap().iter().map(|a| a["id"].as_i64().unwrap()).collect();
         recent_ids.sort();
         assert_eq!(recent_ids, vec![1, 2, 8, 9]);
