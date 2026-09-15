@@ -87,9 +87,9 @@ pub(super) async fn revoke_agent(State(st): State<Shared>, Admin(user): Admin, P
 /// (one report cycle, 30 seconds out of the box) and clears itself away as
 /// soon as the agent runs the program that was waiting for it.
 pub(super) async fn request_update(State(st): State<Shared>, Admin(user): Admin, Path(id): Path<Uuid>) -> Result<StatusCode, ApiError> {
-    let row: Option<(String, String, Option<DateTime<Utc>>)> =
-        sqlx::query_as("SELECT name, kind, revoked_at FROM agents WHERE id = $1").bind(id).fetch_optional(&st.pool).await?;
-    let Some((name, kind, revoked_at)) = row else {
+    let row: Option<(String, String, Option<DateTime<Utc>>, Option<String>)> =
+        sqlx::query_as("SELECT name, kind, revoked_at, status->>'arch' FROM agents WHERE id = $1").bind(id).fetch_optional(&st.pool).await?;
+    let Some((name, kind, revoked_at, arch)) = row else {
         return Err(not_found());
     };
     if revoked_at.is_some() {
@@ -97,8 +97,8 @@ pub(super) async fn request_update(State(st): State<Shared>, Admin(user): Admin,
     }
     // What the agent cannot do is not ordered of it: otherwise the order
     // would stand open forever, because it never gets fulfilled.
-    let Some(platform) = crate::binaries::self_replacing_platform(&kind) else {
-        return Err(bad("this kind of agent cannot replace itself — see docs/INSTALL.md"));
+    let Some(platform) = crate::binaries::self_replacing_platform(&kind, arch.as_deref().unwrap_or_default()) else {
+        return Err(bad("this agent cannot replace itself (a Mac, or a Linux agent older than 0.1.4) — see docs/INSTALL.md"));
     };
     if crate::binaries::sha256_of(&st, platform).is_none() {
         return Err(bad("no agent program uploaded yet — upload it under Agents first"));

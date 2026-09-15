@@ -12,7 +12,7 @@ function bin(over = {}) {
 test('the agent list marks who runs a different program than the one uploaded', async () => {
   const server = await createServer({ server: { middlewareMode: true }, logLevel: 'error' });
   try {
-    const { agentOutdated, platformFor, selfReplacing, updateStuck } = await server.ssrLoadModule('/src/lib/api.ts');
+    const { agentOutdated, platformFor, selfReplacingPlatform, updateStuck } = await server.ssrLoadModule('/src/lib/api.ts');
 
     // The same mapping as `binaries::platform_for` on the server. Get it
     // wrong here and you show an agent as outdated that the server does not
@@ -25,12 +25,16 @@ test('the agent list marks who runs a different program than the one uploaded', 
     // macOS bundle. The server fixed exactly this in `platform_for`; this
     // side kept the old answer until the Linux agent shipped.
     assert.equal(platformFor('linux'), null);
-    assert.equal(selfReplacing('windows_server'), true);
-    assert.equal(selfReplacing('windows_client'), true);
-    assert.equal(selfReplacing('mac'), false);
-    assert.equal(selfReplacing('linux'), false);
+    assert.equal(selfReplacingPlatform('windows_server'), 'windows');
+    assert.equal(selfReplacingPlatform('windows_client'), 'windows');
+    assert.equal(selfReplacingPlatform('mac', 'arm64'), null);
+    // Linux by architecture, and not at all from an agent that does not say
+    // it (older than 0.1.4, and unable to replace itself anyway).
+    assert.equal(selfReplacingPlatform('linux', 'amd64'), 'linux-amd64');
+    assert.equal(selfReplacingPlatform('linux', 'arm64'), 'linux-arm64');
+    assert.equal(selfReplacingPlatform('linux'), null);
 
-    const agent = (build, kind = 'windows_server') => ({ kind, status: build === null ? null : { build } });
+    const agent = (build, kind = 'windows_server', arch) => ({ kind, status: build === null ? null : { build, arch } });
 
     // The most common case: the fingerprint is the start of the checksum.
     assert.equal(agentOutdated(agent(SHA.slice(0, 12)), [bin()]), false);
@@ -54,6 +58,12 @@ test('the agent list marks who runs a different program than the one uploaded', 
     // the same line on the server.
     assert.equal(agentOutdated(agent('0123456789ab', 'mac'), [bin({ platform: 'mac' })]), false);
     assert.equal(agentOutdated(agent('0123456789ab', 'linux'), [bin({ platform: 'mac' })]), false);
+    // A Linux agent is compared against its architecture's program only.
+    const linuxBin = bin({ platform: 'linux-amd64', file_name: 'deelpe-linux-amd64' });
+    assert.equal(agentOutdated(agent('0123456789ab', 'linux', 'amd64'), [linuxBin]), true);
+    assert.equal(agentOutdated(agent(SHA.slice(0, 12), 'linux', 'amd64'), [linuxBin]), false);
+    assert.equal(agentOutdated(agent('0123456789ab', 'linux', 'arm64'), [linuxBin]), false, 'no arm64 program staged');
+    assert.equal(agentOutdated(agent('0123456789ab', 'linux'), [linuxBin]), false, 'no architecture reported');
 
     // An order the agent has seen and not carried out. Without that
     // distinction the dashboard says "Update sent" forever and nobody knows

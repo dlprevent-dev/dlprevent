@@ -290,12 +290,20 @@ pub async fn run() -> Result<()> {
     // Central server (optional): reports status and alerts, fetches rules.
     let st = state.clone();
     let cages_central = cages.clone();
-    tokio::spawn(async move { central_loop(st, alerted, cages_central).await });
+    // The program was replaced: stop the way a SIGTERM would, and systemd
+    // (`Restart=always`) starts the new one.
+    let restart = Arc::new(tokio::sync::Notify::new());
+    let restart_central = restart.clone();
+    tokio::spawn(async move { central_loop(st, alerted, cages_central, restart_central).await });
 
     let result = tokio::select! {
         r = serve(state.clone()) => r,
         _ = shutdown_signal() => {
             tracing::info!("shutting down, saving memory");
+            Ok(())
+        }
+        _ = restart.notified() => {
+            tracing::info!("agent program replaced, stopping so the service manager starts the new one");
             Ok(())
         }
     };
@@ -312,7 +320,7 @@ pub async fn run() -> Result<()> {
 
 /// Without `central.json` the loop sleeps and checks once a minute whether
 /// an enrollment has happened. Errors do not hold the service up.
-async fn central_loop(st: Arc<Mutex<State>>, alerted: Arc<tokio::sync::Notify>, cages: Arc<Mutex<crate::cage::Cages>>) {
+async fn central_loop(st: Arc<Mutex<State>>, alerted: Arc<tokio::sync::Notify>, cages: Arc<Mutex<crate::cage::Cages>>, restart: Arc<tokio::sync::Notify>) {
     use deelpe::central::{self, CentralConfig, CentralState};
     use deelpe_core::session::Session;
     const UA: &str = concat!("deelpe/", env!("CARGO_PKG_VERSION"));
@@ -320,6 +328,8 @@ async fn central_loop(st: Arc<Mutex<State>>, alerted: Arc<tokio::sync::Notify>, 
     // session needs rebuilding.
     let mut session: Option<(String, Session)> = None;
     let mut cstate = CentralState::load();
+    // Counts the update attempts per checksum; see `deelpe_core::update::Updater`.
+    let mut updater = deelpe_core::update::Updater::default();
     loop {
         let cfg = match CentralConfig::load() {
             Ok(Some(c)) => c,
@@ -386,11 +396,15 @@ async fn central_loop(st: Arc<Mutex<State>>, alerted: Arc<tokio::sync::Notify>, 
                         // The cage fails open: its failure has to show in the
                         // dashboard, or it stops protecting while all is green.
                         .chain(std::iter::once(deelpe_core::central::SensorHealth { name: "network cage".into(), ok: cage_health.is_none(), error: cage_health.clone() }))
+                        // Can it renew itself? Linux only: the Mac service
+                        // sits in an app bundle and is not ordered to.
+                        .chain(cfg!(target_os = "linux").then(update_readiness))
                         .collect(),
                     watched: s.corr.config().watched.iter().map(|p| p.display().to_string()).collect(),
                     shares: Vec::new(),
                     learn_phase: serde_json::to_value(s.learner.phase(now)).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(),
                     addrs: deelpe_core::netaddr::local_addrs(),
+                    arch: deelpe_core::central::arch().into(),
                 }),
                 alerts: central::pending_alerts(s.alerts.alerts(), &mut cstate.sent),
                 // Only the server agent reports groups: on an endpoint
@@ -424,6 +438,9 @@ async fn central_loop(st: Arc<Mutex<State>>, alerted: Arc<tokio::sync::Notify>, 
                     learn,
                 } = resp;
                 cstate.tally.ok(chrono::Utc::now());
+                // Reported in on the new program: the previous one is no
+                // longer needed as the way back.
+                deelpe_core::update::cleanup_old();
                 if !report.alerts.is_empty() {
                     tracing::info!("central: reported {accepted_alerts} alerts");
                 }
@@ -443,6 +460,17 @@ async fn central_loop(st: Arc<Mutex<State>>, alerted: Arc<tokio::sync::Notify>, 
                 // them.
                 if !learn.is_empty() {
                     apply_learn(&st, &mut cstate, &learn).await;
+                }
+                if let Some(want) = &new_config.update_to_sha256 {
+                    match self_update(session, want, &mut updater).await {
+                        Ok(true) => {
+                            let _ = cstate.save();
+                            restart.notify_one();
+                            return;
+                        }
+                        Ok(false) => {}
+                        Err(e) => tracing::warn!("agent update: {e:#}"),
+                    }
                 }
             }
             Err(e) => {
@@ -464,6 +492,49 @@ async fn central_loop(st: Arc<Mutex<State>>, alerted: Arc<tokio::sync::Notify>, 
             } => {}
         }
     }
+}
+
+/// Replace this program with the one the central server holds ready.
+/// `Ok(true)`: swapped, the service has to restart into it.
+///
+/// Linux only. The central server orders it of a Linux agent that reports
+/// its architecture; the Mac is never ordered to (its program sits inside
+/// the app bundle), and a stray order there is refused here rather than
+/// swapping a binary out of a signed bundle.
+///
+/// `/usr/bin/deelpe` belongs to the `.deb`: after a swap `dpkg -V deelpe`
+/// reports it changed, and the next `apt install` of a package puts the
+/// package's file back — both expected.
+async fn self_update(session: &deelpe_core::session::Session, want: &str, tries: &mut deelpe_core::update::Updater) -> Result<bool> {
+    use deelpe_core::update::{can_replace, is_sha256, short, swap, verify};
+    if !cfg!(target_os = "linux") {
+        return Ok(false);
+    }
+    // Off the wire: shape first, before anything is cut or downloaded.
+    if !is_sha256(want) {
+        anyhow::bail!("central announced something that is not a SHA-256: {want:?}");
+    }
+    if !tries.may_try(want) {
+        return Ok(false);
+    }
+    let exe = std::env::current_exe().context("own path")?;
+    can_replace(&exe)?;
+    tracing::info!(want = short(want), "central holds a different agent program, fetching it");
+    let bytes = session.binary().await.context("downloading the agent program")?;
+    verify(&bytes, want)?;
+    // The permissions of the file it replaces: `fs::write` creates 0644.
+    swap(&exe, &bytes)?;
+    std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).context("making the new program executable")?;
+    tracing::info!(bytes = bytes.len(), want = short(want), "agent program replaced");
+    Ok(true)
+}
+
+/// Can this agent renew itself? As a sensor line for the dashboard, like
+/// the Windows agent's: otherwise "outdated" and "update sent" stand there
+/// and why nothing happens is only in the device's log.
+fn update_readiness() -> deelpe_core::central::SensorHealth {
+    let out = std::env::current_exe().map_err(anyhow::Error::from).and_then(|e| deelpe_core::update::can_replace(&e));
+    deelpe_core::central::SensorHealth { name: "self-update".into(), ok: out.is_ok(), error: out.err().map(|e| format!("{e:#}")) }
 }
 
 /// Carry out the central server's learning instructions. They carry this

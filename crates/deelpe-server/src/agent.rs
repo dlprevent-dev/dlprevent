@@ -219,9 +219,17 @@ const LEARN_DONE_MAX: usize = 500;
 /// decides whether the server **orders** an update; whoever asks here has
 /// already been given the checksum, and an agent that has the switch flipped
 /// mid-download should not be left standing there with half a file.
-async fn binary(State(st): State<Shared>, peer_cert: Option<Extension<PeerCert>>) -> Result<axum::response::Response, ApiError> {
+///
+/// The one thing the agent does say is its architecture: for Linux that picks
+/// between two programs of the same role. Unknown values find nothing.
+async fn binary(
+    State(st): State<Shared>,
+    peer_cert: Option<Extension<PeerCert>>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Result<axum::response::Response, ApiError> {
     let (agent, _) = authenticated_agent(&st, peer_cert).await?;
-    let platform = crate::binaries::platform_for(Some(agent.kind.as_str()))
+    let arch = q.get("arch").map(String::as_str).unwrap_or_default();
+    let platform = crate::binaries::program_for(&agent.kind, arch)
         .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "no agent program for this kind of agent".into()))?;
     let (name, bytes) = crate::binaries::read(&st, platform).ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "no agent program uploaded".into()))?;
     info!(agent = %agent.name, platform, bytes = bytes.len(), "agent fetches its program");
@@ -331,8 +339,9 @@ async fn report(State(st): State<Shared>, peer_cert: Option<Extension<PeerCert>>
     // `update_due`. Without a reported fingerprint it falls back to `false`,
     // and then nothing goes out even at the press of the button.
     let running = r.status.as_ref().map(|s| s.build.as_str()).unwrap_or_default();
+    let arch = r.status.as_ref().map(|s| s.arch.as_str()).unwrap_or_default();
     let wanted = if settings.agent_update_enabled || agent.update_requested.is_some() {
-        crate::binaries::self_replacing_platform(&agent.kind).and_then(|p| crate::binaries::sha256_of(&st, p))
+        crate::binaries::self_replacing_platform(&agent.kind, arch).and_then(|p| crate::binaries::sha256_of(&st, p))
     } else {
         None
     };
@@ -502,6 +511,11 @@ mod report_tests {
 
     /// A report that says which program this agent runs.
     async fn report_running(st: &Shared, fp: &str, build: &str) -> ReportResponse {
+        report_running_on(st, fp, build, "amd64").await
+    }
+
+    /// The same, on a named architecture (empty: an agent too old to say).
+    async fn report_running_on(st: &Shared, fp: &str, build: &str, arch: &str) -> ReportResponse {
         let peer = PeerAddr("10.0.0.9:1".parse().unwrap());
         let status = deelpe_core::central::AgentStatus {
             version: "0.1.0".into(),
@@ -514,6 +528,7 @@ mod report_tests {
             learn_phase: "active".into(),
             shares: Vec::new(),
             addrs: Vec::new(),
+            arch: arch.into(),
         };
         let r = Report { api_version: Some(API_VERSION), status: Some(status), ..Default::default() };
         match report(State(st.clone()), Some(Extension(PeerCert(fp.into()))), Extension(peer), Json(r)).await {
@@ -561,6 +576,36 @@ mod report_tests {
         // sent — otherwise every older agent downloads the same four and a
         // half megabytes with every report.
         assert_eq!(report_running(&st, &fp, "").await.config.update_to_sha256, None);
+
+        std::fs::remove_dir_all(&st.data_dir).ok();
+    }
+
+    /// Linux from 0.1.4 on: the program for the agent's architecture, and
+    /// only for an agent that reports one. The 0.1.3 agents in the field do
+    /// not; an order to them would stand open forever.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_linux_agent_is_ordered_its_architectures_program(pool: PgPool) {
+        let fp = "ef".repeat(32);
+        sqlx::query(
+            "INSERT INTO agents (id, name, kind, version, cert_fingerprint, cert_not_after) \
+             VALUES ($1, 'LNX-1', 'linux', '0.1.4', $2, now() + interval '1 year')",
+        )
+        .bind(Uuid::new_v4())
+        .bind(&fp)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let st = state(pool.clone());
+        let dir = st.data_dir.join("agents");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("deelpe-linux-amd64"), b"\x7fELF amd64").unwrap();
+        let sha = crate::binaries::sha256_of(&st, "linux-amd64").unwrap();
+        db::set_setting(&pool, "agent_update_enabled", serde_json::json!(true)).await.unwrap();
+
+        assert_eq!(report_running_on(&st, &fp, "0123456789ab", "amd64").await.config.update_to_sha256, Some(sha.clone()));
+        assert_eq!(report_running_on(&st, &fp, &sha[..12], "amd64").await.config.update_to_sha256, None, "already runs it");
+        assert_eq!(report_running_on(&st, &fp, "0123456789ab", "arm64").await.config.update_to_sha256, None, "no arm64 program staged");
+        assert_eq!(report_running_on(&st, &fp, "0123456789ab", "").await.config.update_to_sha256, None, "too old to say");
 
         std::fs::remove_dir_all(&st.data_dir).ok();
     }
@@ -631,8 +676,14 @@ mod report_tests {
         assert_eq!(crate::binaries::platform_for(Some("linux")), None);
         assert_eq!(crate::binaries::platform_for(Some("mac")), Some("mac"));
         assert_eq!(crate::binaries::platform_for(None), Some("mac"));
-        assert_eq!(crate::binaries::self_replacing_platform("mac"), None);
-        assert_eq!(crate::binaries::self_replacing_platform("windows_server"), Some("windows"));
+        assert_eq!(crate::binaries::self_replacing_platform("mac", "arm64"), None);
+        assert_eq!(crate::binaries::self_replacing_platform("windows_server", ""), Some("windows"));
+        // Linux by architecture — and not without one.
+        assert_eq!(crate::binaries::self_replacing_platform("linux", "amd64"), Some("linux-amd64"));
+        assert_eq!(crate::binaries::self_replacing_platform("linux", "arm64"), Some("linux-arm64"));
+        assert_eq!(crate::binaries::self_replacing_platform("linux", ""), None);
+        assert_eq!(crate::binaries::program_for("linux", "amd64"), Some("linux-amd64"));
+        assert_eq!(crate::binaries::program_for("mac", "arm64"), Some("mac"));
 
         std::fs::remove_dir_all(&st.data_dir).ok();
     }

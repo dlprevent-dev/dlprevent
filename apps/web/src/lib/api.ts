@@ -126,27 +126,31 @@ export function certState(notAfter: string): 'ok' | 'due' | 'expired' {
   return days <= CERT_RENEW_DAYS ? 'due' : 'ok';
 }
 
-/** Which binary belongs to a role. Workstation and file server share the
- *  same EXE on Windows. The same mapping as `binaries::platform_for` on the
- *  server, and it has to give the same answer — `null` included.
+/** Which binary the enrollment command installs for a role. Workstation and
+ *  file server share the same EXE on Windows. The same mapping as
+ *  `binaries::platform_for` on the server, and it has to give the same answer
+ *  — `null` included.
  *
- *  Linux has no binary here and that is deliberate: the `.deb` is built per
- *  architecture and `apt` owns the updates. The server learned this already;
- *  falling through to `'mac'` the way this did would offer a Linux machine
- *  the macOS bundle. */
+ *  Linux gets `null`: the first install is the `.deb`, per architecture, and
+ *  falling through to `'mac'` the way this did would offer a Linux machine the
+ *  macOS bundle. What a Linux agent later replaces itself with is
+ *  `selfReplacingPlatform`. */
 export function platformFor(kind: string | undefined): 'windows' | 'mac' | null {
   if (kind === 'windows_server' || kind === 'windows_client') return 'windows';
   return kind === 'linux' ? null : 'mac';
 }
 
-/** Roles whose running binary can be compared against the uploaded one. The
- *  same question as `binaries::self_replacing_platform` on the server, and it
- *  has to give the same answer: the macOS service reports the fingerprint of
- *  its executable, but what is staged is the zip around the bundle — the one
- *  checksum can never be the start of the other. Compare them here and every
- *  Mac gets labelled "outdated" forever. */
-export function selfReplacing(kind: string | undefined): boolean {
-  return kind === 'windows_server' || kind === 'windows_client';
+/** The program an agent of this role replaces itself with — the same question
+ *  as `binaries::self_replacing_platform` on the server, and it has to give the
+ *  same answer. Windows by role; Linux by the architecture the agent reports
+ *  (older agents report none and get `null`). Not the Mac: its service
+ *  reports the fingerprint of its executable, but what is staged is the zip
+ *  around the bundle — the one checksum can never be the start of the other,
+ *  and every Mac would be labelled "outdated" forever. */
+export function selfReplacingPlatform(kind: string | undefined, arch?: string): Binary['platform'] | null {
+  if (kind === 'windows_server' || kind === 'windows_client') return 'windows';
+  if (kind === 'linux' && (arch === 'amd64' || arch === 'arm64')) return `linux-${arch}`;
+  return null;
 }
 
 /** Is this agent running a different binary from the one staged in the
@@ -157,11 +161,12 @@ export function selfReplacing(kind: string | undefined): boolean {
  *  checksum of the uploaded one. The server asks the same question in
  *  `update_due` before it orders an update — here it is merely displayed,
  *  even when rollout is switched off. */
-export function agentOutdated(agent: { kind: string; status: { build?: string } | null }, binaries: Binary[]): boolean {
-  if (!selfReplacing(agent.kind)) return false;
+export function agentOutdated(agent: { kind: string; status: { build?: string; arch?: string } | null }, binaries: Binary[]): boolean {
+  const platform = selfReplacingPlatform(agent.kind, agent.status?.arch);
+  if (!platform) return false;
   const build = agent.status?.build;
   if (!build || build.length < 12) return false;
-  const bin = binaries.find((b) => b.platform === platformFor(agent.kind));
+  const bin = binaries.find((b) => b.platform === platform);
   if (!bin?.present || bin.sha256.length !== 64) return false;
   return !bin.sha256.toLowerCase().startsWith(build.toLowerCase());
 }

@@ -321,6 +321,7 @@ pub async fn run(mut stop: tokio::sync::watch::Receiver<bool>) -> Result<()> {
                     learn_phase: phase,
                     shares: Vec::new(),
                     addrs: deelpe_core::netaddr::local_addrs(),
+                    arch: deelpe_core::central::arch().into(),
                 },
                 s.pending.clone(),
                 configured,

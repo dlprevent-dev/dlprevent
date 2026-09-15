@@ -28,7 +28,17 @@ use sha2::{Digest, Sha256};
 /// same EXE under Windows — which loop it runs is decided by the enrollment
 /// (`--endpoint`) and afterwards stands in `central.json`. For macOS it is
 /// the app bundle; the service is created by the app itself.
-const KNOWN: &[(&str, &str)] = &[("windows", "deelpe-winagent.exe"), ("mac", "DLPrevent.zip")];
+///
+/// **Linux keeps the bare program, one per architecture**, not the `.deb`:
+/// the agent reports the fingerprint of `/usr/bin/deelpe`, and only the same
+/// file can be compared against it (`update_due`). The `.deb` is for the
+/// first install; from then on the agent replaces its program itself.
+const KNOWN: &[(&str, &str)] = &[
+    ("windows", "deelpe-winagent.exe"),
+    ("mac", "DLPrevent.zip"),
+    ("linux-amd64", "deelpe-linux-amd64"),
+    ("linux-arm64", "deelpe-linux-arm64"),
+];
 
 /// Generous: the Windows agent sits at ~4,5 MB, the Mac binary higher.
 const MAX_UPLOAD: usize = 64 * 1024 * 1024;
@@ -75,18 +85,32 @@ pub fn platform_for(kind: Option<&str>) -> Option<&'static str> {
     }
 }
 
+/// The program for an agent of this role on this architecture, as it
+/// fetches it itself: the enrollment's file for Windows and the Mac, the
+/// architecture's program for Linux. `arch` in Debian's spelling.
+pub fn program_for(kind: &str, arch: &str) -> Option<&'static str> {
+    platform_for(Some(kind)).or_else(|| self_replacing_platform(kind, arch))
+}
+
 /// Roles for which the central server may **order** an update — that is,
-/// the ones that can replace themselves.
+/// the ones that can replace themselves: Windows, and Linux on an
+/// architecture we keep a program for. An agent that does not say its
+/// architecture (older than the field) gets nothing.
 ///
-/// Only Windows, and that is not convenience: as its fingerprint the macOS
+/// Not the Mac, and that is not convenience: as its fingerprint the macOS
 /// service reports the one of its program file (`build_fingerprint` over
 /// `current_exe`), but what lies ready is the zip around the whole bundle.
 /// The one checksum can never be the beginning of the other — `update_due`
 /// would **always** be true there, and every Mac would get the same order
 /// in every answer, one that it cannot carry out. Whoever retrofits macOS
 /// first needs a fingerprint over the same artifact (ADR 0004).
-pub fn self_replacing_platform(kind: &str) -> Option<&'static str> {
-    matches!(kind, "windows_server" | "windows_client").then_some("windows")
+pub fn self_replacing_platform(kind: &str, arch: &str) -> Option<&'static str> {
+    match (kind, arch) {
+        ("windows_server" | "windows_client", _) => Some("windows"),
+        ("linux", "amd64") => Some("linux-amd64"),
+        ("linux", "arm64") => Some("linux-arm64"),
+        _ => None,
+    }
 }
 
 /// SHA-256 of the program lying ready, for the enrollment command and for
@@ -258,7 +282,10 @@ pub fn install(st: &Shared, platform: &str, bytes: &[u8]) -> anyhow::Result<()> 
     Ok(out?)
 }
 
-/// A Windows program starts with "MZ", a zip with "PK".
+/// A Windows program starts with "MZ", a zip with "PK", a Linux program with
+/// the ELF magic — and names its machine at byte 18: `amd64` is 62, `arm64`
+/// is 183. An arm64 program in the amd64 slot would start on no machine it
+/// is sent to.
 ///
 /// The test does not catch a malicious program — it catches the swapped
 /// file, and that is the mistake that really happens here. It deliberately
@@ -271,6 +298,17 @@ fn check_header(platform: &str, bytes: &[u8]) -> anyhow::Result<()> {
     match platform {
         "windows" if !bytes.starts_with(b"MZ") => anyhow::bail!("that is not a Windows program (no MZ header)"),
         "mac" if !bytes.starts_with(b"PK") => anyhow::bail!("that is not a zip archive (no PK header)"),
+        "linux-amd64" | "linux-arm64" => {
+            if !bytes.starts_with(b"\x7fELF") {
+                anyhow::bail!("that is not a Linux program (no ELF header) — upload the bare deelpe, not the .deb");
+            }
+            let machine = bytes.get(18..20).map(|m| u16::from_le_bytes([m[0], m[1]]));
+            let want = if platform == "linux-amd64" { 62 } else { 183 };
+            if machine != Some(want) {
+                anyhow::bail!("that Linux program is built for a different architecture than {platform}");
+            }
+            Ok(())
+        }
         _ => Ok(()),
     }
 }
@@ -287,6 +325,17 @@ mod tests {
         assert!(super::check_header("windows", b"\x7fELF").is_err());
         assert!(super::check_header("mac", b"MZ\x90\x00").is_err());
         assert!(super::check_header("windows", b"").is_err());
+        // Linux: ELF, and the right machine. The .deb (an `ar` archive) and
+        // the other architecture both fail.
+        let elf = |machine: u16| {
+            let mut b = b"\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00".to_vec();
+            b.extend_from_slice(&machine.to_le_bytes());
+            b
+        };
+        assert!(super::check_header("linux-amd64", &elf(62)).is_ok());
+        assert!(super::check_header("linux-arm64", &elf(183)).is_ok());
+        assert!(super::check_header("linux-amd64", &elf(183)).is_err());
+        assert!(super::check_header("linux-amd64", b"!<arch>\ndebian-binary").is_err());
         // An unknown platform has no header that we know; it fails even
         // earlier, at `path_for`.
         assert!(super::check_header("bsd", b"egal").is_ok());

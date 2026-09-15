@@ -1049,6 +1049,27 @@ The table is removed when the service stops, crashes included
 
 ### Updating and uninstalling
 
+**From the dashboard (agents from 0.1.4 on).** `scripts/build-agent-deb.sh`
+leaves `dist/deelpe-linux-amd64` (or `-arm64`) next to the `.deb`: the bare
+program, taken out of the package. Upload it under **Agents → Agent programs →
+Linux amd64**, never the `.deb` — the server refuses anything that is not a
+Linux program for that architecture. Then either press **Update** on one
+agent, or switch on "Update agents from here" (Settings → Interfaces) for all
+of them. The agent downloads over its own connection, checks the SHA-256,
+swaps `/usr/bin/deelpe` (the previous one stays as `deelpe.old` until the new
+one has reported in) and stops; systemd starts the new one. The sensor
+*self-update* says whether it can.
+
+An agent **older than 0.1.4** cannot do this — it does not report its
+architecture and has no code for it. That one version goes onto the machine
+the manual way below; from then on the dashboard rolls out.
+
+After a dashboard update `dpkg -V deelpe` reports `/usr/bin/deelpe` as
+changed, and `dpkg -l` still shows the package's version. Both are expected;
+the next `apt install` of a `.deb` puts the package's file back.
+
+**By hand:**
+
 ```bash
 sudo apt install ./deelpe_<new>.deb && sudo systemctl restart deelpe
 ```
@@ -1440,9 +1461,9 @@ Enrollment again per device:
 
 ### Linux via Ansible (or your own apt repo)
 
-Nothing comes from the dashboard here — there is no Linux artefact in its
-store, see "Where the program comes from". The `.deb` travels the way your
-other packages do.
+The **first install** does not come from the dashboard: the `.deb` travels the
+way your other packages do. Updates afterwards can (section 4, "Updating and
+uninstalling", from 0.1.4 on).
 
 Build it with `scripts/build-agent-deb.sh` (see section 4 — the architecture
 is the part that goes wrong silently). If you already run an internal apt
@@ -1456,7 +1477,7 @@ name=deelpe state=latest`. Without one, copy the file:
   tasks:
     - name: Copy package
       ansible.builtin.copy:
-        src: files/deelpe_0.1.3-1_amd64.deb
+        src: files/deelpe_0.1.4-1_amd64.deb
         dest: /tmp/deelpe.deb
       register: copied
 
