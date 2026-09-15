@@ -19,8 +19,9 @@
   let validFor = $state(24);
   let unit = $state<'hours' | 'days' | 'weeks'>('hours');
   const UNIT_HOURS = { hours: 1, days: 24, weeks: 24 * 7 };
-  /// 1 is a token per device; more is one token for a whole rollout.
-  let maxUses = $state(1);
+  /// Empty is any number of devices until the token is revoked; a number
+  /// caps it (1 is a token per device).
+  let maxUses = $state<number | null>(null);
   /// Only decides which command the dashboard offers for copying — the token
   /// itself is valid for every kind.
   let platform = $state<'mac' | 'linux' | 'windows_server' | 'windows_client'>('mac');
@@ -194,12 +195,12 @@
 
   const tokenView = $derived(sortRows(tokens, tokenSort, (t, k) => ({
     label: t.label, created: t.created_at, expires: t.expires_at,
-    state: t.uses >= t.max_uses ? 'used' : new Date(t.expires_at) < new Date() ? 'expired' : 'open',
+    state: spent(t) ? 'used' : new Date(t.expires_at) < new Date() ? 'expired' : 'open',
   }[k])));
 
   async function createToken(e: Event) {
     e.preventDefault();
-    try { created = await api<TokenCreated>('/api/tokens', { method: 'POST', body: { label, hours: validFor * UNIT_HOURS[unit], max_uses: maxUses, platform } }); label = ''; load(); } catch (err) { notify((err as Error).message, true); }
+    try { created = await api<TokenCreated>('/api/tokens', { method: 'POST', body: { label, hours: validFor * UNIT_HOURS[unit], max_uses: maxUses || undefined, platform } }); label = ''; load(); } catch (err) { notify((err as Error).message, true); }
   }
   async function copy(t: string) { await navigator.clipboard.writeText(t); notify('Copied'); }
   async function revoke(a: Agent) {
@@ -266,7 +267,9 @@
     finally { relBusy = ''; }
   }
 
+  const spent = (t: Token) => t.max_uses != null && t.uses >= t.max_uses;
   async function delToken(t: Token) {
+    if (!(await ask({ title: 'Revoke token', body: `"${t.label}" will no longer enroll any device.`, detail: 'Agents already enrolled with it keep running.', confirmLabel: 'Revoke', danger: true }))) return;
     try { await api(`/api/tokens/${t.id}`, { method: 'DELETE' }); load(); } catch (err) { notify((err as Error).message, true); }
   }
 </script>
@@ -524,8 +527,8 @@
         {#each tokenView as t (t.id)}
           <tr>
             <td><strong>{t.label}</strong></td><td class="nowrap">{fmtTime(t.created_at)}</td><td class="nowrap">{fmtTime(t.expires_at)}</td>
-            <td>{#if t.uses >= t.max_uses}<span class="badge ok">used {t.max_uses > 1 ? `up ${t.uses}/${t.max_uses}` : ''} {ago(t.used_at)}</span>{:else if new Date(t.expires_at) < new Date()}<span class="badge">expired{t.uses ? ` · ${t.uses}/${t.max_uses}` : ''}</span>{:else}<span class="badge accent">open{t.max_uses > 1 ? ` · ${t.uses}/${t.max_uses}` : ''}</span>{/if}</td>
-            <td class="nowrap">{#if admin && t.uses < t.max_uses}<button class="btn sm ghost danger" onclick={() => delToken(t)} title="Delete" aria-label="Delete"><Icon name="trash" size={14} /></button>{/if}</td>
+            <td>{#if spent(t)}<span class="badge ok">used {t.max_uses! > 1 ? `up ${t.uses}/${t.max_uses}` : ''} {ago(t.used_at)}</span>{:else if new Date(t.expires_at) < new Date()}<span class="badge">expired{t.uses ? ` · ${t.uses}${t.max_uses ? `/${t.max_uses}` : ''}` : ''}</span>{:else}<span class="badge accent">open{t.max_uses == null ? ` · ${t.uses} enrolled` : t.max_uses > 1 ? ` · ${t.uses}/${t.max_uses}` : ''}</span>{/if}</td>
+            <td class="nowrap">{#if admin && !spent(t)}<button class="btn sm ghost danger" onclick={() => delToken(t)} title="Revoke" aria-label="Revoke"><Icon name="trash" size={14} /></button>{/if}</td>
           </tr>
         {/each}
       </tbody>
@@ -540,7 +543,7 @@
       <form id="token-form" onsubmit={createToken}>
         <div class="row">
           <div class="field"><label for="tl">Label (device)</label><input id="tl" type="text" bind:value={label} placeholder="mac-hans, fileserver-01" required /></div>
-          <div class="field" style="max-width:110px"><label for="tu">Devices</label><input id="tu" type="number" min="1" max="100000" bind:value={maxUses} required /></div>
+          <div class="field" style="max-width:110px"><label for="tu">Devices</label><input id="tu" type="number" min="1" max="100000" bind:value={maxUses} placeholder="unlimited" /></div>
         </div>
         <div class="row" style="margin-top:10px">
           <div class="field" style="max-width:110px"><label for="th">Valid for</label><input id="th" type="number" min="1" max={Math.floor(24 * 365 / UNIT_HOURS[unit])} bind:value={validFor} required /></div>
@@ -585,7 +588,7 @@
             </div>
           </div>
         {/if}
-        <p class="hint" style="margin:0">{maxUses > 1 ? `The same command enrolls up to ${maxUses} devices; anyone holding it can enroll one until then, so keep it where your deployment tool keeps secrets and delete it when the rollout is done.` : 'The token is good for exactly one enrollment and is burned afterwards.'} The agent creates its own key; the central server only signs.</p>
+        <p class="hint" style="margin:0">{!maxUses ? 'The same command enrolls any number of devices until you revoke the token in the list; anyone holding it can enroll one until then, so keep it where your deployment tool keeps secrets and revoke it when the rollout is done.' : maxUses > 1 ? `The same command enrolls up to ${maxUses} devices; anyone holding it can enroll one until then, so keep it where your deployment tool keeps secrets and revoke it when the rollout is done.` : 'The token is good for exactly one enrollment and is burned afterwards.'} The agent creates its own key; the central server only signs.</p>
       </form>
     {:else}
       {#if binFor(platform)?.present}

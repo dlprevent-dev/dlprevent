@@ -59,7 +59,7 @@ async fn enroll(State(st): State<Shared>, Extension(peer): Extension<PeerAddr>, 
     let hash = crate::auth::sha256_hex(req.token.trim());
     type TokenRow = (Uuid, String, chrono::DateTime<Utc>, bool);
     let row: Option<TokenRow> =
-        sqlx::query_as("SELECT id, label, expires_at, uses >= max_uses FROM enroll_tokens WHERE token_hash = $1").bind(&hash).fetch_optional(&st.pool).await?;
+        sqlx::query_as("SELECT id, label, expires_at, COALESCE(uses >= max_uses, false) FROM enroll_tokens WHERE token_hash = $1").bind(&hash).fetch_optional(&st.pool).await?;
     let Some((token_id, label, expires_at, spent)) = row else {
         warn!(peer = %peer.0, "enrollment with an unknown token");
         return Err(ApiError(StatusCode::UNAUTHORIZED, "unknown token".into()));
@@ -79,8 +79,9 @@ async fn enroll(State(st): State<Shared>, Extension(peer): Extension<PeerAddr>, 
     let kind = serde_json::to_value(req.kind).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_else(|| "mac".into());
     let mut tx = st.pool.begin().await?;
     // Count the use atomically: the row lock makes simultaneous enrollments
-    // queue up, so a token for N devices ends with at most N agents.
-    let burned = sqlx::query("UPDATE enroll_tokens SET uses = uses + 1, used_at = now(), used_by = $2 WHERE id = $1 AND uses < max_uses")
+    // queue up, so a token for N devices ends with at most N agents. Without
+    // a count (NULL) only deleting the token stops it.
+    let burned = sqlx::query("UPDATE enroll_tokens SET uses = uses + 1, used_at = now(), used_by = $2 WHERE id = $1 AND (max_uses IS NULL OR uses < max_uses)")
         .bind(token_id)
         .bind(agent_id)
         .execute(&mut *tx)
@@ -702,28 +703,31 @@ mod report_tests {
         }
     }
 
-    /// A mass rollout hands one token to every machine. It must stop at the
-    /// count it was created with, and a token created without one must stay
-    /// what it always was: good for exactly one enrollment.
+    /// A token with a count stops at it. A token without one enrolls every
+    /// device of the rollout until it is revoked — deleted — and not a single
+    /// one after that.
     #[sqlx::test(migrations = "./migrations")]
-    async fn a_token_enrolls_as_many_devices_as_it_was_created_for(pool: PgPool) {
+    async fn a_token_enrolls_until_its_count_or_until_revoked(pool: PgPool) {
         let st = state(pool.clone());
         token_with_uses(&pool, "fleet", Some(2)).await;
-        token_with_uses(&pool, "single", None).await;
+        token_with_uses(&pool, "rollout", None).await;
 
         assert_eq!(enroll_as(&st, "fleet", "PC-1").await, Ok(()));
         assert_eq!(enroll_as(&st, "fleet", "PC-2").await, Ok(()));
         assert_eq!(enroll_as(&st, "fleet", "PC-3").await, Err("token already used".into()), "the third is one too many");
 
-        assert_eq!(enroll_as(&st, "single", "PC-4").await, Ok(()));
-        assert_eq!(enroll_as(&st, "single", "PC-5").await, Err("token already used".into()));
-
+        for i in 0..5 {
+            assert_eq!(enroll_as(&st, "rollout", &format!("R-{i}")).await, Ok(()), "no count means no limit");
+        }
         let (uses, used_by): (i32, Option<Uuid>) =
             sqlx::query_as("SELECT uses, used_by FROM enroll_tokens WHERE label = 'T' AND max_uses = 2").fetch_one(&pool).await.unwrap();
         assert_eq!(uses, 2);
         let last: Uuid = sqlx::query_scalar("SELECT id FROM agents WHERE name = 'PC-2'").fetch_one(&pool).await.unwrap();
         assert_eq!(used_by, Some(last), "used_by names the latest agent");
+
+        sqlx::query("DELETE FROM enroll_tokens WHERE max_uses IS NULL").execute(&pool).await.unwrap();
+        assert_eq!(enroll_as(&st, "rollout", "R-late").await, Err("unknown token".into()), "revoked means revoked");
         let agents: i64 = sqlx::query_scalar("SELECT count(*) FROM agents").fetch_one(&pool).await.unwrap();
-        assert_eq!(agents, 3);
+        assert_eq!(agents, 7, "revoking the token leaves the enrolled agents alone");
     }
 }

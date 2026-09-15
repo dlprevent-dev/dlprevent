@@ -166,7 +166,7 @@ async fn agent_download(
     }
     let hash = crate::auth::sha256_hex(&token);
     let row: Option<(bool, chrono::DateTime<chrono::Utc>)> =
-        sqlx::query_as("SELECT uses >= max_uses, expires_at FROM enroll_tokens WHERE token_hash = $1").bind(&hash).fetch_optional(&st.pool).await?;
+        sqlx::query_as("SELECT COALESCE(uses >= max_uses, false), expires_at FROM enroll_tokens WHERE token_hash = $1").bind(&hash).fetch_optional(&st.pool).await?;
     match row {
         Some((false, exp)) if exp >= chrono::Utc::now() => {}
         _ => return Err(ApiError(StatusCode::UNAUTHORIZED, "token unknown, used or expired".into())),

@@ -472,8 +472,8 @@ sudo deelpe central enroll https://dlp.company.local:8444 <token> --ca-sha256 <f
 deelpe central status
 ```
 
-A token is good for as many enrollments as it was created for — one, unless
-you set **Devices** higher. From then on the service reports
+A token enrolls any number of devices until you revoke it in the token list —
+unless you set **Devices**, then it stops at that count. From then on the service reports
 every 30 seconds and picks up the absolute rule paths from the central
 server.
 
@@ -993,11 +993,12 @@ Revoke the agent in the dashboard afterwards.
 
 ### Enrollment: one token for the whole rollout
 
-Under **Agents → Enroll agent**, set **Devices** to the size of the rollout
-and **Valid for** to as many days or weeks as it will take (a year at most).
-The dashboard then shows one command that enrolls up to that many machines;
-each one gets its own key and certificate, only the token is shared. The token
-list shows how many have used it (`12/2000`).
+Under **Agents → Enroll agent**, leave **Devices** empty and set **Valid for**
+to as many days or weeks as the rollout will take (a year at most). The
+dashboard then shows one command that enrolls every machine until you
+**revoke** the token in the token list; each one gets its own key and
+certificate, only the token is shared. The token list shows how many have used
+it (`1000 enrolled`). A number in **Devices** caps it instead.
 
 | Step | Automatable |
 |---|---|
@@ -1007,9 +1008,9 @@ list shows how many have used it (`12/2000`).
 Three things to keep in mind:
 
 - **The token is a secret for as long as it is valid.** Anyone who has it can
-  enroll a device of their own until the count or the time runs out. Keep it
-  where your deployment tool keeps secrets, size it to the rollout rather than
-  to "plenty", and **delete it in the token list** once the rollout is done —
+  enroll a device of their own until you revoke it or its time runs out. Keep
+  it where your deployment tool keeps secrets and **revoke it in the token
+  list** once the rollout is done —
   agents already enrolled are not affected. Every enrollment is in the audit
   log with the token's label and the device's IP.
 - **Enroll only once per machine.** Every run of the enrollment command uses

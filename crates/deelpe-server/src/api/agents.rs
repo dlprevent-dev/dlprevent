@@ -145,7 +145,7 @@ pub(super) struct TokenRow {
     expires_at: DateTime<Utc>,
     used_at: Option<DateTime<Utc>>,
     used_by: Option<Uuid>,
-    max_uses: i32,
+    max_uses: Option<i32>,
     uses: i32,
 }
 
@@ -155,7 +155,7 @@ pub(super) const TOKEN_COLS: &str = "id, label, created_at, expires_at, used_at,
 /// single-device tokens made meanwhile must not push it out of the list —
 /// the list is where it gets deleted.
 pub(super) async fn tokens(State(st): State<Shared>, _u: Admin) -> R<Vec<TokenRow>> {
-    let sql = format!("SELECT {TOKEN_COLS} FROM enroll_tokens ORDER BY (uses < max_uses AND expires_at > now()) DESC, created_at DESC LIMIT 100");
+    let sql = format!("SELECT {TOKEN_COLS} FROM enroll_tokens ORDER BY (COALESCE(uses < max_uses, true) AND expires_at > now()) DESC, created_at DESC LIMIT 100");
     Ok(Json(sqlx::query_as(sqlx::AssertSqlSafe(sql)).fetch_all(&st.pool).await?))
 }
 
@@ -164,10 +164,10 @@ pub(super) struct TokenBody {
     label: String,
     #[serde(default = "d24")]
     hours: i64,
-    /// How many agents may enroll with it. One per device by hand, or one
-    /// for a whole rollout.
-    #[serde(default = "d1")]
-    max_uses: i32,
+    /// How many agents may enroll with it. Without a value any number,
+    /// until the token is deleted after the rollout.
+    #[serde(default)]
+    max_uses: Option<i32>,
     /// Which kind of device the command is for: `mac`, `linux`,
     /// `windows_server` or `windows_client`. Without a value, the Mac — the
     /// way it was before.
@@ -250,9 +250,6 @@ open /Applications/DLPrevent.app"
 fn d24() -> i64 {
     24
 }
-fn d1() -> i32 {
-    1
-}
 
 #[derive(Serialize)]
 pub(super) struct TokenCreated {
@@ -276,7 +273,7 @@ pub(super) async fn create_token(State(st): State<Shared>, Admin(user): Admin, h
     // A year at most: a rollout runs for weeks, but a token nobody remembers
     // should not outlive the people who made it.
     let hours = b.hours.clamp(1, 24 * 365);
-    let max_uses = b.max_uses.clamp(1, 100_000);
+    let max_uses = b.max_uses.map(|n| n.clamp(1, 100_000));
     let token = auth::random_token();
     let expires_at = Utc::now() + Duration::hours(hours);
     let (id,): (Uuid,) = sqlx::query_as("INSERT INTO enroll_tokens (token_hash, label, created_by, expires_at, max_uses) VALUES ($1, $2, $3, $4, $5) RETURNING id")
