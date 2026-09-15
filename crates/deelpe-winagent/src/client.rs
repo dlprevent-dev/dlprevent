@@ -322,6 +322,7 @@ pub async fn run(mut stop: tokio::sync::watch::Receiver<bool>) -> Result<()> {
                     shares: Vec::new(),
                     addrs: deelpe_core::netaddr::local_addrs(),
                     arch: deelpe_core::central::arch().into(),
+                    learn_until: s.learner.status(Utc::now()).until,
                 },
                 s.pending.clone(),
                 configured,
@@ -373,6 +374,16 @@ pub async fn run(mut stop: tokio::sync::watch::Receiver<bool>) -> Result<()> {
                 // runs the current one would otherwise never get a new
                 // program.
                 let want_update = new_config.update_to_sha256.clone();
+                // The operator ended the learning phase in the dashboard. Not
+                // tied to the generation either, and idempotent: the server
+                // stops asking once the status says "active".
+                if new_config.finish_learning {
+                    let mut s = state.lock().await;
+                    if s.learner.phase(Utc::now()) != deelpe_core::learn::Phase::Active {
+                        s.learner.confirm();
+                        info!("central: learning phase finished, {} pairs known", s.learner.pair_count());
+                    }
+                }
                 st.tally.ok(Utc::now());
                 // An accepted report means: this program really runs. Now
                 // the previous version may go.
@@ -420,7 +431,7 @@ pub async fn run(mut stop: tokio::sync::watch::Receiver<bool>) -> Result<()> {
                     // ruleset version that is meant to survive a restart. An
                     // update applies once, and after the restart the agent
                     // runs the new program anyway.
-                    st.central_config = Some(deelpe_core::central::AgentConfig { update_to_sha256: None, ..new_config });
+                    st.central_config = Some(deelpe_core::central::AgentConfig { update_to_sha256: None, finish_learning: false, ..new_config });
                 }
                 if let Some(want) = want_update {
                     if let Err(e) = crate::update::apply(&session, &want, &mut updater).await {

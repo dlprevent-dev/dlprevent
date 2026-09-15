@@ -350,6 +350,7 @@ mod tests {
             rules: Vec::new(),
             allow_processes: Vec::new(),
             update_to_sha256: None,
+            finish_learning: false,
         });
         let back: AgentState = serde_json::from_str(&serde_json::to_string(&st).unwrap()).unwrap();
         let c = back.central_config.expect("rules survive a restart");

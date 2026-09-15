@@ -171,6 +171,23 @@ export function agentOutdated(agent: { kind: string; status: { build?: string; a
   return !bin.sha256.toLowerCase().startsWith(build.toLowerCase());
 }
 
+/** Can the dashboard finish this agent's learning phase, and does it still
+ *  need finishing? Only an endpoint learns pairs and waits in "review" for a
+ *  confirm; the file server's baseline ends by itself. The same line as
+ *  `agents::finish_learning` on the server. */
+export function canFinishLearning(agent: { kind: string; revoked_at: string | null; status: { learn_phase: string } | null }): boolean {
+  if (agent.revoked_at || agent.kind === 'windows_server') return false;
+  const phase = agent.status?.learn_phase;
+  return phase === 'learning' || phase === 'review';
+}
+
+/** Whole days an agent has been waiting in review, from `learn_until`.
+ *  `null` when it is not in review or does not say. */
+export function daysInReview(status: { learn_phase: string; learn_until?: string } | null, now = Date.now()): number | null {
+  if (status?.learn_phase !== 'review' || !status.learn_until) return null;
+  return Math.max(0, Math.floor((now - new Date(status.learn_until).getTime()) / 86400000));
+}
+
 /** This long an order may stay open without meaning anything. A check-in
  *  takes 30 seconds out of the box, plus the time to download the binary. */
 export const UPDATE_GRACE_MS = 90_000;

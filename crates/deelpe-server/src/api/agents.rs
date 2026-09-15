@@ -108,6 +108,44 @@ pub(super) async fn request_update(State(st): State<Shared>, Admin(user): Admin,
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Finish this agent's learning phase: what it learned counts as known, and
+/// from its next report on it reports new and deviating traffic.
+///
+/// Only an endpoint learns pairs and waits for a confirm; the file server
+/// agent's baseline ends by itself. The order goes out with the next answer
+/// and clears itself once the agent reports "active".
+pub(super) async fn finish_learning(State(st): State<Shared>, Admin(user): Admin, Path(id): Path<Uuid>) -> Result<StatusCode, ApiError> {
+    let row: Option<(String, String, Option<DateTime<Utc>>)> =
+        sqlx::query_as("SELECT name, kind, revoked_at FROM agents WHERE id = $1").bind(id).fetch_optional(&st.pool).await?;
+    let Some((name, kind, revoked_at)) = row else {
+        return Err(not_found());
+    };
+    if revoked_at.is_some() {
+        return Err(ApiError(StatusCode::CONFLICT, "the agent is revoked".into()));
+    }
+    if kind == "windows_server" {
+        return Err(bad("a file server agent ends its learning phase by itself"));
+    }
+    sqlx::query("UPDATE agents SET learn_confirm_requested = now() WHERE id = $1").bind(id).execute(&st.pool).await?;
+    db::audit(&st.pool, (&user).into(), "agent_finish_learning", json!({ "id": id, "name": name })).await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// The same for every endpoint agent that is still learning or waiting in
+/// review. Returns how many were asked.
+pub(super) async fn finish_learning_all(State(st): State<Shared>, Admin(user): Admin) -> R<serde_json::Value> {
+    let n = sqlx::query(
+        "UPDATE agents SET learn_confirm_requested = now() \
+         WHERE revoked_at IS NULL AND kind <> 'windows_server' AND learn_confirm_requested IS NULL \
+           AND COALESCE(status->>'learn_phase', '') IN ('learning', 'review')",
+    )
+    .execute(&st.pool)
+    .await?
+    .rows_affected();
+    db::audit(&st.pool, (&user).into(), "agent_finish_learning_all", json!({ "agents": n })).await;
+    Ok(Json(json!({ "agents": n })))
+}
+
 /// Remove a revoked agent for good. Revoke first, then delete: the
 /// revocation locks the certificate out, the deletion only tidies up
 /// afterwards — in a single step there would be no way to see whether a

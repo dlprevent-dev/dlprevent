@@ -336,7 +336,7 @@ mod tests {
             accepted_alerts: 0,
             accepted_access_alerts: 0,
             accepted_counts: 0,
-            config: AgentConfig { api_version: API_VERSION, generation: 1, report_interval_secs: interval, learn_days: 7, rules: Vec::new(), allow_processes: Vec::new(), update_to_sha256: None },
+            config: AgentConfig { api_version: API_VERSION, generation: 1, report_interval_secs: interval, learn_days: 7, rules: Vec::new(), allow_processes: Vec::new(), update_to_sha256: None, finish_learning: false },
             learn: Vec::new(),
         }
     }

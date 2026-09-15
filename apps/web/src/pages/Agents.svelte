@@ -2,7 +2,7 @@
   import { go, handoff, showAlertsFor } from '../lib/router.svelte';
   import { onMount } from 'svelte';
   import { resource } from '../lib/resource.svelte';
-  import { agentOutdated, api, ago, certState, fmtBytes, fmtTime, fmtUtc, platformFor, selfReplacingPlatform, updateStuck } from '../lib/api';
+  import { agentOutdated, api, ago, canFinishLearning, certState, daysInReview, fmtBytes, fmtTime, fmtUtc, platformFor, selfReplacingPlatform, updateStuck } from '../lib/api';
   import { notify, isAdmin } from '../lib/session.svelte';
   import { createSort, sortRows, matches } from '../lib/sort.svelte';
   import type { Agent, Binary, LogRow, ReleaseView, Token, TokenCreated } from '../lib/types';
@@ -216,6 +216,16 @@
     if (!(await ask({ title: 'Update this agent', body: `"${a.name}" will replace its program with ${bin?.file_name ?? 'the uploaded one'}.`, detail: 'It fetches the file on its next report, checks the checksum and restarts into it. If the new program does not come up, the agent goes offline and the previous one is still on the device as .old.', confirmLabel: 'Update' }))) return;
     try { await api(`/api/agents/${a.id}/update`, { method: 'POST' }); notify('Update requested — it goes out with the next report'); load(); } catch (err) { notify((err as Error).message, true); }
   }
+  /// End one agent's learning phase from here — "Confirm all" from afar. A
+  /// Windows workstation or a Linux server has no other way to do it.
+  async function finishLearning(a: Agent) {
+    if (!(await ask({ title: 'Finish learning', body: `"${a.name}" treats what it has learned as known.`, detail: 'From its next report on it reports new destinations and deviations instead of storing them silently. Pairs you do not recognise can still be flagged per alert afterwards.', confirmLabel: 'Finish learning' }))) return;
+    try { await api(`/api/agents/${a.id}/finish-learning`, { method: 'POST' }); notify('Sent — it goes out with the next report'); load(); } catch (err) { notify((err as Error).message, true); }
+  }
+  async function finishLearningAll(n: number) {
+    if (!(await ask({ title: 'Finish learning on all agents', body: `${n} agent${n === 1 ? '' : 's'} still learning or waiting for review will treat what they learned as known.`, detail: 'Each one reports new destinations and deviations from its next report on. File servers are not affected — their baseline ends by itself.', confirmLabel: 'Finish learning' }))) return;
+    try { const r = await api<{ agents: number }>('/api/agents/finish-learning', { method: 'POST' }); notify(`Sent to ${r.agents} agent${r.agents === 1 ? '' : 's'}`); load(); } catch (err) { notify((err as Error).message, true); }
+  }
   // Delete only after revoking: the revocation locks the certificate out,
   // the delete merely tidies up the list.
   async function deleteAgent(a: Agent) {
@@ -277,7 +287,11 @@
 
 <PageHead title="Agents">
   {#snippet actions()}
-    {#if admin}<button class="btn primary" onclick={() => { showToken = true; created = null; }}><Icon name="plus" size={15} /> Enroll agent</button>{/if}
+    {#if admin}
+      {@const learning = agents.filter((a) => canFinishLearning(a) && !a.learn_confirm_requested).length}
+      {#if learning}<button class="btn" onclick={() => finishLearningAll(learning)} title="Agents still learning or waiting in review keep unknown traffic silent until the phase is finished.">Finish learning ({learning})</button>{/if}
+      <button class="btn primary" onclick={() => { showToken = true; created = null; }}><Icon name="plus" size={15} /> Enroll agent</button>
+    {/if}
   {/snippet}
 </PageHead>
 
@@ -424,6 +438,13 @@
                   {:else if agentOutdated(a, binaries)}
                     <button class="btn sm ghost" onclick={(e) => { e.stopPropagation(); updateAgent(a); }} title="Have this one agent fetch the uploaded program on its next report — without the switch under Settings, which applies to all of them.">Update</button>
                   {/if}
+                  {#if canFinishLearning(a)}
+                    {#if a.learn_confirm_requested}
+                      <button class="btn sm ghost" disabled title="Requested {fmtTime(a.learn_confirm_requested)} — it goes out with the agent's next report and clears itself once the agent reports “active”.">Finishing…</button>
+                    {:else}
+                      <button class="btn sm ghost" onclick={(e) => { e.stopPropagation(); finishLearning(a); }} title="End the learning phase: what it learned counts as known, new and deviating traffic is reported from then on.">Finish learning</button>
+                    {/if}
+                  {/if}
                   <button class="btn sm ghost danger" onclick={(e) => { e.stopPropagation(); revoke(a); }}>Revoke</button>
                 {/if}
               {/if}
@@ -435,7 +456,7 @@
                 <div class="kv">
                   <span class="k">Host</span><span>{a.status.hostname}{#if a.status.fqdn}<div class="cell-2 mono" title="Fully qualified name. The short name above is resolved by mechanisms that can be spoofed — this is the one that counts as evidence.">{a.status.fqdn}</div>{/if}</span>
                   <span class="k">Service running since</span><span>{fmtTime(a.status.started_at)}</span>
-                  <span class="k">Learning phase</span><span>{a.status.learn_phase}</span>
+                  <span class="k">Learning phase</span><span>{a.status.learn_phase}{#if daysInReview(a.status) !== null} <span class="badge warn" title="Learning ended; the agent keeps unknown traffic silent until the phase is finished.">waiting for review {daysInReview(a.status)} d</span>{/if}</span>
                   <span class="k">Sensors</span><span>{#each a.status.sensors as s}<span class="badge {s.ok ? 'ok' : 'bad'}" title={s.error ?? ''}><span class="dot"></span> {s.name}</span> {/each}</span>
                   <span class="k">Protected folders</span><span>{#each a.status.watched as w}<div class="mono">{w}</div>{:else}<span class="muted">none</span>{/each}</span>
                   {#if a.status.shares?.length}

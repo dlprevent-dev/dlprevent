@@ -71,6 +71,8 @@ pub fn router(state: Shared) -> Router {
         .route("/api/agents/{id}", delete(agents::revoke_agent))
         .route("/api/agents/{id}/log", get(agents::agent_log))
         .route("/api/agents/{id}/update", post(agents::request_update))
+        .route("/api/agents/{id}/finish-learning", post(agents::finish_learning))
+        .route("/api/agents/finish-learning", post(agents::finish_learning_all))
         .route("/api/release", get(release::release))
         .route("/api/release/check", post(release::check))
         .route("/api/release/fetch", post(release::fetch))

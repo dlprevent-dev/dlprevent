@@ -1539,6 +1539,12 @@ What to look for in that output is below, under "After the rollout".
   red `procnet` is usually a missing `ss`), and `journalctl -u deelpe | grep 'filesystems
   marked'` on one machine per filesystem layout. A protected folder on a
   filesystem missing from that line is not being watched.
+- **After `learn_days` (7 by default): finish the learning phase.** It does
+  not end by itself. Until it is finished an endpoint keeps unknown traffic
+  silent and reports only strict folders and the hard limit. Dashboard →
+  Agents → **Finish learning** (per agent, or the button at the top for all
+  of them); the expanded row says how long an agent has been waiting for
+  review. File servers are not affected — their baseline ends by itself.
 
 ---
 

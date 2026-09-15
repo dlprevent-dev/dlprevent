@@ -397,10 +397,13 @@ pub struct AgentRow {
     /// switch. See migration 0013; `agent::report` clears it away as soon
     /// as the agent runs the staged program.
     pub update_requested: Option<DateTime<Utc>>,
+    /// An open order to finish the learning phase. See migration 0016;
+    /// `agent::report` clears it once the agent reports "active".
+    pub learn_confirm_requested: Option<DateTime<Utc>>,
 }
 
 pub const AGENT_COLS: &str =
-    "id, name, kind, version, cert_fingerprint, cert_not_after, enrolled_at, last_seen, last_addr, status, revoked_at, update_requested";
+    "id, name, kind, version, cert_fingerprint, cert_not_after, enrolled_at, last_seen, last_addr, status, revoked_at, update_requested, learn_confirm_requested";
 
 /// The agent for a client certificate. The previous fingerprint counts as
 /// long as `prev_cert_until` lies in the future: otherwise an agent locks
