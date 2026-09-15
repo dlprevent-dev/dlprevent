@@ -41,11 +41,12 @@ if [ -n "${DEVELOPER_ID:-}" ]; then
   cp "$FILTER_PROFILE" "$SYSX/Contents/embedded.provisionprofile"
   cp "$APP_PROFILE" "$APP/Contents/embedded.provisionprofile"
   sed "s/TEAM_ID/$TEAM_ID/g" Signing/Filter.entitlements > build/filter.entitlements
+  sed "s/TEAM_ID/$TEAM_ID/g" Signing/App.entitlements > build/app.entitlements
   SIGN=(codesign --force --options runtime --timestamp --sign "$DEVELOPER_ID")
   # Inside out: nested code first, the bundle around it last.
   "${SIGN[@]}" --entitlements build/filter.entitlements "$SYSX"
   "${SIGN[@]}" "$APP/Contents/MacOS/DeelpeCageRelay" "$APP/Contents/Resources/deelpe"
-  "${SIGN[@]}" --entitlements Signing/App.entitlements "$APP"
+  "${SIGN[@]}" --entitlements build/app.entitlements "$APP"
   codesign --verify --deep --strict "$APP"
   if [ -n "${NOTARY_PROFILE:-}" ]; then
     rm -f build/notarize.zip
