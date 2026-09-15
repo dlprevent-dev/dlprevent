@@ -38,8 +38,9 @@ tempfile = "3"
 name = "deelpe"
 maintainer = "de-el-pe"
 # iproute2 for `ss`: the network sensor reads the kernel's per-socket byte
-# counter out of it. `$auto` does not find that, it is not a library.
-depends = "$auto, iproute2"
+# counter out of it. nftables for the network cage of strict folders with
+# `enforce`. `$auto` finds neither, they are not libraries.
+depends = "$auto, iproute2, nftables"
 section = "admin"
 priority = "optional"
 extended-description = "DLPrevent agent for Linux workstations and servers: watches which process reads from a protected folder and where it sends the data. Reports to the central server (deelpe-server). Needs root for fanotify."

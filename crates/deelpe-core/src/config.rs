@@ -59,14 +59,14 @@ pub struct Strict {
     /// few hundred bytes of telemetry. A kill lands after the bytes are
     /// already out and prevents nothing.
     ///
-    /// What acts instead sits earlier, and on a Windows workstation only:
-    /// the browser connector refuses an upload before the first byte
+    /// What acts instead sits earlier: the network cage takes the network
+    /// from a program that has read from the folder without ending it (WFP
+    /// on Windows, `winagent::wfp`; nftables on Linux and the content filter
+    /// on macOS, `deelpe/src/cage.rs`). On a Windows workstation the browser
+    /// connector also refuses an upload before the first byte
     /// (`winagent::browser`, **Firefox only** — Chrome and Edge are
-    /// reported after the fact), the WFP cage takes the network from a program
-    /// that has read from the folder without ending it (`winagent::wfp`),
-    /// and a copy that left the folder is deleted again
-    /// ([`crate::enforce::Action::DeleteCopy`]). The Mac has no lever of its
-    /// own yet and reports. See ADR 0002.
+    /// reported after the fact), and a copy that left the folder is deleted
+    /// again ([`crate::enforce::Action::DeleteCopy`]). See ADR 0002.
     pub enforce: bool,
 }
 

@@ -29,11 +29,11 @@ export interface Agent {
   /** When somebody requested an update for this agent. `null` means none is pending. */
   update_requested: string | null;
 }
-export interface AgentStatus { version: string; /** First twelve hex digits of the SHA-256 of the agent file; empty on older agents. */ build?: string; hostname: string; /** Fully qualified name, if the device carries one; empty on older agents and outside a domain. */ fqdn?: string; started_at: string; sensors: { name: string; ok: boolean; error?: string }[]; watched: string[]; learn_phase: string; shares?: ShareInfo[]; addrs?: string[] }
+export interface AgentStatus { version: string; /** First twelve hex digits of the SHA-256 of the agent file; empty on older agents. */ build?: string; hostname: string; /** Fully qualified name, if the device carries one; empty on older agents and outside a domain. */ fqdn?: string; started_at: string; sensors: { name: string; ok: boolean; error?: string }[]; watched: string[]; learn_phase: string; shares?: ShareInfo[]; addrs?: string[]; /** `amd64`/`arm64`; empty on agents older than 0.1.4. */ arch?: string }
 /** One row from an agent's local log. */
 export interface LogRow { id: number; at: string; level: string; target: string; msg: string }
 export interface Source { id: string; name: string; kind: string; address: string; first_seen: string; last_seen: string | null; lines: number; unparsed: number }
-export interface Token { id: string; label: string; created_at: string; expires_at: string; used_at: string | null; used_by: string | null; max_uses: number; uses: number }
+export interface Token { id: string; label: string; created_at: string; expires_at: string; used_at: string | null; used_by: string | null; max_uses: number | null; uses: number }
 export interface TokenCreated { id: string; token: string; expires_at: string; agent_url: string; ca_sha256: string; command: string; enroll_command: string | null }
 export interface UserRow { id: string; name: string; role: Role; disabled: boolean; created_at: string; last_login: string | null; totp_enabled: boolean; passkeys: number }
 /** `abuseipdb_key` and `smtp_pass` only go in, never out: the server never
@@ -91,6 +91,8 @@ export interface AuditRow { id: number; at: string; user_name: string; action: s
 export interface Overview {
   agents: number; agents_online: number; sources: number; rules: number; alerts_open: number; alerts_24h: number;
   recent: Alert[]; ca_fingerprint: string; server_started: string; api_version: number;
+  /** `server_build` is empty when the server cannot read its own file. */
+  server_version: string; server_build: string;
 }
 export interface Counts { hours: number; per_hour: { hour: string; files: number; bytes: number }[]; top: { user_display: string; path: string; files: number; bytes: number }[] }
 
@@ -107,7 +109,7 @@ export interface ReleaseView {
   platforms: string[]; error: string | null;
 }
 export interface Binary {
-  platform: 'windows' | 'mac';
+  platform: 'windows' | 'mac' | 'linux-amd64' | 'linux-arm64';
   file_name: string;
   present: boolean;
   size: number;

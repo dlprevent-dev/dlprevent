@@ -548,6 +548,9 @@ mod tests {
         let overview = response_json(get(&app, "/api/overview", &viewer).await).await;
         assert_eq!(overview["alerts_open"], 3, "new/flagged/no_profile/known are notices, not alarms");
         assert_eq!(overview["alerts_24h"], 3, "24h includes closed alarms but not old alarms or notices");
+        // The Central server card names the version this server runs.
+        assert_eq!(overview["server_version"], env!("CARGO_PKG_VERSION"));
+        assert!(overview["server_build"].as_str().is_some_and(|b| b.len() == 12), "{}", overview["server_build"]);
         let mut recent_ids: Vec<_> = overview["recent"].as_array().unwrap().iter().map(|a| a["id"].as_i64().unwrap()).collect();
         recent_ids.sort();
         assert_eq!(recent_ids, vec![1, 2, 8, 9]);
@@ -725,7 +728,7 @@ mod tests {
     }
 
     /// A rollout token: weeks instead of the one day a single machine needs,
-    /// and a count. Still usable after the first enrollment — including for
+    /// and no count unless one is given. Still usable after a thousand enrollments — including for
     /// fetching the installer, which is the first line of the command.
     #[sqlx::test(migrations = "./migrations")]
     async fn a_rollout_token_lasts_weeks_and_serves_many_devices(pool: sqlx::PgPool) {
@@ -733,13 +736,13 @@ mod tests {
         let st = test_app(pool.clone());
         let app = router(st.clone());
         let cookie = (header::COOKIE.as_str(), admin.as_str());
-        let created = response_json(send(&app, "POST", "/api/tokens", cookie, json!({ "label": "rollout", "hours": 24 * 7 * 8, "max_uses": 2000 })).await).await;
+        let created = response_json(send(&app, "POST", "/api/tokens", cookie, json!({ "label": "rollout", "hours": 24 * 7 * 8 })).await).await;
         let expires: chrono::DateTime<chrono::Utc> = created["expires_at"].as_str().unwrap().parse().unwrap();
         let weeks = (expires - chrono::Utc::now()).num_days();
         assert!((55..=56).contains(&weeks), "eight weeks, not capped at two: {weeks} days");
 
         let listed = response_json(get(&app, "/api/tokens", &admin).await).await;
-        assert_eq!((listed[0]["max_uses"].as_i64(), listed[0]["uses"].as_i64()), (Some(2000), Some(0)), "{listed}");
+        assert!(listed[0]["max_uses"].is_null() && listed[0]["uses"].as_i64() == Some(0), "no count means unlimited: {listed}");
 
         // Neither a count nor a lifetime without bounds.
         let silly = response_json(send(&app, "POST", "/api/tokens", cookie, json!({ "label": "x", "hours": 1_000_000, "max_uses": 0 })).await).await;
@@ -748,12 +751,12 @@ mod tests {
         let min: i32 = sqlx::query_scalar("SELECT max_uses FROM enroll_tokens WHERE label = 'x'").fetch_one(&pool).await.unwrap();
         assert_eq!(min, 1);
 
-        sqlx::query("UPDATE enroll_tokens SET uses = 1, used_at = now() WHERE label = 'rollout'").execute(&pool).await.unwrap();
+        sqlx::query("UPDATE enroll_tokens SET uses = 1000, used_at = now() WHERE label = 'rollout'").execute(&pool).await.unwrap();
         let agent = crate::binaries::agent_router().with_state(st);
         let token = created["token"].as_str().unwrap();
         let download = send(&agent, "GET", "/agent/binary/windows", ("x-deelpe-token", token), serde_json::Value::Null).await;
         // No program uploaded in the test: 404 means the token got through.
-        assert_eq!(download.status(), StatusCode::NOT_FOUND, "a partly used token still fetches the installer");
+        assert_eq!(download.status(), StatusCode::NOT_FOUND, "a token without a count still fetches the installer after a thousand devices");
     }
 
     #[sqlx::test(migrations = "./migrations")]

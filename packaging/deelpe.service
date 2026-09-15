@@ -8,6 +8,10 @@ After=network.target
 # service reads the binary of every process it reports in order to identify
 # it by its hash.
 ExecStart=/usr/bin/deelpe daemon
+# The network cage fails open: whatever way the service ends, its nftables
+# table goes with it. Runs after a crash too. The `-` keeps a machine that
+# never had a cage (or no nft) from marking the stop as failed.
+ExecStopPost=-/usr/sbin/nft delete table inet deelpe_cage
 Restart=always
 RestartSec=2
 

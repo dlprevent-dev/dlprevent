@@ -87,9 +87,9 @@ pub(super) async fn revoke_agent(State(st): State<Shared>, Admin(user): Admin, P
 /// (one report cycle, 30 seconds out of the box) and clears itself away as
 /// soon as the agent runs the program that was waiting for it.
 pub(super) async fn request_update(State(st): State<Shared>, Admin(user): Admin, Path(id): Path<Uuid>) -> Result<StatusCode, ApiError> {
-    let row: Option<(String, String, Option<DateTime<Utc>>)> =
-        sqlx::query_as("SELECT name, kind, revoked_at FROM agents WHERE id = $1").bind(id).fetch_optional(&st.pool).await?;
-    let Some((name, kind, revoked_at)) = row else {
+    let row: Option<(String, String, Option<DateTime<Utc>>, Option<String>)> =
+        sqlx::query_as("SELECT name, kind, revoked_at, status->>'arch' FROM agents WHERE id = $1").bind(id).fetch_optional(&st.pool).await?;
+    let Some((name, kind, revoked_at, arch)) = row else {
         return Err(not_found());
     };
     if revoked_at.is_some() {
@@ -97,8 +97,8 @@ pub(super) async fn request_update(State(st): State<Shared>, Admin(user): Admin,
     }
     // What the agent cannot do is not ordered of it: otherwise the order
     // would stand open forever, because it never gets fulfilled.
-    let Some(platform) = crate::binaries::self_replacing_platform(&kind) else {
-        return Err(bad("this kind of agent cannot replace itself — see docs/INSTALL.md"));
+    let Some(platform) = crate::binaries::self_replacing_platform(&kind, arch.as_deref().unwrap_or_default()) else {
+        return Err(bad("this agent cannot replace itself (a Mac, or a Linux agent older than 0.1.4) — see docs/INSTALL.md"));
     };
     if crate::binaries::sha256_of(&st, platform).is_none() {
         return Err(bad("no agent program uploaded yet — upload it under Agents first"));
@@ -145,7 +145,7 @@ pub(super) struct TokenRow {
     expires_at: DateTime<Utc>,
     used_at: Option<DateTime<Utc>>,
     used_by: Option<Uuid>,
-    max_uses: i32,
+    max_uses: Option<i32>,
     uses: i32,
 }
 
@@ -155,7 +155,7 @@ pub(super) const TOKEN_COLS: &str = "id, label, created_at, expires_at, used_at,
 /// single-device tokens made meanwhile must not push it out of the list —
 /// the list is where it gets deleted.
 pub(super) async fn tokens(State(st): State<Shared>, _u: Admin) -> R<Vec<TokenRow>> {
-    let sql = format!("SELECT {TOKEN_COLS} FROM enroll_tokens ORDER BY (uses < max_uses AND expires_at > now()) DESC, created_at DESC LIMIT 100");
+    let sql = format!("SELECT {TOKEN_COLS} FROM enroll_tokens ORDER BY (COALESCE(uses < max_uses, true) AND expires_at > now()) DESC, created_at DESC LIMIT 100");
     Ok(Json(sqlx::query_as(sqlx::AssertSqlSafe(sql)).fetch_all(&st.pool).await?))
 }
 
@@ -164,10 +164,10 @@ pub(super) struct TokenBody {
     label: String,
     #[serde(default = "d24")]
     hours: i64,
-    /// How many agents may enroll with it. One per device by hand, or one
-    /// for a whole rollout.
-    #[serde(default = "d1")]
-    max_uses: i32,
+    /// How many agents may enroll with it. Without a value any number,
+    /// until the token is deleted after the rollout.
+    #[serde(default)]
+    max_uses: Option<i32>,
     /// Which kind of device the command is for: `mac`, `linux`,
     /// `windows_server` or `windows_client`. Without a value, the Mac — the
     /// way it was before.
@@ -250,9 +250,6 @@ open /Applications/DLPrevent.app"
 fn d24() -> i64 {
     24
 }
-fn d1() -> i32 {
-    1
-}
 
 #[derive(Serialize)]
 pub(super) struct TokenCreated {
@@ -276,7 +273,7 @@ pub(super) async fn create_token(State(st): State<Shared>, Admin(user): Admin, h
     // A year at most: a rollout runs for weeks, but a token nobody remembers
     // should not outlive the people who made it.
     let hours = b.hours.clamp(1, 24 * 365);
-    let max_uses = b.max_uses.clamp(1, 100_000);
+    let max_uses = b.max_uses.map(|n| n.clamp(1, 100_000));
     let token = auth::random_token();
     let expires_at = Utc::now() + Duration::hours(hours);
     let (id,): (Uuid,) = sqlx::query_as("INSERT INTO enroll_tokens (token_hash, label, created_by, expires_at, max_uses) VALUES ($1, $2, $3, $4, $5) RETURNING id")

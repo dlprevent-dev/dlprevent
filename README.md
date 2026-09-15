@@ -234,8 +234,8 @@ Ubuntu/Debian package.
   once; the command shown in the dashboard downloads it onto the device,
   checks its checksum and enrols in one go. The agent generates its own key,
   the dashboard's fingerprint pins the server, and a token is good for
-  one device or, for a mass rollout, for as many as you set, for hours, days
-  or weeks. Enrolled agents report every 30 seconds and pick up
+  one device or, for a mass rollout, for any number until you revoke it, for
+  hours, days or weeks. Enrolled agents report every 30 seconds and pick up
   protected folders from the server.
 - **Three roles from two artefacts:** Windows workstation and Windows file
   server share the same EXE, the role is chosen at enrolment; macOS gets the
@@ -298,11 +298,12 @@ browser connector and the network cage.
 - **Windows kernel driver for customers.** A minifilter is the only way to
   refuse a copy *before* it happens. The lab version is removed; a shippable
   one needs an EV certificate and Microsoft attestation signing.
-- **Linux, the rest of it.** Read-then-send detection is in. Still missing:
-  the strict folder (no network cage, no stopping the sender), uploads over
-  QUIC — the kernel keeps no byte counter for UDP — and external volumes.
-- **macOS app signing.** Developer ID signature and notarization, so
-  installation works without Gatekeeper overrides.
+- **Linux, the rest of it.** Read-then-send detection and the network cage
+  of strict folders are in. Still missing: uploads over QUIC — the kernel
+  keeps no byte counter for UDP — and external volumes.
+- **macOS app signing.** `build.sh` signs and notarizes with a Developer ID
+  (needed for the network filter, docs/INSTALL.md); the published app is not
+  built that way yet.
 - **Cloud hosting on request.** A hosted central server per customer,
   operated by us. Ask via info@dlprevent.ch.
 - **Finer-grained access control.** Today an account is either administrator

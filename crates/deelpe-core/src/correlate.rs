@@ -487,6 +487,17 @@ impl Correlator {
         std::mem::take(&mut self.tainted)
     }
 
+    /// The parent the correlator knows for this process.
+    pub fn parent_of(&self, pid: u32) -> Option<u32> {
+        self.parents.get(&pid).copied()
+    }
+
+    /// Who a touched process is, as far as the correlator knows. The cage
+    /// needs the name to decide whether it may take the network away.
+    pub fn touched_identity(&self, pid: u32) -> Option<&ProcessIdentity> {
+        self.touched.get(&pid).map(|t| &t.identity)
+    }
+
     pub fn config(&self) -> &Config {
         &self.cfg
     }

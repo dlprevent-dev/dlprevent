@@ -121,6 +121,7 @@
       <div class="card pad small">
         <h2>Central server</h2>
         <div class="kv">
+          <span class="k">Version</span><span class="mono">{o.server_version}{#if o.server_build}<span class="cell-2" title="First 12 characters of the server file's SHA-256 — compare with sha256sum on the host"> · {o.server_build}</span>{/if}</span>
           <span class="k">Running since</span><span>{fmtTime(o.server_started)}</span>
           <span class="k">CA fingerprint</span><span class="mono">{o.ca_fingerprint}</span>
           <span class="k">API version</span><span>{o.api_version}</span>

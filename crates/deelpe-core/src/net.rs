@@ -104,7 +104,9 @@ impl Client {
     /// The agent program that the central server keeps ready for **this**
     /// agent. Which platform is meant is decided by the central server from
     /// the certificate — the agent does not say it, and so cannot fetch
-    /// itself the program belonging to somebody else's role.
+    /// itself the program belonging to somebody else's role. Only the
+    /// architecture comes along: within its own role that is the one choice
+    /// left (Linux, `amd64` or `arm64`), and the Windows role ignores it.
     ///
     /// Nothing is checked here: the checksum is in the answer to the
     /// report, and whoever downloads has to hold it against the bytes
@@ -113,7 +115,7 @@ impl Client {
         // Its own timeout: the twenty seconds for a report are enough for
         // four and a half megabytes only on a fast line, and on a slow one
         // the agent would otherwise never get past the download.
-        let resp = self.http.get(format!("{}/agent/binary", self.url)).timeout(BINARY_TIMEOUT).send().await.context("Verbindung")?;
+        let resp = self.http.get(format!("{}/agent/binary?arch={}", self.url, crate::central::arch())).timeout(BINARY_TIMEOUT).send().await.context("Verbindung")?;
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();

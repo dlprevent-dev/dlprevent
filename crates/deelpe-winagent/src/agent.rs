@@ -117,6 +117,7 @@ pub async fn run(mut stop: tokio::sync::watch::Receiver<bool>) -> Result<()> {
                 learn_phase: learn_phase(&st.meters, learn_days),
                 shares: crate::shares::list(&st.share_paths),
                 addrs: deelpe_core::netaddr::local_addrs(),
+                arch: deelpe_core::central::arch().into(),
             }),
             alerts: Vec::new(),
             access_alerts: alerts.clone(),

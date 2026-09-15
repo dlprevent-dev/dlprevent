@@ -170,6 +170,10 @@ pub async fn run() -> Result<()> {
     // around until the next tick — the same promise as on the Windows
     // workstation (`winagent/src/client.rs`).
     let alerted = Arc::new(tokio::sync::Notify::new());
+    // The network cage of strict folders with `enforce`. Its own lock, as on
+    // the Windows workstation: putting a cage up talks to nft or the filter,
+    // and the reporting loop must not wait on that.
+    let cages = Arc::new(Mutex::new(crate::cage::Cages::new()));
 
     let (tx, mut rx) = mpsc::channel::<Event>(4096);
     for spec in specs {
@@ -207,15 +211,25 @@ pub async fn run() -> Result<()> {
 
     let st = state.clone();
     let alerted_ev = alerted.clone();
+    let cages_ev = cages.clone();
     tokio::spawn(async move {
         while let Some(ev) = rx.recv().await {
-            let outcome = {
+            let (outcome, touches) = {
                 let mut s = st.lock().await;
                 if matches!(ev, Event::File(_) | Event::Exit(_)) {
                     s.dirty = true;
                 }
-                s.corr.ingest(&ev)
+                (s.corr.ingest(&ev), fresh_touches(&mut s.corr))
             };
+            // The cage hangs off the touch, not off the finding: it has to
+            // be up before anybody sends (ADR 0002).
+            if !touches.is_empty() {
+                let now = Instant::now();
+                let mut c = cages_ev.lock().await;
+                for (pid, name, allow, children) in touches {
+                    c.on_touch(pid, &name, &allow, children, now);
+                }
+            }
             let Some(o) = outcome else { continue };
             let mut s = st.lock().await;
             s.learn_dirty = true;
@@ -263,9 +277,24 @@ pub async fn run() -> Result<()> {
         }
     });
 
+    // Whoever stops reading produces no more events: the expiry runs on a tick.
+    let cages_tick = cages.clone();
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(5));
+        loop {
+            tick.tick().await;
+            cages_tick.lock().await.expire(Instant::now());
+        }
+    });
+
     // Central server (optional): reports status and alerts, fetches rules.
     let st = state.clone();
-    tokio::spawn(async move { central_loop(st, alerted).await });
+    let cages_central = cages.clone();
+    // The program was replaced: stop the way a SIGTERM would, and systemd
+    // (`Restart=always`) starts the new one.
+    let restart = Arc::new(tokio::sync::Notify::new());
+    let restart_central = restart.clone();
+    tokio::spawn(async move { central_loop(st, alerted, cages_central, restart_central).await });
 
     let result = tokio::select! {
         r = serve(state.clone()) => r,
@@ -273,11 +302,16 @@ pub async fn run() -> Result<()> {
             tracing::info!("shutting down, saving memory");
             Ok(())
         }
+        _ = restart.notified() => {
+            tracing::info!("agent program replaced, stopping so the service manager starts the new one");
+            Ok(())
+        }
     };
     // The pairs first, then the state: the state carries the checksum of
     // learned.json, otherwise the next start reports a foreign change.
     save_learner(&state).await;
     save_state(&state).await;
+    cages.lock().await.release_all();
     let _ = std::fs::remove_file(SOCKET);
     result
 }
@@ -286,7 +320,7 @@ pub async fn run() -> Result<()> {
 
 /// Without `central.json` the loop sleeps and checks once a minute whether
 /// an enrollment has happened. Errors do not hold the service up.
-async fn central_loop(st: Arc<Mutex<State>>, alerted: Arc<tokio::sync::Notify>) {
+async fn central_loop(st: Arc<Mutex<State>>, alerted: Arc<tokio::sync::Notify>, cages: Arc<Mutex<crate::cage::Cages>>, restart: Arc<tokio::sync::Notify>) {
     use deelpe::central::{self, CentralConfig, CentralState};
     use deelpe_core::session::Session;
     const UA: &str = concat!("deelpe/", env!("CARGO_PKG_VERSION"));
@@ -294,6 +328,8 @@ async fn central_loop(st: Arc<Mutex<State>>, alerted: Arc<tokio::sync::Notify>) 
     // session needs rebuilding.
     let mut session: Option<(String, Session)> = None;
     let mut cstate = CentralState::load();
+    // Counts the update attempts per checksum; see `deelpe_core::update::Updater`.
+    let mut updater = deelpe_core::update::Updater::default();
     loop {
         let cfg = match CentralConfig::load() {
             Ok(Some(c)) => c,
@@ -331,6 +367,9 @@ async fn central_loop(st: Arc<Mutex<State>>, alerted: Arc<tokio::sync::Notify>) 
             }
         }
         let (_, session) = session.as_mut().expect("gerade gesetzt");
+        // Before the state lock, so the state is not held while a cage goes up
+        // (that takes nft or the relay, milliseconds; this does wait for it).
+        let cage_health = cages.lock().await.health();
         let mut report = {
             let s = st.lock().await;
             let now = chrono::Utc::now();
@@ -350,11 +389,22 @@ async fn central_loop(st: Arc<Mutex<State>>, alerted: Arc<tokio::sync::Notify>) 
                     // carry a fully qualified name.
                     fqdn: String::new(),
                     started_at,
-                    sensors: s.sensors.iter().map(|x| deelpe_core::central::SensorHealth { name: x.name.clone(), ok: x.error.is_none(), error: x.error.clone() }).collect(),
+                    sensors: s
+                        .sensors
+                        .iter()
+                        .map(|x| deelpe_core::central::SensorHealth { name: x.name.clone(), ok: x.error.is_none(), error: x.error.clone() })
+                        // The cage fails open: its failure has to show in the
+                        // dashboard, or it stops protecting while all is green.
+                        .chain(std::iter::once(deelpe_core::central::SensorHealth { name: "network cage".into(), ok: cage_health.is_none(), error: cage_health.clone() }))
+                        // Can it renew itself? Linux only: the Mac service
+                        // sits in an app bundle and is not ordered to.
+                        .chain(cfg!(target_os = "linux").then(update_readiness))
+                        .collect(),
                     watched: s.corr.config().watched.iter().map(|p| p.display().to_string()).collect(),
                     shares: Vec::new(),
                     learn_phase: serde_json::to_value(s.learner.phase(now)).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(),
                     addrs: deelpe_core::netaddr::local_addrs(),
+                    arch: deelpe_core::central::arch().into(),
                 }),
                 alerts: central::pending_alerts(s.alerts.alerts(), &mut cstate.sent),
                 // Only the server agent reports groups: on an endpoint
@@ -388,6 +438,9 @@ async fn central_loop(st: Arc<Mutex<State>>, alerted: Arc<tokio::sync::Notify>) 
                     learn,
                 } = resp;
                 cstate.tally.ok(chrono::Utc::now());
+                // Reported in on the new program: the previous one is no
+                // longer needed as the way back.
+                deelpe_core::update::cleanup_old();
                 if !report.alerts.is_empty() {
                     tracing::info!("central: reported {accepted_alerts} alerts");
                 }
@@ -407,6 +460,17 @@ async fn central_loop(st: Arc<Mutex<State>>, alerted: Arc<tokio::sync::Notify>) 
                 // them.
                 if !learn.is_empty() {
                     apply_learn(&st, &mut cstate, &learn).await;
+                }
+                if let Some(want) = &new_config.update_to_sha256 {
+                    match self_update(session, want, &mut updater).await {
+                        Ok(true) => {
+                            let _ = cstate.save();
+                            restart.notify_one();
+                            return;
+                        }
+                        Ok(false) => {}
+                        Err(e) => tracing::warn!("agent update: {e:#}"),
+                    }
                 }
             }
             Err(e) => {
@@ -428,6 +492,49 @@ async fn central_loop(st: Arc<Mutex<State>>, alerted: Arc<tokio::sync::Notify>) 
             } => {}
         }
     }
+}
+
+/// Replace this program with the one the central server holds ready.
+/// `Ok(true)`: swapped, the service has to restart into it.
+///
+/// Linux only. The central server orders it of a Linux agent that reports
+/// its architecture; the Mac is never ordered to (its program sits inside
+/// the app bundle), and a stray order there is refused here rather than
+/// swapping a binary out of a signed bundle.
+///
+/// `/usr/bin/deelpe` belongs to the `.deb`: after a swap `dpkg -V deelpe`
+/// reports it changed, and the next `apt install` of a package puts the
+/// package's file back — both expected.
+async fn self_update(session: &deelpe_core::session::Session, want: &str, tries: &mut deelpe_core::update::Updater) -> Result<bool> {
+    use deelpe_core::update::{can_replace, is_sha256, short, swap, verify};
+    if !cfg!(target_os = "linux") {
+        return Ok(false);
+    }
+    // Off the wire: shape first, before anything is cut or downloaded.
+    if !is_sha256(want) {
+        anyhow::bail!("central announced something that is not a SHA-256: {want:?}");
+    }
+    if !tries.may_try(want) {
+        return Ok(false);
+    }
+    let exe = std::env::current_exe().context("own path")?;
+    can_replace(&exe)?;
+    tracing::info!(want = short(want), "central holds a different agent program, fetching it");
+    let bytes = session.binary().await.context("downloading the agent program")?;
+    verify(&bytes, want)?;
+    // The permissions of the file it replaces: `fs::write` creates 0644.
+    swap(&exe, &bytes)?;
+    std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).context("making the new program executable")?;
+    tracing::info!(bytes = bytes.len(), want = short(want), "agent program replaced");
+    Ok(true)
+}
+
+/// Can this agent renew itself? As a sensor line for the dashboard, like
+/// the Windows agent's: otherwise "outdated" and "update sent" stand there
+/// and why nothing happens is only in the device's log.
+fn update_readiness() -> deelpe_core::central::SensorHealth {
+    let out = std::env::current_exe().map_err(anyhow::Error::from).and_then(|e| deelpe_core::update::can_replace(&e));
+    deelpe_core::central::SensorHealth { name: "self-update".into(), ok: out.is_ok(), error: out.err().map(|e| format!("{e:#}")) }
 }
 
 /// Carry out the central server's learning instructions. They carry this
@@ -525,6 +632,41 @@ async fn apply_central_config(st: &Mutex<State>, cstate: &mut deelpe::central::C
             cstate.managed = old;
         }
     }
+}
+
+/// Fresh touches of strict folders with `enforce`, as cage orders: PID, the
+/// name the cage judges by, the allowlist, and whether the process's
+/// current children go along.
+///
+/// Drained after every event, so one batch is one read: the reader first,
+/// then the ancestors it was inherited to, up the whole chain — right for
+/// reporting, far too wide for a cage. Seen in the lab VM on 2026-09-15: the
+/// chain reached the machine's guest agent, and every shell started after
+/// that was born inside the cage. So the cage takes the **reader with its
+/// children**, and its **parent alone**: whatever the parent starts next
+/// (`x=$(cat f); curl …`) is born inside, but the parent's other children
+/// and every ancestor above stay free.
+///
+/// ponytail: a pipe sibling started at the same moment (`cat f | curl …`)
+/// already runs and stays outside; it is reported, not stopped.
+fn fresh_touches(corr: &mut Correlator) -> Vec<(u32, String, Vec<String>, bool)> {
+    let batch = corr.drain_tainted();
+    let Some(&(reader, _)) = batch.first() else { return Vec::new() };
+    let parent = corr.parent_of(reader);
+    let mut out = Vec::new();
+    for (pid, origin) in batch {
+        if pid != reader && Some(pid) != parent {
+            continue;
+        }
+        let Some(x) = corr.config().strict_for(&origin).filter(|x| x.enforce) else { continue };
+        let name = corr.touched_identity(pid).map(|i| i.short()).unwrap_or_default();
+        // An ancestor the sensors never named, or a reader gone before it
+        // was named, is a placeholder (`pid 123`). The cage judges by name,
+        // so ask the system once more.
+        let name = if name.starts_with("pid ") { crate::cage::process_name(pid).unwrap_or(name) } else { name };
+        out.push((pid, name, x.allow.clone(), pid == reader));
+    }
+    out
 }
 
 /// What this service can do about a forbidden exfiltration.

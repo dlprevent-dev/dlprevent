@@ -4,10 +4,13 @@
 #   scripts/build-agent-deb.sh              # amd64, what almost every server is
 #   scripts/build-agent-deb.sh arm64        # Raspberry Pi, Graviton, Ampere
 #
-# The package lands in dist/ with its SHA-256 printed. From there it goes out
-# the way your other packages do — your apt repository, Ansible, a share. The
-# central server does not distribute it (`binaries::platform_for` returns
-# `None` for Linux), see docs/INSTALL.md section 4.
+# The package lands in dist/ with its SHA-256 printed, for the first install
+# (your apt repository, Ansible, a share). Next to it lies
+# dist/deelpe-linux-<arch>: the bare program **taken out of that package**,
+# for the dashboard (Agents → Agent programs), from which agents replace
+# themselves. Out of the package and not out of target/: cargo-deb strips the
+# binary, so the one in target/ has a different fingerprint than the one on
+# the machines — and the dashboard would call every agent outdated forever.
 #
 # **Why Docker and not `cargo deb` straight away.** A .deb contains a Linux
 # binary, and the architecture of that binary is decided by where it was
@@ -59,6 +62,8 @@ docker run --rm --platform "linux/$ARCH" \
     command -v cargo-deb >/dev/null || cargo install cargo-deb --quiet
     cargo deb -p deelpe >/dev/null
     cp /target/debian/$DEB /out/
+    rm -rf /tmp/pkg && dpkg-deb -x /target/debian/$DEB /tmp/pkg
+    cp /tmp/pkg/usr/bin/deelpe /out/deelpe-linux-$ARCH
   "
 
 [ -f "$ROOT/dist/$DEB" ] || die "dist/$DEB was not produced"
@@ -66,6 +71,10 @@ SHA="$(shasum -a 256 "$ROOT/dist/$DEB" 2>/dev/null || sha256sum "$ROOT/dist/$DEB
 echo
 echo "   dist/$DEB"
 echo "   ${SHA%% *}"
+echo
+BIN_SHA="$(shasum -a 256 "$ROOT/dist/deelpe-linux-$ARCH" 2>/dev/null || sha256sum "$ROOT/dist/deelpe-linux-$ARCH")"
+echo "   dist/deelpe-linux-$ARCH   (upload in the dashboard)"
+echo "   ${BIN_SHA%% *}"
 echo
 echo "   sudo apt install ./$DEB        # enables and starts the service"
 echo "   then enroll: dashboard -> Agents -> Enroll agent -> Linux"

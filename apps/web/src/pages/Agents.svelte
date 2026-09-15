@@ -2,7 +2,7 @@
   import { go, handoff, showAlertsFor } from '../lib/router.svelte';
   import { onMount } from 'svelte';
   import { resource } from '../lib/resource.svelte';
-  import { agentOutdated, api, ago, certState, fmtBytes, fmtTime, fmtUtc, platformFor, updateStuck } from '../lib/api';
+  import { agentOutdated, api, ago, certState, fmtBytes, fmtTime, fmtUtc, platformFor, selfReplacingPlatform, updateStuck } from '../lib/api';
   import { notify, isAdmin } from '../lib/session.svelte';
   import { createSort, sortRows, matches } from '../lib/sort.svelte';
   import type { Agent, Binary, LogRow, ReleaseView, Token, TokenCreated } from '../lib/types';
@@ -19,8 +19,9 @@
   let validFor = $state(24);
   let unit = $state<'hours' | 'days' | 'weeks'>('hours');
   const UNIT_HOURS = { hours: 1, days: 24, weeks: 24 * 7 };
-  /// 1 is a token per device; more is one token for a whole rollout.
-  let maxUses = $state(1);
+  /// Empty is any number of devices until the token is revoked; a number
+  /// caps it (1 is a token per device).
+  let maxUses = $state<number | null>(null);
   /// Only decides which command the dashboard offers for copying — the token
   /// itself is valid for every kind.
   let platform = $state<'mac' | 'linux' | 'windows_server' | 'windows_client'>('mac');
@@ -45,7 +46,7 @@
   /// Not the same list: `kinds` names an agent's role, this one names the
   /// binary's platform (`Binary.platform`), where the two Windows roles share
   /// a single file.
-  const platformNames: Record<string, string> = { windows: 'Windows', mac: 'macOS' };
+  const platformNames: Record<string, string> = { windows: 'Windows', mac: 'macOS', 'linux-amd64': 'Linux amd64', 'linux-arm64': 'Linux arm64' };
   /// The glob names the architecture on purpose: a plain `deelpe_*.deb` in a
   /// directory holding both builds matches the wrong one just as happily,
   /// and `dpkg` only says so once it is on the target machine.
@@ -125,7 +126,7 @@
   /// protection against a slip.
   async function uploadBinary(platform: string, file: File) {
     const cur = binaries.find((b) => b.platform === platform);
-    const running = [...new Set(agents.filter((a) => platformFor(a.kind) === platform && a.status?.build).map((a) => a.status!.build!))];
+    const running = [...new Set(agents.filter((a) => (platformFor(a.kind) === platform || selfReplacingPlatform(a.kind, a.status?.arch) === platform) && a.status?.build).map((a) => a.status!.build!))];
     if (rel?.rolls_out_at_once) {
       if (!(await ask({
         title: 'Upload and roll out',
@@ -156,7 +157,8 @@
   function pickFile(platform: string) {
     const input = document.createElement('input');
     input.type = 'file';
-    input.accept = platform === 'windows' ? '.exe' : '.zip';
+    // Linux: the bare program, which has no extension — so no filter.
+    if (platform === 'windows' || platform === 'mac') input.accept = platform === 'windows' ? '.exe' : '.zip';
     input.onchange = () => { const f = input.files?.[0]; if (f) uploadBinary(platform, f); };
     input.click();
   }
@@ -194,12 +196,12 @@
 
   const tokenView = $derived(sortRows(tokens, tokenSort, (t, k) => ({
     label: t.label, created: t.created_at, expires: t.expires_at,
-    state: t.uses >= t.max_uses ? 'used' : new Date(t.expires_at) < new Date() ? 'expired' : 'open',
+    state: spent(t) ? 'used' : new Date(t.expires_at) < new Date() ? 'expired' : 'open',
   }[k])));
 
   async function createToken(e: Event) {
     e.preventDefault();
-    try { created = await api<TokenCreated>('/api/tokens', { method: 'POST', body: { label, hours: validFor * UNIT_HOURS[unit], max_uses: maxUses, platform } }); label = ''; load(); } catch (err) { notify((err as Error).message, true); }
+    try { created = await api<TokenCreated>('/api/tokens', { method: 'POST', body: { label, hours: validFor * UNIT_HOURS[unit], max_uses: maxUses || undefined, platform } }); label = ''; load(); } catch (err) { notify((err as Error).message, true); }
   }
   async function copy(t: string) { await navigator.clipboard.writeText(t); notify('Copied'); }
   async function revoke(a: Agent) {
@@ -210,7 +212,7 @@
   /// applies to all of them — this is about the first device, before the
   /// whole workforce's turn.
   async function updateAgent(a: Agent) {
-    const bin = binFor(a.kind);
+    const bin = binaries.find((b) => b.platform === selfReplacingPlatform(a.kind, a.status?.arch));
     if (!(await ask({ title: 'Update this agent', body: `"${a.name}" will replace its program with ${bin?.file_name ?? 'the uploaded one'}.`, detail: 'It fetches the file on its next report, checks the checksum and restarts into it. If the new program does not come up, the agent goes offline and the previous one is still on the device as .old.', confirmLabel: 'Update' }))) return;
     try { await api(`/api/agents/${a.id}/update`, { method: 'POST' }); notify('Update requested — it goes out with the next report'); load(); } catch (err) { notify((err as Error).message, true); }
   }
@@ -266,7 +268,9 @@
     finally { relBusy = ''; }
   }
 
+  const spent = (t: Token) => t.max_uses != null && t.uses >= t.max_uses;
   async function delToken(t: Token) {
+    if (!(await ask({ title: 'Revoke token', body: `"${t.label}" will no longer enroll any device.`, detail: 'Agents already enrolled with it keep running.', confirmLabel: 'Revoke', danger: true }))) return;
     try { await api(`/api/tokens/${t.id}`, { method: 'DELETE' }); load(); } catch (err) { notify((err as Error).message, true); }
   }
 </script>
@@ -293,7 +297,7 @@
            stored" that nobody needs only makes the card restless. If one is
            staged after all, it appears here and can be replaced; uploading it
            still works from the enrollment dialog. -->
-      {#each binaries.filter((b) => b.platform === 'windows' || b.present) as b (b.platform)}
+      {#each binaries.filter((b) => b.platform === 'windows' || b.platform === 'linux-amd64' || b.present) as b (b.platform)}
         <div class="bin">
           <b class="plat">{platformNames[b.platform] ?? b.platform}</b>
           <div>
@@ -314,18 +318,12 @@
           </button>
         </div>
       {/each}
-      <!-- Not a gap and not a "nothing stored yet": Linux never gets a file
-           here. The `.deb` is built per architecture, and `apt` owns the
-           updates — `binaries::platform_for` returns `None` for it. Saying so
-           beats letting somebody hunt for an upload button that would be
-           wrong even if it existed. -->
-      <div class="bin">
-        <b class="plat">Linux</b>
-        <div>
-          <span class="muted">not kept here — <span class="mono">apt</span> owns it</span>
-          <div class="cell-2 muted">The <span class="mono">.deb</span> is per architecture and goes out through your own channel; from here comes only the enrollment command.</div>
-        </div>
-      </div>
+      <!-- Linux: the bare `deelpe` per architecture, not the `.deb`. The agent
+           compares the fingerprint of its own program against this file, and
+           replaces itself with it (`binaries::self_replacing_platform`). The
+           `.deb` stays the first install. amd64 always shows; arm64 once
+           something is staged, like the Mac. -->
+      <div class="cell-2 muted" style="padding:4px 0 0">Linux: upload the bare <span class="mono">deelpe</span> (<span class="mono">dist/deelpe-linux-&lt;arch&gt;</span> from <span class="mono">scripts/build-agent-deb.sh</span>), not the <span class="mono">.deb</span>. Agents from 0.1.4 on replace themselves with it.</div>
     </div>
     <div class="rel-row">
       <div>
@@ -524,8 +522,8 @@
         {#each tokenView as t (t.id)}
           <tr>
             <td><strong>{t.label}</strong></td><td class="nowrap">{fmtTime(t.created_at)}</td><td class="nowrap">{fmtTime(t.expires_at)}</td>
-            <td>{#if t.uses >= t.max_uses}<span class="badge ok">used {t.max_uses > 1 ? `up ${t.uses}/${t.max_uses}` : ''} {ago(t.used_at)}</span>{:else if new Date(t.expires_at) < new Date()}<span class="badge">expired{t.uses ? ` · ${t.uses}/${t.max_uses}` : ''}</span>{:else}<span class="badge accent">open{t.max_uses > 1 ? ` · ${t.uses}/${t.max_uses}` : ''}</span>{/if}</td>
-            <td class="nowrap">{#if admin && t.uses < t.max_uses}<button class="btn sm ghost danger" onclick={() => delToken(t)} title="Delete" aria-label="Delete"><Icon name="trash" size={14} /></button>{/if}</td>
+            <td>{#if spent(t)}<span class="badge ok">used {t.max_uses! > 1 ? `up ${t.uses}/${t.max_uses}` : ''} {ago(t.used_at)}</span>{:else if new Date(t.expires_at) < new Date()}<span class="badge">expired{t.uses ? ` · ${t.uses}${t.max_uses ? `/${t.max_uses}` : ''}` : ''}</span>{:else}<span class="badge accent">open{t.max_uses == null ? ` · ${t.uses} enrolled` : t.max_uses > 1 ? ` · ${t.uses}/${t.max_uses}` : ''}</span>{/if}</td>
+            <td class="nowrap">{#if admin && !spent(t)}<button class="btn sm ghost danger" onclick={() => delToken(t)} title="Revoke" aria-label="Revoke"><Icon name="trash" size={14} /></button>{/if}</td>
           </tr>
         {/each}
       </tbody>
@@ -540,7 +538,7 @@
       <form id="token-form" onsubmit={createToken}>
         <div class="row">
           <div class="field"><label for="tl">Label (device)</label><input id="tl" type="text" bind:value={label} placeholder="mac-hans, fileserver-01" required /></div>
-          <div class="field" style="max-width:110px"><label for="tu">Devices</label><input id="tu" type="number" min="1" max="100000" bind:value={maxUses} required /></div>
+          <div class="field" style="max-width:110px"><label for="tu">Devices</label><input id="tu" type="number" min="1" max="100000" bind:value={maxUses} placeholder="unlimited" /></div>
         </div>
         <div class="row" style="margin-top:10px">
           <div class="field" style="max-width:110px"><label for="th">Valid for</label><input id="th" type="number" min="1" max={Math.floor(24 * 365 / UNIT_HOURS[unit])} bind:value={validFor} required /></div>
@@ -585,7 +583,7 @@
             </div>
           </div>
         {/if}
-        <p class="hint" style="margin:0">{maxUses > 1 ? `The same command enrolls up to ${maxUses} devices; anyone holding it can enroll one until then, so keep it where your deployment tool keeps secrets and delete it when the rollout is done.` : 'The token is good for exactly one enrollment and is burned afterwards.'} The agent creates its own key; the central server only signs.</p>
+        <p class="hint" style="margin:0">{!maxUses ? 'The same command enrolls any number of devices until you revoke the token in the list; anyone holding it can enroll one until then, so keep it where your deployment tool keeps secrets and revoke it when the rollout is done.' : maxUses > 1 ? `The same command enrolls up to ${maxUses} devices; anyone holding it can enroll one until then, so keep it where your deployment tool keeps secrets and revoke it when the rollout is done.` : 'The token is good for exactly one enrollment and is burned afterwards.'} The agent creates its own key; the central server only signs.</p>
       </form>
     {:else}
       {#if binFor(platform)?.present}
@@ -607,7 +605,7 @@
           <span class="mono">arm64</span> package instead:
         </p>
         <div class="copy"><code style="white-space:pre-wrap">{DEB_INSTALL}</code><button class="btn sm" onclick={() => copy(DEB_INSTALL)}><Icon name="copy" size={14} /> Copy</button></div>
-        <p style="margin-bottom:6px"><b>2.</b> Enroll. Updates afterwards are <span class="mono">apt</span>'s job, not this dashboard's:</p>
+        <p style="margin-bottom:6px"><b>2.</b> Enroll. Updates afterwards come from this dashboard (the Linux program under Agent programs):</p>
       {:else}
         <p class="hint" style="margin-top:0">
           No agent program stored on the server for this platform, so the command below only enrolls — you have to

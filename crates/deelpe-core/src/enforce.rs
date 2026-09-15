@@ -8,7 +8,7 @@
 //!
 //! **No process is stopped.** What takes effect on the network takes
 //! effect earlier: the browser connector says no before a single byte
-//! goes out, and the WFP cage takes the network away from a program
+//! goes out, and the network cage takes the network away from a program
 //! without killing it. Both hang off `Strict::enforce`, but they do not
 //! run through this seam. See ADR 0002 and the addendum of 2026-09-09.
 //!

@@ -95,7 +95,7 @@ const DEFAULT_INTERVAL_SECS: u64 = 30;
 ///
 /// Store first, then it counts: if saving fails, the old certificate stays
 /// — and that one is still valid during the central server's grace period.
-pub trait CredentialStore: Send {
+pub trait CredentialStore: Send + Sync {
     fn store(&mut self, fresh: &Credentials) -> Result<()>;
 }
 

@@ -204,6 +204,21 @@ One alert has to come out of that. If it does not, `deelpe status` says
 which sensor is red, and the first log line says which filesystems fanotify
 got a mark on.
 
+**The network cage (`linux/cage.rs`) cannot run in that container**: Docker
+Desktop's VM kernel has no `nft_socket` and no `INET_DIAG_DESTROY`
+(checked 2026-09-15). A VM with a stock kernel can — OrbStack's works:
+
+```bash
+orb create debian:bookworm dlp-cage-test
+orb run -m dlp-cage-test -u root bash -c '
+  apt-get update -qq && apt-get install -y -qq curl build-essential pkg-config libssl-dev nftables iproute2
+  curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+  cd '"$PWD"' && CARGO_TARGET_DIR=/root/target ~/.cargo/bin/cargo test -p deelpe-sensors cage -- --include-ignored --test-threads=1'
+```
+
+The two ignored tests cage a real shell and cut a real connection; they need
+root and leave nothing behind.
+
 Bitdefender: add an exception for `/usr/local/bin/deelpe`.
 
 ## Migrations

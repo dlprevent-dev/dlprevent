@@ -59,7 +59,7 @@ async fn enroll(State(st): State<Shared>, Extension(peer): Extension<PeerAddr>, 
     let hash = crate::auth::sha256_hex(req.token.trim());
     type TokenRow = (Uuid, String, chrono::DateTime<Utc>, bool);
     let row: Option<TokenRow> =
-        sqlx::query_as("SELECT id, label, expires_at, uses >= max_uses FROM enroll_tokens WHERE token_hash = $1").bind(&hash).fetch_optional(&st.pool).await?;
+        sqlx::query_as("SELECT id, label, expires_at, COALESCE(uses >= max_uses, false) FROM enroll_tokens WHERE token_hash = $1").bind(&hash).fetch_optional(&st.pool).await?;
     let Some((token_id, label, expires_at, spent)) = row else {
         warn!(peer = %peer.0, "enrollment with an unknown token");
         return Err(ApiError(StatusCode::UNAUTHORIZED, "unknown token".into()));
@@ -79,8 +79,9 @@ async fn enroll(State(st): State<Shared>, Extension(peer): Extension<PeerAddr>, 
     let kind = serde_json::to_value(req.kind).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_else(|| "mac".into());
     let mut tx = st.pool.begin().await?;
     // Count the use atomically: the row lock makes simultaneous enrollments
-    // queue up, so a token for N devices ends with at most N agents.
-    let burned = sqlx::query("UPDATE enroll_tokens SET uses = uses + 1, used_at = now(), used_by = $2 WHERE id = $1 AND uses < max_uses")
+    // queue up, so a token for N devices ends with at most N agents. Without
+    // a count (NULL) only deleting the token stops it.
+    let burned = sqlx::query("UPDATE enroll_tokens SET uses = uses + 1, used_at = now(), used_by = $2 WHERE id = $1 AND (max_uses IS NULL OR uses < max_uses)")
         .bind(token_id)
         .bind(agent_id)
         .execute(&mut *tx)
@@ -218,9 +219,17 @@ const LEARN_DONE_MAX: usize = 500;
 /// decides whether the server **orders** an update; whoever asks here has
 /// already been given the checksum, and an agent that has the switch flipped
 /// mid-download should not be left standing there with half a file.
-async fn binary(State(st): State<Shared>, peer_cert: Option<Extension<PeerCert>>) -> Result<axum::response::Response, ApiError> {
+///
+/// The one thing the agent does say is its architecture: for Linux that picks
+/// between two programs of the same role. Unknown values find nothing.
+async fn binary(
+    State(st): State<Shared>,
+    peer_cert: Option<Extension<PeerCert>>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Result<axum::response::Response, ApiError> {
     let (agent, _) = authenticated_agent(&st, peer_cert).await?;
-    let platform = crate::binaries::platform_for(Some(agent.kind.as_str()))
+    let arch = q.get("arch").map(String::as_str).unwrap_or_default();
+    let platform = crate::binaries::program_for(&agent.kind, arch)
         .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "no agent program for this kind of agent".into()))?;
     let (name, bytes) = crate::binaries::read(&st, platform).ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "no agent program uploaded".into()))?;
     info!(agent = %agent.name, platform, bytes = bytes.len(), "agent fetches its program");
@@ -330,8 +339,9 @@ async fn report(State(st): State<Shared>, peer_cert: Option<Extension<PeerCert>>
     // `update_due`. Without a reported fingerprint it falls back to `false`,
     // and then nothing goes out even at the press of the button.
     let running = r.status.as_ref().map(|s| s.build.as_str()).unwrap_or_default();
+    let arch = r.status.as_ref().map(|s| s.arch.as_str()).unwrap_or_default();
     let wanted = if settings.agent_update_enabled || agent.update_requested.is_some() {
-        crate::binaries::self_replacing_platform(&agent.kind).and_then(|p| crate::binaries::sha256_of(&st, p))
+        crate::binaries::self_replacing_platform(&agent.kind, arch).and_then(|p| crate::binaries::sha256_of(&st, p))
     } else {
         None
     };
@@ -501,6 +511,11 @@ mod report_tests {
 
     /// A report that says which program this agent runs.
     async fn report_running(st: &Shared, fp: &str, build: &str) -> ReportResponse {
+        report_running_on(st, fp, build, "amd64").await
+    }
+
+    /// The same, on a named architecture (empty: an agent too old to say).
+    async fn report_running_on(st: &Shared, fp: &str, build: &str, arch: &str) -> ReportResponse {
         let peer = PeerAddr("10.0.0.9:1".parse().unwrap());
         let status = deelpe_core::central::AgentStatus {
             version: "0.1.0".into(),
@@ -513,6 +528,7 @@ mod report_tests {
             learn_phase: "active".into(),
             shares: Vec::new(),
             addrs: Vec::new(),
+            arch: arch.into(),
         };
         let r = Report { api_version: Some(API_VERSION), status: Some(status), ..Default::default() };
         match report(State(st.clone()), Some(Extension(PeerCert(fp.into()))), Extension(peer), Json(r)).await {
@@ -560,6 +576,36 @@ mod report_tests {
         // sent — otherwise every older agent downloads the same four and a
         // half megabytes with every report.
         assert_eq!(report_running(&st, &fp, "").await.config.update_to_sha256, None);
+
+        std::fs::remove_dir_all(&st.data_dir).ok();
+    }
+
+    /// Linux from 0.1.4 on: the program for the agent's architecture, and
+    /// only for an agent that reports one. The 0.1.3 agents in the field do
+    /// not; an order to them would stand open forever.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_linux_agent_is_ordered_its_architectures_program(pool: PgPool) {
+        let fp = "ef".repeat(32);
+        sqlx::query(
+            "INSERT INTO agents (id, name, kind, version, cert_fingerprint, cert_not_after) \
+             VALUES ($1, 'LNX-1', 'linux', '0.1.4', $2, now() + interval '1 year')",
+        )
+        .bind(Uuid::new_v4())
+        .bind(&fp)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let st = state(pool.clone());
+        let dir = st.data_dir.join("agents");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("deelpe-linux-amd64"), b"\x7fELF amd64").unwrap();
+        let sha = crate::binaries::sha256_of(&st, "linux-amd64").unwrap();
+        db::set_setting(&pool, "agent_update_enabled", serde_json::json!(true)).await.unwrap();
+
+        assert_eq!(report_running_on(&st, &fp, "0123456789ab", "amd64").await.config.update_to_sha256, Some(sha.clone()));
+        assert_eq!(report_running_on(&st, &fp, &sha[..12], "amd64").await.config.update_to_sha256, None, "already runs it");
+        assert_eq!(report_running_on(&st, &fp, "0123456789ab", "arm64").await.config.update_to_sha256, None, "no arm64 program staged");
+        assert_eq!(report_running_on(&st, &fp, "0123456789ab", "").await.config.update_to_sha256, None, "too old to say");
 
         std::fs::remove_dir_all(&st.data_dir).ok();
     }
@@ -630,8 +676,14 @@ mod report_tests {
         assert_eq!(crate::binaries::platform_for(Some("linux")), None);
         assert_eq!(crate::binaries::platform_for(Some("mac")), Some("mac"));
         assert_eq!(crate::binaries::platform_for(None), Some("mac"));
-        assert_eq!(crate::binaries::self_replacing_platform("mac"), None);
-        assert_eq!(crate::binaries::self_replacing_platform("windows_server"), Some("windows"));
+        assert_eq!(crate::binaries::self_replacing_platform("mac", "arm64"), None);
+        assert_eq!(crate::binaries::self_replacing_platform("windows_server", ""), Some("windows"));
+        // Linux by architecture — and not without one.
+        assert_eq!(crate::binaries::self_replacing_platform("linux", "amd64"), Some("linux-amd64"));
+        assert_eq!(crate::binaries::self_replacing_platform("linux", "arm64"), Some("linux-arm64"));
+        assert_eq!(crate::binaries::self_replacing_platform("linux", ""), None);
+        assert_eq!(crate::binaries::program_for("linux", "amd64"), Some("linux-amd64"));
+        assert_eq!(crate::binaries::program_for("mac", "arm64"), Some("mac"));
 
         std::fs::remove_dir_all(&st.data_dir).ok();
     }
@@ -702,28 +754,31 @@ mod report_tests {
         }
     }
 
-    /// A mass rollout hands one token to every machine. It must stop at the
-    /// count it was created with, and a token created without one must stay
-    /// what it always was: good for exactly one enrollment.
+    /// A token with a count stops at it. A token without one enrolls every
+    /// device of the rollout until it is revoked — deleted — and not a single
+    /// one after that.
     #[sqlx::test(migrations = "./migrations")]
-    async fn a_token_enrolls_as_many_devices_as_it_was_created_for(pool: PgPool) {
+    async fn a_token_enrolls_until_its_count_or_until_revoked(pool: PgPool) {
         let st = state(pool.clone());
         token_with_uses(&pool, "fleet", Some(2)).await;
-        token_with_uses(&pool, "single", None).await;
+        token_with_uses(&pool, "rollout", None).await;
 
         assert_eq!(enroll_as(&st, "fleet", "PC-1").await, Ok(()));
         assert_eq!(enroll_as(&st, "fleet", "PC-2").await, Ok(()));
         assert_eq!(enroll_as(&st, "fleet", "PC-3").await, Err("token already used".into()), "the third is one too many");
 
-        assert_eq!(enroll_as(&st, "single", "PC-4").await, Ok(()));
-        assert_eq!(enroll_as(&st, "single", "PC-5").await, Err("token already used".into()));
-
+        for i in 0..5 {
+            assert_eq!(enroll_as(&st, "rollout", &format!("R-{i}")).await, Ok(()), "no count means no limit");
+        }
         let (uses, used_by): (i32, Option<Uuid>) =
             sqlx::query_as("SELECT uses, used_by FROM enroll_tokens WHERE label = 'T' AND max_uses = 2").fetch_one(&pool).await.unwrap();
         assert_eq!(uses, 2);
         let last: Uuid = sqlx::query_scalar("SELECT id FROM agents WHERE name = 'PC-2'").fetch_one(&pool).await.unwrap();
         assert_eq!(used_by, Some(last), "used_by names the latest agent");
+
+        sqlx::query("DELETE FROM enroll_tokens WHERE max_uses IS NULL").execute(&pool).await.unwrap();
+        assert_eq!(enroll_as(&st, "rollout", "R-late").await, Err("unknown token".into()), "revoked means revoked");
         let agents: i64 = sqlx::query_scalar("SELECT count(*) FROM agents").fetch_one(&pool).await.unwrap();
-        assert_eq!(agents, 3);
+        assert_eq!(agents, 7, "revoking the token leaves the enrolled agents alone");
     }
 }

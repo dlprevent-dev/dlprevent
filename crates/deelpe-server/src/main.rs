@@ -116,9 +116,11 @@ async fn main() -> Result<()> {
 
 /// Fingerprint of the running server file — the same value that
 /// `sha256sum` yields for it. Empty if it cannot be read; then the version
-/// counts as unknown.
+/// counts as unknown. Read once per process: the dashboard asks for it on
+/// every overview, and the file is several megabytes large.
 fn build_fingerprint() -> String {
-    std::env::current_exe().and_then(std::fs::read).map(|b| pki::fingerprint(&b)).unwrap_or_default()
+    static FP: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    FP.get_or_init(|| std::env::current_exe().and_then(std::fs::read).map(|b| pki::fingerprint(&b)).unwrap_or_default()).clone()
 }
 
 async fn shutdown_signal() {

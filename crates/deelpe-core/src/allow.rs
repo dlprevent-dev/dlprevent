@@ -181,6 +181,95 @@ pub fn validate(entry: &str) -> Result<(), String> {
     }
 }
 
+/// How long a network cage stays up after the last touch. Rolling: every
+/// further touch pushes it ahead. Deliberately **not** the reporting window
+/// of a touch (600 s) — the cage costs functionality, the report does not.
+/// The same on every endpoint that has a cage (Windows WFP, Linux nftables,
+/// the macOS content filter).
+pub const CAGE_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// One allowlist entry in the shape a packet filter needs: network, prefix
+/// length, port. Name entries of the allowlist are none of that — at this
+/// layer there is no resolution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Permit {
+    pub net: IpAddr,
+    pub bits: u8,
+    pub port: Option<u16>,
+}
+
+impl Permit {
+    pub fn covers(&self, ip: IpAddr, port: Option<u16>) -> bool {
+        (self.port.is_none() || self.port == port) && in_net(ip, self.net, u32::from(self.bits))
+    }
+}
+
+/// The allowlist in filter form, plus the entries that were passed over.
+///
+/// A name (`chatgpt.com`) drops out and that is **not an error**: it applies
+/// at the browser connector, where the target URL is known. Whoever wants to
+/// open a destination for PowerShell or curl too enters the network behind
+/// it — exactly the sentence from the module header.
+pub fn permits(allow: &[String]) -> (Vec<Permit>, Vec<String>) {
+    let mut out = Vec::new();
+    let mut skipped = Vec::new();
+    for e in allow {
+        match as_net(e) {
+            Some((net, bits, port)) => out.push(Permit { net, bits, port }),
+            None => skipped.push(e.clone()),
+        }
+    }
+    (out, skipped)
+}
+
+/// What a network cage **always** lets through: our own house.
+///
+/// Decision of 2026-09-09, variant (b): internal destinations are still
+/// **reported**, but not **blocked**. The cage is built against outflow to
+/// the outside; a process that has the internal network taken away is
+/// broken without anything being prevented. On 2026-09-09 that is exactly
+/// what hit the RDP clipboard and the start menu of the test client.
+///
+/// Loopback, link-local and multicast are in there deliberately: nothing
+/// leaves the house over them, but without them name resolution on the LAN
+/// and half the desktop fall over.
+///
+/// ponytail: hard-wired to the private ranges of RFC 1918/4193. Whoever runs
+/// "internal" on their own public addresses needs a field in the settings
+/// for it — then this list moves there.
+const INTERNAL: &[&str] = &[
+    "10.0.0.0/8",
+    "172.16.0.0/12",
+    "192.168.0.0/16",
+    "127.0.0.0/8",
+    "169.254.0.0/16",
+    "224.0.0.0/4",
+    "fc00::/7",
+    "fe80::/10",
+    "::1/128",
+    "ff00::/8",
+];
+
+/// [`INTERNAL`] in filter form. The entries live in the code and are
+/// checked — an unreadable one would be a typo, not an operational case.
+pub fn internal_permits() -> Vec<Permit> {
+    INTERNAL.iter().filter_map(|e| as_net(e).map(|(net, bits, port)| Permit { net, bits, port })).collect()
+}
+
+/// What a cage for this allowlist lets through: the rule's address entries
+/// plus [`internal_permits`], without duplicates. Duplicates would make the
+/// list differ for the same rule — and a cage rebuilds itself when its list
+/// changes. The second half is the passed-over name entries, for the log.
+pub fn cage_permits(allow: &[String]) -> (Vec<Permit>, Vec<String>) {
+    let (mut out, skipped) = permits(allow);
+    for p in internal_permits() {
+        if !out.contains(&p) {
+            out.push(p);
+        }
+    }
+    (out, skipped)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -263,5 +352,38 @@ mod tests {
         assert!(allows_host(&list, "https://User@CHATGPT.com:443/pfad"));
         // An IP in the list does not answer the connector's question.
         assert!(!allows_host(&["10.0.0.7".to_string()], "https://chatgpt.com/"));
+    }
+
+    fn p(s: &str) -> Permit {
+        let (net, bits, port) = as_net(s).unwrap();
+        Permit { net, bits, port }
+    }
+
+    /// Names apply at the browser connector, not in a packet filter — and
+    /// they are not an error, they belong in the log.
+    #[test]
+    fn only_addresses_become_permits() {
+        let allow = vec!["10.0.0.0/8".into(), "chatgpt.com".into(), "203.0.113.9:443".into(), "2001:db8::/32".into()];
+        let (ps, skipped) = permits(&allow);
+        assert_eq!(ps, vec![p("10.0.0.0/8"), p("203.0.113.9:443"), p("2001:db8::/32")]);
+        assert_eq!(skipped, vec!["chatgpt.com".to_string()]);
+        assert!(ps[1].covers("203.0.113.9".parse().unwrap(), Some(443)));
+        assert!(!ps[1].covers("203.0.113.9".parse().unwrap(), Some(80)));
+        assert!(ps[0].covers("10.1.2.3".parse().unwrap(), None));
+    }
+
+    /// Variant (b): internal gets reported, not blocked. The cage always
+    /// lets our own house through, even with an empty rule allowlist — and
+    /// nothing public.
+    #[test]
+    fn the_cage_always_lets_the_house_through() {
+        let (ps, _) = cage_permits(&["10.0.0.0/8".into()]);
+        assert_eq!(ps.iter().filter(|x| **x == p("10.0.0.0/8")).count(), 1, "no duplicates");
+        for inside in ["10.1.1.1", "192.168.1.1", "127.0.0.1", "fd00::1", "::1"] {
+            assert!(ps.iter().any(|q| q.covers(inside.parse().unwrap(), None)), "{inside}");
+        }
+        for public in ["1.1.1.1", "20.42.73.27", "2001:db8::1"] {
+            assert!(!ps.iter().any(|q| q.covers(public.parse().unwrap(), None)), "{public} counts as internal");
+        }
     }
 }

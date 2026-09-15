@@ -18,6 +18,8 @@ pub mod rules;
 pub mod session;
 #[cfg(feature = "net")]
 pub mod net;
+#[cfg(feature = "net")]
+pub mod update;
 pub mod netaddr;
 pub mod path;
 pub mod pipeline;

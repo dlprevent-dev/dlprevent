@@ -1,6 +1,7 @@
 //! de-el-pe: one binary. `deelpe daemon` is the root service, everything
 //! else is CLI.
 
+mod cage;
 mod daemon;
 mod ui;
 

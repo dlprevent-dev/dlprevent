@@ -161,6 +161,22 @@ pub struct AgentStatus {
     /// a tunnel, the server only records the address of the last hop.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub addrs: Vec<String>,
+    /// Processor architecture in Debian's spelling (`amd64`, `arm64`), see
+    /// [`arch`]. The central server picks the Linux program by it: one role,
+    /// two files. Older agents do not send it and get no Linux update.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub arch: String,
+}
+
+/// This program's architecture in Debian's spelling — the name the `.deb`
+/// and the program files in the dashboard carry. Rust says `x86_64` and
+/// `aarch64`.
+pub fn arch() -> &'static str {
+    match std::env::consts::ARCH {
+        "x86_64" => "amd64",
+        "aarch64" => "arm64",
+        other => other,
+    }
 }
 
 /// Who did the access. Identity as decided on 2026-09-06: not always AD.
@@ -327,9 +343,9 @@ pub struct Rule {
     #[serde(default)]
     pub strict: bool,
     /// Switch the folder from reporting to acting (only with `strict`).
-    /// No process is stopped: the levers are the browser connector, the
-    /// WFP cage and deleting the copy, all of them on a Windows
-    /// workstation. See [`crate::config::Strict::enforce`].
+    /// No process is stopped: the levers are the network cage (every
+    /// endpoint), the browser connector and deleting the copy (Windows
+    /// workstation). See [`crate::config::Strict::enforce`].
     #[serde(default)]
     pub enforce: bool,
     pub hard_max_files: u32,

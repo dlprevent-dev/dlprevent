@@ -654,7 +654,7 @@ checksum = "4583a4551df46e2792f82ceeac45e850d2e2d5debba0b91f102385cda5b11f06"
 
 [[package]]
 name = "deelpe"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "chrono",
@@ -675,7 +675,7 @@ dependencies = [
 
 [[package]]
 name = "deelpe-core"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "chrono",
@@ -694,7 +694,7 @@ dependencies = [
 
 [[package]]
 name = "deelpe-sensors"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -710,7 +710,7 @@ dependencies = [
 
 [[package]]
 name = "deelpe-server"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "argon2",
@@ -753,7 +753,7 @@ dependencies = [
 
 [[package]]
 name = "deelpe-winagent"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "chrono",
