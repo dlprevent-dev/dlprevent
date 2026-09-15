@@ -16,6 +16,10 @@ pub(super) struct Overview {
     ca_fingerprint: String,
     server_started: DateTime<Utc>,
     api_version: u32,
+    /// The version of this server, and the first twelve hex digits of its
+    /// file's SHA-256 — the same shortening the agents report as `build`.
+    server_version: &'static str,
+    server_build: String,
 }
 
 pub(super) async fn overview(State(st): State<Shared>, _u: User) -> R<Overview> {
@@ -45,6 +49,8 @@ pub(super) async fn overview(State(st): State<Shared>, _u: User) -> R<Overview> 
         ca_fingerprint: st.pki.ca_fingerprint.clone(),
         server_started: st.started,
         api_version: API_VERSION,
+        server_version: env!("CARGO_PKG_VERSION"),
+        server_build: crate::build_fingerprint().chars().take(12).collect(),
     }))
 }
 

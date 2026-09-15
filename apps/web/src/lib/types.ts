@@ -91,6 +91,8 @@ export interface AuditRow { id: number; at: string; user_name: string; action: s
 export interface Overview {
   agents: number; agents_online: number; sources: number; rules: number; alerts_open: number; alerts_24h: number;
   recent: Alert[]; ca_fingerprint: string; server_started: string; api_version: number;
+  /** `server_build` is empty when the server cannot read its own file. */
+  server_version: string; server_build: string;
 }
 export interface Counts { hours: number; per_hour: { hour: string; files: number; bytes: number }[]; top: { user_display: string; path: string; files: number; bytes: number }[] }
 
