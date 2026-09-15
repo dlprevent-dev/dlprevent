@@ -950,10 +950,10 @@ Where you can, name the folder the data is actually in
 the learning phase running for a day before you confirm it, or it learns the
 noise as normal.
 
-Only the token and the fingerprint come from the dashboard, never the
-program: there is no Linux installer stored there and no update it can order
-(`binaries::platform_for` returns `None`). The `.deb` goes out through your
-own channel, and an update is `apt install` plus a restart.
+Only the token and the fingerprint come from the dashboard for the first
+install: the `.deb` goes out through your own channel. Updates afterwards can
+come from the dashboard (agents from 0.1.4 on, see "Updating and
+uninstalling" below).
 
 ### Checking that it works
 
