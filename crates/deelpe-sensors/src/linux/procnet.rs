@@ -180,7 +180,7 @@ pub fn parse(text: &str) -> Vec<Sample> {
     out
 }
 
-fn socket_line(line: &str) -> Option<Sample> {
+pub(crate) fn socket_line(line: &str) -> Option<Sample> {
     let mut f = line.split_whitespace();
     // state, recv-q, send-q, local, peer, [users:(...)]
     let (_state, _rq, _sq) = (f.next()?, f.next()?, f.next()?);
@@ -217,7 +217,7 @@ fn field(line: &str, key: &str) -> Option<u64> {
 }
 
 /// `1.2.3.4:443`, `[2001:db8::1]:443` and `[::ffff:1.2.3.4]:443`.
-fn split_addr(s: &str) -> Option<(IpAddr, Option<u16>)> {
+pub(crate) fn split_addr(s: &str) -> Option<(IpAddr, Option<u16>)> {
     let (host, port) = s.rsplit_once(':')?;
     let ip: IpAddr = host.trim_matches(['[', ']']).parse().ok()?;
     // A v4 address in v6 clothing is a v4 address. Otherwise the same

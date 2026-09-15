@@ -298,11 +298,12 @@ browser connector and the network cage.
 - **Windows kernel driver for customers.** A minifilter is the only way to
   refuse a copy *before* it happens. The lab version is removed; a shippable
   one needs an EV certificate and Microsoft attestation signing.
-- **Linux, the rest of it.** Read-then-send detection is in. Still missing:
-  the strict folder (no network cage, no stopping the sender), uploads over
-  QUIC — the kernel keeps no byte counter for UDP — and external volumes.
-- **macOS app signing.** Developer ID signature and notarization, so
-  installation works without Gatekeeper overrides.
+- **Linux, the rest of it.** Read-then-send detection and the network cage
+  of strict folders are in. Still missing: uploads over QUIC — the kernel
+  keeps no byte counter for UDP — and external volumes.
+- **macOS app signing.** `build.sh` signs and notarizes with a Developer ID
+  (needed for the network filter, docs/INSTALL.md); the published app is not
+  built that way yet.
 - **Cloud hosting on request.** A hosted central server per customer,
   operated by us. Ask via info@dlprevent.ch.
 - **Finer-grained access control.** Today an account is either administrator

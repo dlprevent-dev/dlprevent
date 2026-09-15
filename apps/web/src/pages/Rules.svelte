@@ -275,9 +275,9 @@
               An empty list means nothing may leave at all.</div>
           </div>
           <label class="check" style="margin-top:12px"><input type="checkbox" bind:checked={editing.enforce} />
-            <span class="t"><b>Enforce</b><span>Act, do not just report: a Windows workstation refuses a browser upload out of the folder before the first byte, takes the network away from a program that read from it, and deletes a copy that left the folder.</span></span></label>
+            <span class="t"><b>Enforce</b><span>Act, do not just report: a program that read from the folder can reach only the allowed destinations for a minute (Windows, Linux, and Macs with the network filter enabled). A Windows workstation also refuses a browser upload before the first byte and deletes a copy that left the folder.</span></span></label>
           <div class="hint">The sending process is never stopped — that was the old behaviour and it took a user's <code>explorer.exe</code> with it on 2026-09-09.
-            The Mac has no lever of its own yet and reports; blocking before the first byte needs the network extension there (stage Z5).</div>
+            A Mac cages only with the network filter enabled in the DLPrevent app; without it, it reports.</div>
         {/if}
       </fieldset>
 

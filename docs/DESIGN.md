@@ -416,8 +416,12 @@ the server. Hence:
    connector (refuses the upload before the first byte and knows the target
    URL), the network cage (a WFP filter at the ALE layer: takes the network
    away from the touched process without ending it), and locking and deleting
-   the copy. On the Mac it stays at reporting; blocking before the first byte
-   needs the Network Extension there. Opt-in per rule rather than the default.
+   the copy. macOS and Linux have the cage as well since 2026-09-15
+   (`crates/deelpe/src/cage.rs`): on Linux a cgroup per caged process and an
+   nftables table matching `socket cgroupv2`, on the Mac a Network Extension
+   content filter in the app that gets the cage table from the service via a
+   small XPC relay. Both hold the process rather than the EXE. Opt-in per rule
+   rather than the default.
 
    **Nobody terminates the sending process any more.** That was what the
    checkbox used to mean, and it is gone since 2026-09-09: on that day the

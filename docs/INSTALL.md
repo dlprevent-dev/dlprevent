@@ -387,6 +387,61 @@ Build and install on the same Mac in one go:
 apps/macos/DeelpeBar/build.sh && rm -rf /Applications/DLPrevent.app && cp -R apps/macos/DeelpeBar/build/DLPrevent.app /Applications/ && open /Applications/DLPrevent.app
 ```
 
+### Network blocking (content filter)
+
+A strict folder with **enforce** cages the program that read from it: for
+60 s after its last read it reaches only the rule's allowed destinations and
+private addresses (RFC 1918/4193, loopback, link-local). On the Mac that is a
+Network Extension content filter inside the app. macOS loads it only from a
+build signed with a **Developer ID**, carrying provisioning profiles with the
+Network Extension capability, and notarized. A plain `build.sh` leaves it
+out; the app then reports as before and its settings say the filter is
+missing.
+
+Once, in the Apple Developer portal (Certificates, Identifiers & Profiles):
+
+1. **Certificate:** a *Developer ID Application* certificate, in the login
+   keychain of the building Mac.
+2. **Two App IDs** (explicit):
+   - `ch.deelpe.bar` — the app, capabilities *Network Extensions* and
+     *System Extension*
+   - `ch.deelpe.bar.filter` — the filter, capability *Network Extensions*
+
+   No app group to register: the filter's Mach service needs one, and
+   `build.sh` writes the team-prefixed macOS form `<TEAMID>.ch.deelpe.filter`
+   into its entitlements, which needs no portal entry.
+3. **Two provisioning profiles,** type *Developer ID*, one per App ID.
+   Download both.
+4. **Notarization:** an app-specific password, stored once with
+   `xcrun notarytool store-credentials deelpe-notary --apple-id … --team-id <TEAMID>`.
+
+Then:
+
+```bash
+DEVELOPER_ID="Developer ID Application: Your Name (TEAMID)" TEAM_ID=TEAMID \
+APP_PROFILE=~/Downloads/DLPrevent.provisionprofile \
+FILTER_PROFILE=~/Downloads/DLPrevent_Filter.provisionprofile \
+NOTARY_PROFILE=deelpe-notary apps/macos/DeelpeBar/build.sh
+```
+
+On the Mac, after installing the app to `/Applications`: settings → General →
+**Network blocking → Enable…**. macOS asks twice — once to allow the system
+extension (System Settings › General › Login Items & Extensions › Network
+Extensions), once to allow the filter configuration. The row then says *On*.
+
+What it does and does not do:
+
+- A caged process's **new** connections outside its permits are refused.
+  A connection it had open before the cage is cut once another 256 KiB go
+  out over it; that much can still leave.
+- The cage holds the **process** that read, and whatever it starts
+  afterwards; a program started by the same parent *before* the read stays
+  free. Safari and Mail helpers count for their app.
+- Name entries in the allowlist (`chatgpt.com`) do not apply here — the
+  filter sees addresses. Enter the network behind a destination.
+- It fails **open**: service stopped, filter disabled, relay missing → no
+  cage, and the dashboard shows the sensor *network cage* in red.
+
 ### Into the dashboard
 
 So that the enrollment command fetches the app from the central server
@@ -957,7 +1012,8 @@ the correlator follows a process and its children, not its brothers.
 | A connection that opens and closes between two polls | ❌ (as on the Mac) | ✅ |
 | Rename, hard link as such | ❌ (a copy still shows as read + write) | ✅ |
 | Mounted CIFS/NFS share | depends on the kernel | ✅ |
-| Blocking, network cage, killing the sender | ❌ | ✅ |
+| Network cage (strict folder with enforce) | ✅ nftables + cgroup v2 | ✅ WFP |
+| Killing the sender | ❌ (nowhere, since 2026-09-09) | ❌ |
 | USB / external volume | ❌ | ✅ |
 
 **How a Linux process is identified, and what the learning phase does with
@@ -973,6 +1029,23 @@ its job — a changed binary is a different program — but expect a burst of
 Whether a share was covered is not a guess: the first log line after every
 start names the filesystems that took a mark (`journalctl -u deelpe`). A
 protected folder on a filesystem missing from that list is not watched.
+
+### Network cage
+
+A strict folder with **enforce** takes the network from the process that read
+from it, for 60 s after its last read: it moves into the cgroup
+`/sys/fs/cgroup/deelpe-cage/p<pid>`, and the table `inet deelpe_cage` lets it
+reach only the rule's allowed addresses and private ranges. Its children go
+along, and so does its parent — but only for what the parent starts from then
+on. Connections that were already open are rejected at their next packet.
+
+Needs cgroup v2 (every current distribution), `nft` (package `nftables`, a
+dependency of the `.deb`) and a kernel with `nft_socket` (Debian, Ubuntu and
+RHEL carry it; Docker Desktop's VM kernel does not). If any is missing,
+`deelpe status` and the dashboard show *network cage* red and the rule only
+reports. `nft list table inet deelpe_cage` shows what is caged right now.
+The table is removed when the service stops, crashes included
+(`ExecStopPost`).
 
 ### Updating and uninstalling
 
@@ -1354,6 +1427,13 @@ Three parts, and the third is the one people forget:
    `ES_NEW_CLIENT_RESULT_ERR_NOT_PERMITTED`. Deploy the profile *before* the
    service, then it is allowed from the first start and no user is ever
    prompted.
+
+Network blocking needs two more payloads, or every user gets two approval
+dialogs: a **System Extensions** policy allowing team `<TEAMID>` /
+`ch.deelpe.bar.filter`, and a **Content Filter** (Web Content Filter,
+plugin type) with bundle identifier `ch.deelpe.bar`, filter data provider
+bundle identifier `ch.deelpe.bar.filter`, filter sockets on, filter packets
+off. The app must be the signed build (see "Network blocking" in section 2).
 
 Enrollment again per device:
 `sudo deelpe central enroll https://… <token> --ca-sha256 <fp>`.

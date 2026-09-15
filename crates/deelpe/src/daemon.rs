@@ -170,6 +170,10 @@ pub async fn run() -> Result<()> {
     // around until the next tick — the same promise as on the Windows
     // workstation (`winagent/src/client.rs`).
     let alerted = Arc::new(tokio::sync::Notify::new());
+    // The network cage of strict folders with `enforce`. Its own lock, as on
+    // the Windows workstation: putting a cage up talks to nft or the filter,
+    // and the reporting loop must not wait on that.
+    let cages = Arc::new(Mutex::new(crate::cage::Cages::new()));
 
     let (tx, mut rx) = mpsc::channel::<Event>(4096);
     for spec in specs {
@@ -207,15 +211,25 @@ pub async fn run() -> Result<()> {
 
     let st = state.clone();
     let alerted_ev = alerted.clone();
+    let cages_ev = cages.clone();
     tokio::spawn(async move {
         while let Some(ev) = rx.recv().await {
-            let outcome = {
+            let (outcome, touches) = {
                 let mut s = st.lock().await;
                 if matches!(ev, Event::File(_) | Event::Exit(_)) {
                     s.dirty = true;
                 }
-                s.corr.ingest(&ev)
+                (s.corr.ingest(&ev), fresh_touches(&mut s.corr))
             };
+            // The cage hangs off the touch, not off the finding: it has to
+            // be up before anybody sends (ADR 0002).
+            if !touches.is_empty() {
+                let now = Instant::now();
+                let mut c = cages_ev.lock().await;
+                for (pid, name, allow, children) in touches {
+                    c.on_touch(pid, &name, &allow, children, now);
+                }
+            }
             let Some(o) = outcome else { continue };
             let mut s = st.lock().await;
             s.learn_dirty = true;
@@ -263,9 +277,20 @@ pub async fn run() -> Result<()> {
         }
     });
 
+    // Whoever stops reading produces no more events: the expiry runs on a tick.
+    let cages_tick = cages.clone();
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(5));
+        loop {
+            tick.tick().await;
+            cages_tick.lock().await.expire(Instant::now());
+        }
+    });
+
     // Central server (optional): reports status and alerts, fetches rules.
     let st = state.clone();
-    tokio::spawn(async move { central_loop(st, alerted).await });
+    let cages_central = cages.clone();
+    tokio::spawn(async move { central_loop(st, alerted, cages_central).await });
 
     let result = tokio::select! {
         r = serve(state.clone()) => r,
@@ -278,6 +303,7 @@ pub async fn run() -> Result<()> {
     // learned.json, otherwise the next start reports a foreign change.
     save_learner(&state).await;
     save_state(&state).await;
+    cages.lock().await.release_all();
     let _ = std::fs::remove_file(SOCKET);
     result
 }
@@ -286,7 +312,7 @@ pub async fn run() -> Result<()> {
 
 /// Without `central.json` the loop sleeps and checks once a minute whether
 /// an enrollment has happened. Errors do not hold the service up.
-async fn central_loop(st: Arc<Mutex<State>>, alerted: Arc<tokio::sync::Notify>) {
+async fn central_loop(st: Arc<Mutex<State>>, alerted: Arc<tokio::sync::Notify>, cages: Arc<Mutex<crate::cage::Cages>>) {
     use deelpe::central::{self, CentralConfig, CentralState};
     use deelpe_core::session::Session;
     const UA: &str = concat!("deelpe/", env!("CARGO_PKG_VERSION"));
@@ -331,6 +357,9 @@ async fn central_loop(st: Arc<Mutex<State>>, alerted: Arc<tokio::sync::Notify>) 
             }
         }
         let (_, session) = session.as_mut().expect("gerade gesetzt");
+        // Before the state lock, so the state is not held while a cage goes up
+        // (that takes nft or the relay, milliseconds; this does wait for it).
+        let cage_health = cages.lock().await.health();
         let mut report = {
             let s = st.lock().await;
             let now = chrono::Utc::now();
@@ -350,7 +379,14 @@ async fn central_loop(st: Arc<Mutex<State>>, alerted: Arc<tokio::sync::Notify>) 
                     // carry a fully qualified name.
                     fqdn: String::new(),
                     started_at,
-                    sensors: s.sensors.iter().map(|x| deelpe_core::central::SensorHealth { name: x.name.clone(), ok: x.error.is_none(), error: x.error.clone() }).collect(),
+                    sensors: s
+                        .sensors
+                        .iter()
+                        .map(|x| deelpe_core::central::SensorHealth { name: x.name.clone(), ok: x.error.is_none(), error: x.error.clone() })
+                        // The cage fails open: its failure has to show in the
+                        // dashboard, or it stops protecting while all is green.
+                        .chain(std::iter::once(deelpe_core::central::SensorHealth { name: "network cage".into(), ok: cage_health.is_none(), error: cage_health.clone() }))
+                        .collect(),
                     watched: s.corr.config().watched.iter().map(|p| p.display().to_string()).collect(),
                     shares: Vec::new(),
                     learn_phase: serde_json::to_value(s.learner.phase(now)).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(),
@@ -525,6 +561,41 @@ async fn apply_central_config(st: &Mutex<State>, cstate: &mut deelpe::central::C
             cstate.managed = old;
         }
     }
+}
+
+/// Fresh touches of strict folders with `enforce`, as cage orders: PID, the
+/// name the cage judges by, the allowlist, and whether the process's
+/// current children go along.
+///
+/// Drained after every event, so one batch is one read: the reader first,
+/// then the ancestors it was inherited to, up the whole chain — right for
+/// reporting, far too wide for a cage. Seen in the lab VM on 2026-09-15: the
+/// chain reached the machine's guest agent, and every shell started after
+/// that was born inside the cage. So the cage takes the **reader with its
+/// children**, and its **parent alone**: whatever the parent starts next
+/// (`x=$(cat f); curl …`) is born inside, but the parent's other children
+/// and every ancestor above stay free.
+///
+/// ponytail: a pipe sibling started at the same moment (`cat f | curl …`)
+/// already runs and stays outside; it is reported, not stopped.
+fn fresh_touches(corr: &mut Correlator) -> Vec<(u32, String, Vec<String>, bool)> {
+    let batch = corr.drain_tainted();
+    let Some(&(reader, _)) = batch.first() else { return Vec::new() };
+    let parent = corr.parent_of(reader);
+    let mut out = Vec::new();
+    for (pid, origin) in batch {
+        if pid != reader && Some(pid) != parent {
+            continue;
+        }
+        let Some(x) = corr.config().strict_for(&origin).filter(|x| x.enforce) else { continue };
+        let name = corr.touched_identity(pid).map(|i| i.short()).unwrap_or_default();
+        // An ancestor the sensors never named, or a reader gone before it
+        // was named, is a placeholder (`pid 123`). The cage judges by name,
+        // so ask the system once more.
+        let name = if name.starts_with("pid ") { crate::cage::process_name(pid).unwrap_or(name) } else { name };
+        out.push((pid, name, x.allow.clone(), pid == reader));
+    }
+    out
 }
 
 /// What this service can do about a forbidden exfiltration.

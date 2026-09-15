@@ -17,11 +17,47 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp Info.plist "$APP/Contents/"
 cp .build/release/DeelpeBar "$APP/Contents/MacOS/DeelpeBar"
+cp .build/release/DeelpeCageRelay "$APP/Contents/MacOS/DeelpeCageRelay"
 swift icon/make-icon.swift "$APP/Contents/Resources/AppIcon.icns"
 cp "$ROOT/target/release/deelpe" "$APP/Contents/Resources/deelpe"
 cp "$ROOT/packaging/ch.deelpe.daemon.plist" "$APP/Contents/Resources/"
 cp "$ROOT/packaging/ch.deelpe.bar.plist" "$APP/Contents/Resources/"
-codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
+
+# The network cage's content filter is a system extension: macOS loads it only
+# from an app signed with a Developer ID, with provisioning profiles that
+# grant the Network Extension capability, and notarized. Without those the
+# app is built as before — it reports, and the settings say the filter is
+# missing. The portal steps are in docs/INSTALL.md.
+#
+#   DEVELOPER_ID="Developer ID Application: Name (TEAMID)" TEAM_ID=TEAMID \
+#   APP_PROFILE=DLPrevent.provisionprofile FILTER_PROFILE=DLPreventFilter.provisionprofile \
+#   NOTARY_PROFILE=deelpe-notary ./build.sh
+if [ -n "${DEVELOPER_ID:-}" ]; then
+  : "${TEAM_ID:?TEAM_ID missing}" "${APP_PROFILE:?APP_PROFILE missing}" "${FILTER_PROFILE:?FILTER_PROFILE missing}"
+  SYSX="$APP/Contents/Library/SystemExtensions/ch.deelpe.bar.filter.systemextension"
+  mkdir -p "$SYSX/Contents/MacOS"
+  sed "s/TEAM_ID/$TEAM_ID/g" Signing/Filter-Info.plist > "$SYSX/Contents/Info.plist"
+  cp .build/release/DeelpeFilter "$SYSX/Contents/MacOS/ch.deelpe.bar.filter"
+  cp "$FILTER_PROFILE" "$SYSX/Contents/embedded.provisionprofile"
+  cp "$APP_PROFILE" "$APP/Contents/embedded.provisionprofile"
+  sed "s/TEAM_ID/$TEAM_ID/g" Signing/Filter.entitlements > build/filter.entitlements
+  SIGN=(codesign --force --options runtime --timestamp --sign "$DEVELOPER_ID")
+  # Inside out: nested code first, the bundle around it last.
+  "${SIGN[@]}" --entitlements build/filter.entitlements "$SYSX"
+  "${SIGN[@]}" "$APP/Contents/MacOS/DeelpeCageRelay" "$APP/Contents/Resources/deelpe"
+  "${SIGN[@]}" --entitlements Signing/App.entitlements "$APP"
+  codesign --verify --deep --strict "$APP"
+  if [ -n "${NOTARY_PROFILE:-}" ]; then
+    rm -f build/notarize.zip
+    ditto -c -k --keepParent "$APP" build/notarize.zip
+    xcrun notarytool submit build/notarize.zip --keychain-profile "$NOTARY_PROFILE" --wait
+    xcrun stapler staple "$APP"
+    rm -f build/notarize.zip
+  fi
+else
+  codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
+  echo "  (unsigned: no network filter in this build; set DEVELOPER_ID, see docs/INSTALL.md)"
+fi
 echo "→ $APP"
 
 # The dashboard takes the zip around the bundle, not the bundle itself

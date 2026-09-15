@@ -25,73 +25,9 @@
 
 use anyhow::Result;
 use std::collections::HashMap;
-use std::net::IpAddr;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-/// The cage's deadline. Rolling: every further touch pushes it ahead.
-/// Deliberately **not** the reporting window of a touch (600 s) — the cage
-/// costs functionality, the report does not.
-pub const CAGE_TTL: Duration = Duration::from_secs(60);
-
-/// One allowlist entry in the shape a filter needs: network, prefix length,
-/// port. Name entries of the allowlist are none of that — at this layer
-/// there is no resolution, see [`deelpe_core::allow`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Permit {
-    pub net: IpAddr,
-    pub bits: u8,
-    pub port: Option<u16>,
-}
-
-/// The allowlist in filter form, plus the entries that were passed over.
-///
-/// A name (`chatgpt.com`) drops out and that is **not an error**: it applies
-/// at the browser connector, where the target URL is known. Whoever wants to
-/// open a destination for PowerShell too enters the network behind it —
-/// exactly the sentence from the module header of [`deelpe_core::allow`].
-pub fn permits(allow: &[String]) -> (Vec<Permit>, Vec<String>) {
-    let mut out = Vec::new();
-    let mut skipped = Vec::new();
-    for e in allow {
-        match deelpe_core::allow::as_net(e) {
-            Some((net, bits, port)) => out.push(Permit { net, bits, port }),
-            None => skipped.push(e.clone()),
-        }
-    }
-    (out, skipped)
-}
-
-/// What the cage **always** lets through: our own house.
-///
-/// Decision of 2026-09-09, variant (b): internal destinations are still
-/// **reported**, but not **blocked**. The cage is built against outflow to
-/// the outside; a process that has the internal network taken away is
-/// broken without anything being prevented. On 2026-09-09 that is exactly
-/// what hit the RDP clipboard and the start menu of the test client.
-///
-/// The rule's reporting list (`allow_destinations`) is untouched by this —
-/// an upload to an internal server still shows up in the warning list. That
-/// is the whole difference between "seeing" and "preventing".
-///
-/// Loopback, link-local and multicast are in there deliberately: nothing
-/// leaves the house over them, but without them name resolution on the LAN
-/// and half the desktop fall over.
-///
-/// ponytail: hard-wired to the private ranges of RFC 1918/4193. Whoever runs
-/// "internal" on their own public addresses needs a field in the settings
-/// for it — then this list moves there.
-const INTERNAL: &[&str] = &[
-    "10.0.0.0/8",
-    "172.16.0.0/12",
-    "192.168.0.0/16",
-    "127.0.0.0/8",
-    "169.254.0.0/16",
-    "224.0.0.0/4",
-    "fc00::/7",
-    "fe80::/10",
-    "::1/128",
-    "ff00::/8",
-];
+pub use deelpe_core::allow::{Permit, CAGE_TTL};
 
 /// Programs that never go into the cage.
 ///
@@ -168,15 +104,6 @@ pub fn may_cage(pid: u32, name: &str, asks_first: bool) -> Result<()> {
         anyhow::bail!("{name} is part of the shell or a browser and is never caged");
     }
     Ok(())
-}
-
-/// [`INTERNAL`] in filter form. The entries live in the code and are
-/// checked — an unreadable one would be a typo, not an operational case.
-fn internal_permits() -> Vec<Permit> {
-    INTERNAL
-        .iter()
-        .filter_map(|e| deelpe_core::allow::as_net(e).map(|(net, bits, port)| Permit { net, bits, port }))
-        .collect()
 }
 
 /// Netmask from a prefix length. `/0` is 0, `/32` is everything.
@@ -328,16 +255,9 @@ impl Cages {
             tracing::debug!(pid, "no network cage: {e}");
             return;
         }
-        let (mut permits, skipped) = permits(allow);
         // Our own house always stands open: what gets blocked is what goes
-        // out. Duplicates cost one superfluous filter and, worse, a list
-        // that differs for the same rule -- then the cage would rebuild
-        // itself on every touch.
-        for p in internal_permits() {
-            if !permits.contains(&p) {
-                permits.push(p);
-            }
-        }
+        // out. See `deelpe_core::allow::cage_permits`.
+        let (permits, skipped) = deelpe_core::allow::cage_permits(allow);
         // Once per cage, not per file read.
         if !skipped.is_empty() && !self.holds(&exe) {
             tracing::info!(exe = %name, "allowlist names hold at the browser connector, not here: {}", skipped.join(", "));
@@ -617,22 +537,11 @@ impl Cages {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     fn p(s: &str) -> Permit {
         let (net, bits, port) = deelpe_core::allow::as_net(s).unwrap();
         Permit { net, bits, port }
-    }
-
-    /// Names apply at the browser connector, not here — and they are not an
-    /// error, they belong in the log.
-    #[test]
-    fn only_addresses_become_filters() {
-        let allow = vec!["10.0.0.0/8".into(), "chatgpt.com".into(), "203.0.113.9:443".into(), "2001:db8::/32".into()];
-        let (ps, skipped) = permits(&allow);
-        assert_eq!(ps, vec![p("10.0.0.0/8"), p("203.0.113.9:443"), p("2001:db8::/32")]);
-        assert_eq!(skipped, vec!["chatgpt.com".to_string()]);
-        assert_eq!(ps[1].port, Some(443));
-        assert_eq!(ps[0].port, None);
     }
 
     /// The same `.mui` suffix as with [`crate::enforce::is_critical`]: the
@@ -672,25 +581,6 @@ mod tests {
         assert!(may_cage(1234, "curl.exe", false).is_ok());
         // Whoever asks first does not need it.
         assert!(may_cage(1234, "curl.exe", true).is_err());
-    }
-
-    /// Variant (b): internal gets reported, not blocked. The cage always
-    /// lets our own house through, even with an empty rule allowlist.
-    #[test]
-    fn the_cage_always_lets_the_house_through() {
-        let internal = internal_permits();
-        assert!(internal.contains(&p("10.0.0.0/8")));
-        assert!(internal.contains(&p("192.168.0.0/16")));
-        assert!(internal.contains(&p("127.0.0.0/8")), "ohne Rueckkanal geht zu viel kaputt");
-        assert!(internal.contains(&p("fc00::/7")));
-        // But nothing public: 1.1.1.1 and 20.42.73.27 must not accidentally
-        // fall into one of the ranges.
-        for public in ["1.1.1.1".parse().unwrap(), "20.42.73.27".parse().unwrap()] {
-            let covered = internal.iter().any(|q| {
-                deelpe_core::allow::allows(&[format!("{}/{}", q.net, q.bits)], Some(public), None)
-            });
-            assert!(!covered, "{public} gilt als intern");
-        }
     }
 
     #[test]

@@ -31,6 +31,8 @@ final class Store: ObservableObject {
     /// Host names for destination addresses (reverse DNS), display only. Its
     /// own object; changes are forwarded to `objectWillChange` below.
     let hosts = HostResolver()
+    /// The network cage's content filter, switched on from the settings.
+    let filter = NetworkFilter()
     private var hostsSink: AnyCancellable?
     /// Struck pairs, not yet sent to the service: one password dialog for the
     /// whole review instead of one per strike.

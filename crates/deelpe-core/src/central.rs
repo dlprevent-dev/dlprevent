@@ -327,9 +327,9 @@ pub struct Rule {
     #[serde(default)]
     pub strict: bool,
     /// Switch the folder from reporting to acting (only with `strict`).
-    /// No process is stopped: the levers are the browser connector, the
-    /// WFP cage and deleting the copy, all of them on a Windows
-    /// workstation. See [`crate::config::Strict::enforce`].
+    /// No process is stopped: the levers are the network cage (every
+    /// endpoint), the browser connector and deleting the copy (Windows
+    /// workstation). See [`crate::config::Strict::enforce`].
     #[serde(default)]
     pub enforce: bool,
     pub hard_max_files: u32,

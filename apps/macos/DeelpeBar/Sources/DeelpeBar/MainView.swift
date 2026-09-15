@@ -518,6 +518,7 @@ struct SettingsView: View {
                 .disabled(store.installing)
                 .help("Replaces the background service with the version bundled in this app. Asks for the admin password.")
         }
+        NetworkFilterRow(filter: store.filter)
     }
 
     @ViewBuilder
@@ -742,4 +743,28 @@ func relative(_ d: Date) -> String { d.formatted(relativeFormat) }
 func uptime(_ s: UInt64) -> String {
     let h = s / 3600, m = (s % 3600) / 60
     return h > 0 ? "\(h) h \(m) min" : "\(m) min"
+}
+
+/// The network cage: without the content filter the service reports a flow
+/// out of a strict folder but cannot stop it.
+private struct NetworkFilterRow: View {
+    @ObservedObject var filter: NetworkFilter
+
+    var body: some View {
+        HStack {
+            Text("Network blocking").foregroundStyle(.secondary).font(.caption)
+            Spacer()
+            if filter.enabled {
+                Label("On", systemImage: "checkmark.shield").font(.caption)
+            } else {
+                Button("Enable…") { filter.enable() }
+                    .disabled(!filter.bundled)
+                    .help(filter.bundled
+                          ? "Lets strict folders with “enforce” stop a program from sending what it read. macOS asks for approval twice."
+                          : "This build of the app carries no network filter (built without a Developer ID).")
+            }
+        }
+        .onAppear { filter.refresh() }
+        if let n = filter.note { Text(n).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+    }
 }

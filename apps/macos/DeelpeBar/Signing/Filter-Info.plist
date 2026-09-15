@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key><string>ch.deelpe.bar.filter</string>
+  <key>CFBundleName</key><string>DLPrevent Network Filter</string>
+  <key>CFBundleExecutable</key><string>ch.deelpe.bar.filter</string>
+  <key>CFBundlePackageType</key><string>SYSX</string>
+  <key>CFBundleShortVersionString</key><string>0.1.0</string>
+  <key>CFBundleVersion</key><string>1</string>
+  <key>LSMinimumSystemVersion</key><string>14.0</string>
+  <key>NSSystemExtensionUsageDescription</key><string>Stops a program that has read from a strict folder from sending it anywhere but the allowed destinations.</string>
+  <key>NetworkExtension</key>
+  <dict>
+    <!-- TEAM_ID is replaced by build.sh; the name has to start with an app group of the extension. -->
+    <key>NEMachServiceName</key><string>TEAM_ID.ch.deelpe.filter</string>
+    <key>NEProviderClasses</key>
+    <dict>
+      <key>com.apple.networkextension.filter-data</key><string>FilterDataProvider</string>
+    </dict>
+  </dict>
+</dict>
+</plist>

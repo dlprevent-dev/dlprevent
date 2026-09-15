@@ -85,6 +85,22 @@ trigger a read from a strict folder to see whether it is still true.
 Programs that are never caged (shell, browsers, critical processes) do not
 turn this red; that is the browser connector's job, not the cage's.
 
+**Red sensor "network cage" on a Mac.** The message says which part is
+missing. *No network filter in this app* — the app in `/Applications` was
+built without a Developer ID and carries no filter (INSTALL.md → Network
+blocking). *The network filter relay ended* — the filter is not activated or
+was switched off in System Settings; `/var/log/deelpe.log` has the relay's own
+line (`DeelpeCageRelay: …`). *No answer within 2 s* — the filter
+hangs; `systemextensionsctl list` shows its state. As on Windows, the cage
+fails open and the message stays until a cage arms successfully.
+
+**Red sensor "network cage" on Linux.** *run nft* — `apt install nftables`.
+*No cgroup v2 hierarchy* — the machine boots with the legacy cgroup layout
+(`systemd.unified_cgroup_hierarchy=0`). *nft: … Could not process rule: No
+such file or directory* on a `socket cgroupv2` line — the kernel has no
+`nft_socket` (seen on Docker Desktop's VM, 2026-09-15); a stock distribution
+kernel has it.
+
 ## Linux
 
 **The agent never appears in the dashboard, or shows as offline.** Almost
