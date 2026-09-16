@@ -225,10 +225,7 @@ pub async fn run() -> Result<()> {
             // be up before anybody sends (ADR 0002).
             if !touches.is_empty() {
                 let now = Instant::now();
-                let mut c = cages_ev.lock().await;
-                for (pid, name, allow, children) in touches {
-                    c.on_touch(pid, &name, &allow, children, now);
-                }
+                cages_ev.lock().await.on_touches(touches, now);
             }
             let Some(o) = outcome else { continue };
             let mut s = st.lock().await;

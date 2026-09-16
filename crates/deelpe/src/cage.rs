@@ -68,6 +68,13 @@ const NEVER_CAGE: &[&str] = &[
     "com.apple.Spotlight",
     "com.apple.quicklook*",
     "com.apple.QuickLookUIService",
+    // Finder's copy, file coordination and the open/save panel read a
+    // protected folder whenever Finder copies out of it. The panel belongs
+    // to the app that shows it: caged as its parent, that app lost its
+    // network (LibreWolf, 2026-09-16).
+    "com.apple.DesktopServicesHelper",
+    "com.apple.filecoordinationd",
+    "com.apple.appkit.xpc.openAndSavePanelService",
     "com.apple.sshd",
     "ch.deelpe.*",
     "deelpe",
@@ -136,6 +143,22 @@ impl Cages {
 
     pub fn health(&self) -> Option<String> {
         self.last_error.clone()
+    }
+
+    /// One batch from `daemon::fresh_touches`: the reader (`children` set)
+    /// and its parent. A reader that is never caged spares its parent too —
+    /// the parent did not read, it merely owns a system helper that did.
+    /// Whoever takes the file for real opens it itself and is the reader.
+    pub fn on_touches(&mut self, touches: Vec<(u32, String, Vec<String>, bool)>, now: Instant) {
+        if let Some((pid, name, ..)) = touches.iter().find(|t| t.3) {
+            if let Err(e) = may_cage(*pid, name) {
+                tracing::debug!(pid, "no network cage for reader or parent: {e}");
+                return;
+            }
+        }
+        for (pid, name, allow, children) in touches {
+            self.on_touch(pid, &name, &allow, children, now);
+        }
     }
 
     /// A fresh touch of a strict folder with `enforce`. `children`: the
@@ -519,6 +542,19 @@ mod tests {
         assert!(!c.open[&4242].children);
         c.on_touch(4242, "bash", &[], true, t0);
         assert!(c.open[&4242].children);
+    }
+
+    /// The open/save panel of a browser reads a protected folder when Finder
+    /// copies out of it. The panel is part of the system; the browser owning
+    /// it keeps its network. A reader that may be caged takes its parent along.
+    #[test]
+    fn an_exempt_reader_spares_its_parent() {
+        let mut c = Cages::new();
+        let now = Instant::now();
+        c.on_touches(vec![(4242, "com.apple.appkit.xpc.openAndSavePanelService".into(), vec![], true), (701, "net.librewolf.librewolf".into(), vec![], false)], now);
+        assert_eq!(c.len(), 0);
+        c.on_touches(vec![(4243, "curl".into(), vec![], true), (4200, "bash".into(), vec![], false)], now);
+        assert_eq!(c.len(), 2);
     }
 
     /// Fail open, and say so: a platform that refuses leaves no cage in the
