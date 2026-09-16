@@ -250,7 +250,26 @@ struct Flow {
 struct LocalAlert {
     id: u64,
     first_at: DateTime<Utc>,
-    files: u32,
+    /// The distinct targets written, not the events: Explorer writes one
+    /// file in several events, and one bmp was reported as "3 files" (lab
+    /// 2026-09-16).
+    targets: std::collections::HashSet<PathBuf>,
+    last_at: DateTime<Utc>,
+}
+
+/// One alert per sender and strict folder for all its denied destinations.
+/// A touched browser talks to a dozen CDNs within seconds, and one row per
+/// destination turned one blocked upload into fifteen alerts (lab
+/// 2026-09-16). What stays per destination is the threshold in [`Flow`].
+#[derive(Debug)]
+struct DeniedAlert {
+    /// ID and time of the first report, once there was one.
+    alert: Option<(u64, DateTime<Utc>)>,
+    /// The first destination: the central server keeps the row's `remote`
+    /// from its first report, so the updates name the same one.
+    remote: (Option<IpAddr>, Option<u16>),
+    bytes: u64,
+    destinations: u32,
     last_at: DateTime<Utc>,
 }
 
@@ -421,6 +440,8 @@ pub struct Correlator {
     mounts: std::collections::HashSet<PathBuf>,
     /// (PID, mount point or target folder) → running local alert.
     volume_alerts: HashMap<(u32, PathBuf), LocalAlert>,
+    /// (sender PID, strict folder) → the one alert for its denied flows.
+    denied_alerts: HashMap<(u32, PathBuf), DeniedAlert>,
     /// (PID, protected folder) → what landed in it. The other direction,
     /// see [`crate::inbound`].
     arrivals: HashMap<(u32, PathBuf), Arrival>,
@@ -458,6 +479,7 @@ impl Correlator {
             inodes: HashMap::new(),
             mounts: std::collections::HashSet::new(),
             volume_alerts: HashMap::new(),
+            denied_alerts: HashMap::new(),
             arrivals: HashMap::new(),
             last_derived_sweep: DateTime::<Utc>::MIN_UTC,
             next_id: next_id.max(1),
@@ -835,14 +857,14 @@ impl Correlator {
         let key = (f.process.pid, dest.clone());
         let (is_new, id, at, count) = match self.volume_alerts.get_mut(&key) {
             Some(v) => {
-                v.files += 1;
+                v.targets.insert(target.clone());
                 v.last_at = f.at;
-                (false, v.id, v.first_at, v.files)
+                (false, v.id, v.first_at, v.targets.len())
             }
             None => {
                 let id = self.next_id;
                 self.next_id += 1;
-                self.volume_alerts.insert(key, LocalAlert { id, first_at: f.at, files: 1, last_at: f.at });
+                self.volume_alerts.insert(key, LocalAlert { id, first_at: f.at, targets: [target.clone()].into(), last_at: f.at });
                 (true, id, f.at, 1)
             }
         };
@@ -1080,6 +1102,11 @@ impl Correlator {
         let flow = self.flows.entry((n.pid, n.remote, n.remote_port)).or_insert(Flow { bytes: 0, reported: 0, denied_reported: false, alert: None, last_at: n.at });
         flow.bytes = flow.bytes.saturating_add(n.bytes_out);
         flow.last_at = n.at;
+        if let Some(folder) = &denied {
+            let g = self.denied_alerts.entry((n.pid, folder.clone())).or_insert(DeniedAlert { alert: None, remote: (n.remote, n.remote_port), bytes: 0, destinations: 0, last_at: n.at });
+            g.bytes = g.bytes.saturating_add(n.bytes_out);
+            g.last_at = n.at;
+        }
         let step = (flow.reported / 2).max(min);
         // Report at the first denied byte — even when this flow already had
         // an ordinary alert before and the threshold has long stood high.
@@ -1091,14 +1118,37 @@ impl Correlator {
         }
         flow.denied_reported = denied.is_some();
         flow.reported = flow.bytes;
-        let (id, at, is_new) = match flow.alert {
+        let group = denied.as_ref().and_then(|p| self.denied_alerts.get_mut(&(n.pid, p.clone())));
+        // A flow that already had an ordinary alert keeps its row when it
+        // becomes denied, and takes the other destinations into it.
+        let prior = group.as_ref().and_then(|g| g.alert).or(flow.alert);
+        let (id, at, is_new) = match prior {
             Some((id, at)) => (id, at, false),
             None => {
                 let id = self.next_id;
                 self.next_id += 1;
-                flow.alert = Some((id, n.at));
                 (id, n.at, true)
             }
+        };
+        flow.alert = Some((id, at));
+        let (remote, remote_port, bytes_out) = match group {
+            Some(g) => {
+                g.alert = Some((id, at));
+                if force {
+                    g.destinations += 1;
+                }
+                if g.destinations > 1 {
+                    let last = match (n.remote, n.remote_port) {
+                        (Some(ip), Some(p)) => format!("{ip}:{p}"),
+                        (Some(ip), None) => ip.to_string(),
+                        (None, _) => "?".into(),
+                    };
+                    let note = format!("{} denied destinations, last {last}", g.destinations);
+                    via = Some(via.map_or(note.clone(), |v| format!("{v}, {note}")));
+                }
+                (g.remote.0, g.remote.1, g.bytes)
+            }
+            None => (n.remote, n.remote_port, flow.bytes),
         };
         let alert = Alert {
             id,
@@ -1106,9 +1156,9 @@ impl Correlator {
             pid: n.pid,
             identity,
             files,
-            remote: n.remote,
-            remote_port: n.remote_port,
-            bytes_out: flow.bytes,
+            remote,
+            remote_port,
+            bytes_out,
             via,
             last_at: if is_new { None } else { Some(n.at) },
             verdict: if denied.is_some() { Verdict::Denied } else { Verdict::New },
@@ -1129,6 +1179,7 @@ impl Correlator {
         let ttl = self.touch_ttl();
         self.touched.retain(|_, t| now - t.last_touch <= ttl);
         self.flows.retain(|_, f| now - f.last_at <= ttl);
+        self.denied_alerts.retain(|_, g| now - g.last_at <= ttl);
     }
 
     fn expire_derived(&mut self, now: DateTime<Utc>) {
@@ -1343,6 +1394,20 @@ mod tests {
                 .unwrap_or_else(|| panic!("keine Warnung fuer {n}"));
             assert_eq!(a.copy_to, Some(PathBuf::from("/Users/me/Desktop")), "{n}");
             assert_eq!(a.verdict, Verdict::Denied, "{n}");
+        }
+    }
+
+    /// Explorer writes one file in several events; that is one file, not three.
+    #[test]
+    fn repeated_writes_of_one_copy_count_as_one_file() {
+        let strict = Config { strict: vec![crate::config::Strict { path: "/w/GL".into(), allow: vec![], enforce: true }], ..cfg() };
+        let mut c = Correlator::new(strict);
+        let now = Utc::now();
+        let ex = || proc_named(5, Some(1), "/w/explorer", "com.microsoft.explorer");
+        c.ingest(&open(ex(), "/w/GL/hvhv.bmp", now));
+        for _ in 0..3 {
+            let a = c.ingest(&file(ex(), "/Users/me/Documents/hvhv.bmp", FileAction::Write, None, now)).expect("every write still reaches the intervention");
+            assert!(a.via.as_deref().unwrap().starts_with("1 file copied"), "{:?}", a.via);
         }
     }
 
@@ -1773,6 +1838,28 @@ mod tests {
         assert!(!grown.is_new());
         assert_eq!(grown.id, id);
         assert_eq!(grown.verdict, Verdict::Denied);
+    }
+
+    /// Lab 2026-09-16: Firefox read one file out of GL and then talked to
+    /// fifteen Google and Fastly addresses — fifteen rows for one blocked
+    /// upload. Now one row that counts the destinations.
+    #[test]
+    fn denied_flows_to_many_destinations_are_one_alert() {
+        let cfg = Config { strict: vec![crate::config::Strict { path: "/w/GL".into(), allow: vec![], enforce: false }], ..cfg() };
+        let mut c = Correlator::new(cfg);
+        let t0 = Utc::now();
+        c.ingest(&open(proc_(10), "/w/GL/shot.png", t0));
+        let first = c.ingest(&net_to(10, "142.251.154.119", 443, 46, t0)).unwrap();
+        assert!(first.is_new());
+        let second = c.ingest(&net_to(10, "151.101.1.91", 443, 39, t0 + Duration::seconds(1))).expect("new destination is reported at once");
+        assert!(!second.is_new());
+        assert_eq!(second.id, first.id);
+        assert_eq!(second.remote, first.remote, "the row keeps its first destination");
+        assert_eq!(second.bytes_out, 85);
+        assert!(second.via.as_deref().unwrap().contains("2 denied destinations, last 151.101.1.91:443"), "{:?}", second.via);
+        // Another sender is its own alert.
+        c.ingest(&open(proc_(11), "/w/GL/shot.png", t0));
+        assert_ne!(c.ingest(&net_to(11, "151.101.1.91", 443, 39, t0)).unwrap().id, first.id);
     }
 
     /// The case from the review: the flow was already running as an ordinary
