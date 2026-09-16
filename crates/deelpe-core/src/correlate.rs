@@ -889,11 +889,10 @@ impl Correlator {
         };
         let files: Vec<PathBuf> = match (&src, self.touched.get(&f.process.pid)) {
             (_, Some(t)) if !t.files.is_empty() => {
-                let mut v = t.files.clone();
+                // Newest first, the copied file itself at the very front.
+                let mut v: Vec<PathBuf> = t.files.iter().rev().filter(|f| Some(*f) != src.as_ref()).cloned().collect();
                 if let Some(s) = &src {
-                    if !v.contains(s) {
-                        v.push(s.clone());
-                    }
+                    v.insert(0, s.clone());
                 }
                 v
             }
@@ -978,11 +977,11 @@ impl Correlator {
         } else if entry.read_by.is_none() && entry.files.is_empty() {
             entry.read_by = read_by;
         }
-        if !entry.files.contains(&origin.to_path_buf()) {
-            entry.files.push(origin.to_path_buf());
-            if entry.files.len() > MAX_TOUCHED_FILES {
-                entry.files.remove(0);
-            }
+        // Newest last: read again, a file moves to the end.
+        entry.files.retain(|f| f != origin);
+        entry.files.push(origin.to_path_buf());
+        if entry.files.len() > MAX_TOUCHED_FILES {
+            entry.files.remove(0);
         }
         if let Some(c) = copy {
             if !entry.copies.contains(&c.to_path_buf()) {
@@ -1104,7 +1103,9 @@ impl Correlator {
             let note = "link-local peer (AirDrop or local network)";
             via = Some(via.map_or(note.to_string(), |v| format!("{v}, {note}")));
         }
-        let files = t.files.clone();
+        // Newest first in the alert: the dashboard names a row by its first
+        // file, and that should be the one just read.
+        let files: Vec<PathBuf> = t.files.iter().rev().cloned().collect();
         // Note before the borrow ends: did the sender read itself?
         let t_read_by_none = ancestor.is_none() && t.read_by.is_none();
 
@@ -1877,6 +1878,21 @@ mod tests {
         assert!(c.ingest(&refused(t0 + Duration::seconds(2))).is_none(), "the same refusal again is no new row");
         // A zero-byte measurement is still nothing.
         assert!(c.ingest(&net_to(10, "198.51.100.1", 443, 0, t0 + Duration::seconds(3))).is_none());
+    }
+
+    /// The dashboard names an alert by its first file. That has to be the
+    /// one read last — the file just picked for an upload — not the first
+    /// one the process ever opened.
+    #[test]
+    fn an_alert_lists_the_file_read_last_first() {
+        let cfg = Config { strict: vec![crate::config::Strict { path: "/w/GL".into(), allow: vec![], enforce: true }], ..cfg() };
+        let mut c = Correlator::new(cfg);
+        let t0 = Utc::now();
+        for f in ["/w/GL/a.pdf", "/w/GL/b.pdf", "/w/GL/c.pdf", "/w/GL/a.pdf"] {
+            c.ingest(&open(proc_(10), f, t0));
+        }
+        let a = c.ingest(&net_to(10, "203.0.113.9", 443, 1, t0 + Duration::seconds(1))).unwrap();
+        assert_eq!(a.files, vec![PathBuf::from("/w/GL/a.pdf"), PathBuf::from("/w/GL/c.pdf"), PathBuf::from("/w/GL/b.pdf")], "read again counts as read last");
     }
 
     #[test]
