@@ -191,7 +191,12 @@ under the gear).
    orange bar. The user strikes out what they do not recognise
    (`LearnForget`) and confirms (`LearnConfirm`). On a first start with an
    existing log: alerts from the last `learn_days` count as observations, and
-   the phase ends `learn_days` after the oldest.
+   the phase ends `learn_days` after the oldest. **Review does not end by
+   itself.** A centrally managed endpoint is confirmed from the dashboard
+   (Agents → *Finish learning*, per agent or for all, since 2026-09-15): the
+   order rides the next report (`AgentConfig::finish_learning`) and clears
+   itself once the agent reports "active". Before that, a Windows workstation
+   or a Linux server had no way to leave review at all.
 3. After that, *active*: a new pair → `verdict: new`. In the alert the user
    decides "Remember" (`LearnRemember(id)`, the pair becomes known) or
    "Always report" (`LearnFlag(id)`, `verdict: flagged`).

@@ -166,6 +166,12 @@ pub struct AgentStatus {
     /// two files. Older agents do not send it and get no Linux update.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub arch: String,
+    /// When the learning phase ran or runs out — the start of "review". Lets
+    /// the dashboard say how long an agent has been waiting for a confirm.
+    /// Empty on the file server agent (its baseline ends by itself) and on
+    /// older agents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub learn_until: Option<DateTime<Utc>>,
 }
 
 /// This program's architecture in Debian's spelling — the name the `.deb`
@@ -391,6 +397,18 @@ pub struct AgentConfig {
     /// for byte the way it did before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub update_to_sha256: Option<String>,
+    /// End the learning phase now: what was learned counts as known, and
+    /// from here on new and deviating traffic is reported — the same as
+    /// "Confirm all" in the Mac app or `deelpe learn confirm`. Set while the
+    /// operator's order stands and the agent does not yet report "active".
+    ///
+    /// Not tied to the generation, like `update_to_sha256`, and idempotent:
+    /// an agent that is already active does nothing.
+    ///
+    /// `default`/`skip_serializing_if`: older agents keep reading the answer,
+    /// and without an order it looks byte for byte as before.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub finish_learning: bool,
 }
 
 /// What is to happen with the pair of an alert. Corresponds to the socket

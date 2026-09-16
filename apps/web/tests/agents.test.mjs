@@ -12,7 +12,20 @@ function bin(over = {}) {
 test('the agent list marks who runs a different program than the one uploaded', async () => {
   const server = await createServer({ server: { middlewareMode: true }, logLevel: 'error' });
   try {
-    const { agentOutdated, platformFor, selfReplacingPlatform, updateStuck } = await server.ssrLoadModule('/src/lib/api.ts');
+    const { agentOutdated, canFinishLearning, daysInReview, platformFor, selfReplacingPlatform, updateStuck } = await server.ssrLoadModule('/src/lib/api.ts');
+
+    // Finishing the learning phase: endpoints still learning or in review,
+    // never a file server (its baseline ends by itself) or a revoked agent.
+    const learner = (learn_phase, kind = 'windows_client', revoked_at = null) => ({ kind, revoked_at, status: { learn_phase } });
+    assert.equal(canFinishLearning(learner('review')), true);
+    assert.equal(canFinishLearning(learner('learning', 'linux')), true);
+    assert.equal(canFinishLearning(learner('active', 'mac')), false);
+    assert.equal(canFinishLearning(learner('review', 'windows_server')), false);
+    assert.equal(canFinishLearning(learner('review', 'mac', '2026-09-01T00:00:00Z')), false);
+    const now = Date.parse('2026-09-15T12:00:00Z');
+    assert.equal(daysInReview({ learn_phase: 'review', learn_until: '2026-09-12T11:00:00Z' }, now), 3);
+    assert.equal(daysInReview({ learn_phase: 'learning', learn_until: '2026-09-20T00:00:00Z' }, now), null);
+    assert.equal(daysInReview({ learn_phase: 'review' }, now), null, 'an older agent does not say');
 
     // The same mapping as `binaries::platform_for` on the server. Get it
     // wrong here and you show an agent as outdated that the server does not
@@ -81,6 +94,42 @@ test('the agent list marks who runs a different program than the one uploaded', 
     assert.equal(updateStuck({ update_requested: req, last_seen: at('2026-09-10T13:20:00Z') }), false);
     assert.equal(updateStuck({ update_requested: req, last_seen: null }), false);
     assert.equal(updateStuck({ update_requested: null, last_seen: at('2026-09-10T13:48:00Z') }), false);
+  } finally {
+    await server.close();
+  }
+});
+
+test('a selection says per action how many agents it really reaches', async () => {
+  const server = await createServer({ server: { middlewareMode: true }, logLevel: 'error' });
+  try {
+    const { bulkEligible, canUpdate } = await server.ssrLoadModule('/src/lib/api.ts');
+
+    const a = (over = {}) => ({
+      id: over.id ?? 'x', kind: 'windows_client', revoked_at: null, update_requested: null,
+      learn_confirm_requested: null, status: { learn_phase: 'active', build: SHA.slice(0, 12) }, ...over,
+    });
+
+    // An order that is already on its way is not sent twice — the same line
+    // the button on the row draws.
+    assert.equal(canUpdate(a({ status: { learn_phase: 'active', build: '0123456789ab' } }), [bin()]), true);
+    assert.equal(canUpdate(a({ status: { learn_phase: 'active', build: '0123456789ab' }, update_requested: '2026-09-16T08:00:00Z' }), [bin()]), false);
+    assert.equal(canUpdate(a({ status: { learn_phase: 'active', build: '0123456789ab' }, revoked_at: '2026-09-16T08:00:00Z' }), [bin()]), false);
+    // Already running the staged program: nothing to order.
+    assert.equal(canUpdate(a(), [bin()]), false);
+
+    const picked = [
+      a({ id: '1', status: { learn_phase: 'review', build: SHA.slice(0, 12) } }),          // finish learning
+      a({ id: '2', kind: 'windows_server', status: { learn_phase: 'review', build: SHA.slice(0, 12) } }), // file server: never
+      a({ id: '3', status: { learn_phase: 'learning', build: SHA.slice(0, 12) }, learn_confirm_requested: '2026-09-16T08:00:00Z' }), // already asked
+      a({ id: '4', status: { learn_phase: 'active', build: '0123456789ab' } }),            // outdated
+      a({ id: '5', revoked_at: '2026-09-16T08:00:00Z' }),                                  // only deletable
+    ];
+    const n = bulkEligible(picked, [bin()]);
+    assert.deepEqual(n, { finish_learning: 1, update: 1, revoke: 4, delete: 1 });
+
+    // A selection of nothing offers nothing — no button may stand there with
+    // a count of zero and still do something.
+    assert.deepEqual(bulkEligible([], [bin()]), { finish_learning: 0, update: 0, revoke: 0, delete: 0 });
   } finally {
     await server.close();
   }

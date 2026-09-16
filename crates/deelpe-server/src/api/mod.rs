@@ -55,6 +55,7 @@ pub fn router(state: Shared) -> Router {
         .route("/api/account/passkeys/{id}", delete(account::delete_passkey))
         .route("/api/overview", get(alerts::overview))
         .route("/api/alerts", get(alerts::alerts))
+        .route("/api/alerts/count", get(alerts::alert_count))
         .route("/api/alerts/{id}/ack", post(alerts::ack_alert))
         .route("/api/alerts/ack", post(alerts::ack_alerts))
         .route("/api/alerts/{id}/learn", post(alerts::learn_alert))
@@ -71,6 +72,9 @@ pub fn router(state: Shared) -> Router {
         .route("/api/agents/{id}", delete(agents::revoke_agent))
         .route("/api/agents/{id}/log", get(agents::agent_log))
         .route("/api/agents/{id}/update", post(agents::request_update))
+        .route("/api/agents/{id}/finish-learning", post(agents::finish_learning))
+        .route("/api/agents/finish-learning", post(agents::finish_learning_all))
+        .route("/api/agents/bulk", post(agents::bulk))
         .route("/api/release", get(release::release))
         .route("/api/release/check", post(release::check))
         .route("/api/release/fetch", post(release::fetch))
@@ -302,12 +306,20 @@ mod tests {
     /// Real sessions and the HTTP router, isolated by sqlx in a fresh database.
     /// Run with DATABASE_URL pointing at a development Postgres with CREATEDB.
     fn test_app(pool: sqlx::PgPool) -> Shared {
+        test_app_in(pool, std::env::temp_dir().join("deelpe-test"))
+    }
+
+    /// The same with a data directory of its own — for a test that puts a
+    /// file in there. The default one is shared by every test in this
+    /// module, and two of them writing the same agent program would be a
+    /// race nobody finds again.
+    fn test_app_in(pool: sqlx::PgPool, data_dir: std::path::PathBuf) -> Shared {
         // Match main(): workspace builds can enable more than one TLS provider.
         rustls::crypto::ring::default_provider().install_default().ok();
         let dir = std::env::temp_dir().join(format!("deelpe-api-test-{}", Uuid::new_v4()));
         let pki = crate::pki::Pki::load_or_create(&dir, &["localhost".into()]).unwrap();
         std::fs::remove_dir_all(dir).unwrap();
-        std::sync::Arc::new(crate::state::AppState::new(pool, std::sync::Arc::new(pki), false, 8444, false, std::env::temp_dir().join("deelpe-test")))
+        std::sync::Arc::new(crate::state::AppState::new(pool, std::sync::Arc::new(pki), false, 8444, false, data_dir))
     }
 
     async fn test_session(pool: &sqlx::PgPool, role: &str) -> String {
@@ -918,6 +930,143 @@ mod tests {
         assert_eq!(response_json(r).await["passkey"], true);
         db::set_setting(&pool, "require_2fa_viewer", json!(false)).await.unwrap();
         assert!(login("neues-langes-passwort").await.headers().contains_key(header::SET_COOKIE), "ohne Pflicht ist der Passkey Bequemlichkeit, kein Zwang");
+    }
+
+    /// Several agents at once. A fleet of a thousand devices cannot be
+    /// walked through one row at a time — but a tick in a box must not do
+    /// more than the button on the row does either.
+    ///
+    /// What is checked is what the bulk **skips**: a file server's baseline
+    /// ends by itself and takes no confirm; an agent already asked is not
+    /// asked twice; and deleting reaches only what is revoked — otherwise a
+    /// select-all would sweep the running fleet off the list, and the
+    /// certificates would stay valid while the devices are gone from the
+    /// dashboard.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_selection_of_agents_does_per_agent_what_the_row_would_do(pool: sqlx::PgPool) {
+        let admin = test_session(&pool, "admin").await;
+        let viewer = test_session(&pool, "viewer").await;
+        let agent = |name: &'static str, kind: &'static str, phase: &'static str, revoked: bool, asked: bool| {
+            let pool = pool.clone();
+            async move {
+                let id = Uuid::new_v4();
+                sqlx::query(
+                    "INSERT INTO agents (id, name, kind, version, cert_fingerprint, cert_not_after, status, revoked_at, learn_confirm_requested) \
+                     VALUES ($1, $2, $3, '0.1.4', $2, now() + interval '1 day', jsonb_build_object('learn_phase', $4::text), \
+                             CASE WHEN $5 THEN now() END, CASE WHEN $6 THEN now() END)",
+                )
+                .bind(id).bind(name).bind(kind).bind(phase).bind(revoked).bind(asked)
+                .execute(&pool).await.unwrap();
+                id
+            }
+        };
+        let learner = agent("pc-hans", "windows_client", "review", false, false).await;
+        let fileserver = agent("srv01", "windows_server", "review", false, false).await;
+        let already = agent("pc-eva", "windows_client", "learning", false, true).await;
+        let revoked = agent("pc-alt", "mac", "active", true, false).await;
+        let app = router(test_app(pool.clone()));
+        let ids = json!([learner, fileserver, already, revoked]);
+
+        // Administration, not monitoring: a viewer cannot revoke a fleet.
+        assert_eq!(
+            send(&app, "POST", "/api/agents/bulk", (header::COOKIE.as_str(), &viewer), json!({ "action": "revoke", "ids": ids })).await.status(),
+            StatusCode::FORBIDDEN
+        );
+
+        // Finishing the learning phase reaches the one endpoint that is
+        // waiting for it — not the file server, not the one already asked,
+        // not the revoked one.
+        let r = response_json(send(&app, "POST", "/api/agents/bulk", (header::COOKIE.as_str(), &admin), json!({ "action": "finish_learning", "ids": ids })).await).await;
+        assert_eq!(r["changed"], 1, "nur der wartende Arbeitsplatz: {r}");
+        assert_eq!(r["asked"], 4);
+        let asked_at: Vec<Option<DateTime<Utc>>> =
+            sqlx::query_scalar("SELECT learn_confirm_requested FROM agents WHERE id = ANY($1) ORDER BY name").bind(&[learner, fileserver, revoked][..]).fetch_all(&pool).await.unwrap();
+        assert_eq!(asked_at.iter().filter(|t| t.is_some()).count(), 1, "pc-hans ja, srv01 und pc-alt nicht");
+
+        // Deleting reaches only what is revoked. The other three stay — and
+        // a second bulk after revoking them takes the whole selection.
+        let r = response_json(send(&app, "POST", "/api/agents/bulk", (header::COOKIE.as_str(), &admin), json!({ "action": "delete", "ids": ids })).await).await;
+        assert_eq!(r["changed"], 1, "nur der gesperrte: {r}");
+        let (left,): (i64,) = sqlx::query_as("SELECT count(*) FROM agents").fetch_one(&pool).await.unwrap();
+        assert_eq!(left, 3);
+
+        let r = response_json(send(&app, "POST", "/api/agents/bulk", (header::COOKIE.as_str(), &admin), json!({ "action": "revoke", "ids": ids })).await).await;
+        assert_eq!(r["changed"], 3, "die drei laufenden: {r}");
+        // Revoking again reaches nobody — and that is not an error, it is a
+        // selection that has already been dealt with.
+        let r = response_json(send(&app, "POST", "/api/agents/bulk", (header::COOKIE.as_str(), &admin), json!({ "action": "revoke", "ids": ids })).await).await;
+        assert_eq!(r["changed"], 0, "{r}");
+        let r = response_json(send(&app, "POST", "/api/agents/bulk", (header::COOKIE.as_str(), &admin), json!({ "action": "delete", "ids": ids })).await).await;
+        assert_eq!(r["changed"], 3, "{r}");
+        let (left,): (i64,) = sqlx::query_as("SELECT count(*) FROM agents").fetch_one(&pool).await.unwrap();
+        assert_eq!(left, 0);
+
+        // An empty selection is a mistake, not a no-op: a button that does
+        // nothing and says nothing is how "it didn't work" reports get made.
+        assert_eq!(
+            send(&app, "POST", "/api/agents/bulk", (header::COOKIE.as_str(), &admin), json!({ "action": "revoke", "ids": [] })).await.status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    /// „Update the selected ones" must reach exactly those that have
+    /// something to fetch. Whoever ticks two hundred rows to update the one
+    /// outdated device among them would otherwise stamp an order on all two
+    /// hundred: they all stand there as „Update sent" for a report cycle,
+    /// and on the one whose order is genuinely stuck the re-stamp wipes out
+    /// the „not picked up" mark — the single hint that says this agent runs
+    /// a build from before self-replacement and will never see the order.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_bulk_update_is_ordered_only_of_agents_that_run_something_else(pool: sqlx::PgPool) {
+        let admin = test_session(&pool, "admin").await;
+        // A real file, because that is where the server takes the checksum
+        // from. Its fingerprint is what an agent already running it reports.
+        let data_dir = std::env::temp_dir().join(format!("deelpe-bulk-update-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(data_dir.join("agents")).unwrap();
+        std::fs::write(data_dir.join("agents").join("deelpe-winagent.exe"), "das neue programm").unwrap();
+        // The same checksum the server computes over the file it finds
+        // there, and the agent over its own copy.
+        let sha = auth::sha256_hex("das neue programm");
+        let running = &sha[..deelpe_core::central::BUILD_FINGERPRINT_HEX];
+        let agent = |name: &'static str, kind: &'static str, build: String, asked: bool| {
+            let pool = pool.clone();
+            async move {
+                let id = Uuid::new_v4();
+                sqlx::query(
+                    "INSERT INTO agents (id, name, kind, version, cert_fingerprint, cert_not_after, status, update_requested) \
+                     VALUES ($1, $2, $3, '0.1.4', $2, now() + interval '1 day', jsonb_build_object('learn_phase', 'active', 'build', $4::text), \
+                             CASE WHEN $5 THEN now() - interval '1 hour' END)",
+                )
+                .bind(id).bind(name).bind(kind).bind(build).bind(asked)
+                .execute(&pool).await.unwrap();
+                id
+            }
+        };
+        let outdated = agent("pc-hans", "windows_client", "0123456789ab".into(), false).await;
+        let current = agent("pc-eva", "windows_client", running.to_string(), false).await;
+        // Stuck: asked an hour ago and still on the old program. The order
+        // stays as it was, so the row keeps saying "not picked up".
+        let stuck = agent("pc-alt", "windows_client", "0123456789ab".into(), true).await;
+        // A Mac cannot replace itself at all (`self_replacing_platform`).
+        let mac = agent("mac-eva", "mac", "0123456789ab".into(), false).await;
+
+        let app = router(test_app_in(pool.clone(), data_dir.clone()));
+        let ids = json!([outdated, current, stuck, mac]);
+        let r = response_json(send(&app, "POST", "/api/agents/bulk", (header::COOKIE.as_str(), &admin), json!({ "action": "update", "ids": ids })).await).await;
+        assert_eq!(r["changed"], 1, "nur das veraltete Geraet: {r}");
+        let stamped: Vec<(String, Option<DateTime<Utc>>)> =
+            sqlx::query_as("SELECT name, update_requested FROM agents ORDER BY name").fetch_all(&pool).await.unwrap();
+        let named = |n: &str| stamped.iter().find(|(name, _)| name == n).unwrap().1;
+        assert!(named("pc-hans").is_some(), "das veraltete bekommt den Auftrag");
+        assert!(named("pc-eva").is_none(), "wer das Programm schon laeuft, bekommt keinen");
+        assert!(named("mac-eva").is_none(), "der Mac kann sich nicht selbst ersetzen");
+        // Untouched, not refreshed: `updateStuck` in the dashboard reads the
+        // distance between this and the last report.
+        assert!(named("pc-alt").unwrap() < Utc::now() - Duration::minutes(30), "ein haengender Auftrag wird nicht neu gestempelt");
+        assert_eq!(
+            send(&app, "POST", "/api/agents/bulk", (header::COOKIE.as_str(), &admin), json!({ "action": "revoke", "ids": [] })).await.status(),
+            StatusCode::BAD_REQUEST
+        );
     }
 
     /// Passkeys without a browser: what can be checked is the frame — the

@@ -28,8 +28,10 @@ export interface Agent {
   last_seen: string | null; last_addr: string | null; status: AgentStatus | null; revoked_at: string | null; online: boolean;
   /** When somebody requested an update for this agent. `null` means none is pending. */
   update_requested: string | null;
+  /** When somebody asked this agent to finish its learning phase. `null` means none is pending. */
+  learn_confirm_requested: string | null;
 }
-export interface AgentStatus { version: string; /** First twelve hex digits of the SHA-256 of the agent file; empty on older agents. */ build?: string; hostname: string; /** Fully qualified name, if the device carries one; empty on older agents and outside a domain. */ fqdn?: string; started_at: string; sensors: { name: string; ok: boolean; error?: string }[]; watched: string[]; learn_phase: string; shares?: ShareInfo[]; addrs?: string[]; /** `amd64`/`arm64`; empty on agents older than 0.1.4. */ arch?: string }
+export interface AgentStatus { version: string; /** First twelve hex digits of the SHA-256 of the agent file; empty on older agents. */ build?: string; hostname: string; /** Fully qualified name, if the device carries one; empty on older agents and outside a domain. */ fqdn?: string; started_at: string; sensors: { name: string; ok: boolean; error?: string }[]; watched: string[]; learn_phase: string; shares?: ShareInfo[]; addrs?: string[]; /** `amd64`/`arm64`; empty on agents older than 0.1.4. */ arch?: string; /** End of the learning phase, the start of review; absent on file servers and older agents. */ learn_until?: string }
 /** One row from an agent's local log. */
 export interface LogRow { id: number; at: string; level: string; target: string; msg: string }
 export interface Source { id: string; name: string; kind: string; address: string; first_seen: string; last_seen: string | null; lines: number; unparsed: number }

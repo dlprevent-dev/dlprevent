@@ -102,6 +102,7 @@ fn config_wire_format() {
         rules: vec![Rule { id: "r1".into(), name: "GL".into(), path: "/Volumes/GL".into(), allowed_groups: vec!["GL-Mitglieder".into()], lockdown: false, allow_destinations: vec!["10.0.0.7:443".into()], strict: true, enforce: true, hard_max_files: 100, window_secs: 60, ad_lock: false, enabled: true }],
         allow_processes: Vec::new(),
         update_to_sha256: None,
+        finish_learning: false,
     };
     assert_eq!(
         serde_json::to_string(&c).unwrap(),
@@ -121,7 +122,12 @@ fn config_wire_format() {
         r#"{"api_version":1,"generation":1,"report_interval_secs":30,"learn_days":7,"rules":[]}"#,
     )
     .unwrap();
-    assert_eq!(old.update_to_sha256, None, "eine Antwort ohne das Feld ordnet kein Update an");
+    assert_eq!(old.update_to_sha256, None, "an answer without the field orders no update");
+    // The learning order: absent unless set, and an answer without it ends
+    // no learning phase.
+    let finish = AgentConfig { finish_learning: true, ..old.clone() };
+    assert!(serde_json::to_string(&finish).unwrap().contains(r#""finish_learning":true"#));
+    assert!(!old.finish_learning);
 
     let r: Rule = serde_json::from_str(r#"{"id":"x","name":"n","path":"/p","hard_max_files":5,"window_secs":10}"#).unwrap();
     assert!(r.enabled && !r.lockdown && r.allowed_groups.is_empty());

@@ -354,6 +354,15 @@ async fn report(State(st): State<Shared>, peer_cert: Option<Extension<PeerCert>>
             warn!(agent = %agent.name, "could not clear the update order: {e:#}");
         }
     }
+    // The same shape as the update order: stands until the agent reports
+    // the phase it was asked for, then clears itself.
+    let phase = r.status.as_ref().map(|s| s.learn_phase.as_str()).unwrap_or_default();
+    let finish_learning = agent.learn_confirm_requested.is_some() && phase != "active";
+    if agent.learn_confirm_requested.is_some() && phase == "active" {
+        if let Err(e) = sqlx::query("UPDATE agents SET learn_confirm_requested = NULL WHERE id = $1").bind(agent.id).execute(&st.pool).await {
+            warn!(agent = %agent.name, "could not clear the learning order: {e:#}");
+        }
+    }
     let config = AgentConfig {
         api_version: API_VERSION,
         generation: settings.generation,
@@ -364,6 +373,7 @@ async fn report(State(st): State<Shared>, peer_cert: Option<Extension<PeerCert>>
         // splits at comments and the other does not.
         allow_processes: deelpe_core::learn::parse_allowlist(&settings.allow_processes).into_iter().collect(),
         update_to_sha256: update_order,
+        finish_learning,
     };
     Ok(Json(ReportResponse { accepted_alerts, accepted_access_alerts, accepted_counts, config, learn }))
 }
@@ -516,6 +526,11 @@ mod report_tests {
 
     /// The same, on a named architecture (empty: an agent too old to say).
     async fn report_running_on(st: &Shared, fp: &str, build: &str, arch: &str) -> ReportResponse {
+        report_status(st, fp, build, arch, "active").await
+    }
+
+    /// A report naming the agent's learning phase.
+    async fn report_status(st: &Shared, fp: &str, build: &str, arch: &str, learn_phase: &str) -> ReportResponse {
         let peer = PeerAddr("10.0.0.9:1".parse().unwrap());
         let status = deelpe_core::central::AgentStatus {
             version: "0.1.0".into(),
@@ -525,10 +540,11 @@ mod report_tests {
             started_at: Utc::now(),
             sensors: Vec::new(),
             watched: Vec::new(),
-            learn_phase: "active".into(),
+            learn_phase: learn_phase.into(),
             shares: Vec::new(),
             addrs: Vec::new(),
             arch: arch.into(),
+            learn_until: None,
         };
         let r = Report { api_version: Some(API_VERSION), status: Some(status), ..Default::default() };
         match report(State(st.clone()), Some(Extension(PeerCert(fp.into()))), Extension(peer), Json(r)).await {
@@ -577,6 +593,27 @@ mod report_tests {
         // half megabytes with every report.
         assert_eq!(report_running(&st, &fp, "").await.config.update_to_sha256, None);
 
+        std::fs::remove_dir_all(&st.data_dir).ok();
+    }
+
+    /// Finishing the learning phase from the dashboard: the order stands while
+    /// the agent is still learning or in review, and clears itself once it
+    /// reports "active". Without an order nothing is asked of anybody.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_learning_order_stands_until_the_agent_is_active(pool: PgPool) {
+        let fp = endpoint_with_a_rule(&pool).await;
+        let st = state(pool.clone());
+        let finish = |r: ReportResponse| r.config.finish_learning;
+
+        assert!(!finish(report_status(&st, &fp, "", "amd64", "review").await), "no order, nothing asked");
+
+        sqlx::query("UPDATE agents SET learn_confirm_requested = now()").execute(&pool).await.unwrap();
+        assert!(finish(report_status(&st, &fp, "", "amd64", "review").await));
+        assert!(finish(report_status(&st, &fp, "", "amd64", "learning").await), "also cuts the phase short");
+
+        assert!(!finish(report_status(&st, &fp, "", "amd64", "active").await));
+        let (open,): (Option<chrono::DateTime<Utc>>,) = sqlx::query_as("SELECT learn_confirm_requested FROM agents").fetch_one(&pool).await.unwrap();
+        assert!(open.is_none(), "fulfilled orders clear themselves");
         std::fs::remove_dir_all(&st.data_dir).ok();
     }
 

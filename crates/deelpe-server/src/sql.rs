@@ -36,6 +36,13 @@ impl Binder {
         Self::default()
     }
 
+    /// What has been booked so far, in binding order. For tests that want to
+    /// know not only where a filter binds but what.
+    #[cfg(test)]
+    pub fn args(&self) -> &[Arg] {
+        &self.0
+    }
+
     /// Book a value; back comes its placeholder (`$3`).
     pub fn push(&mut self, a: Arg) -> String {
         self.0.push(a);

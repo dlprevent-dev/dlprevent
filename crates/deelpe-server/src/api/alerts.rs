@@ -110,6 +110,9 @@ pub(super) struct AlertQuery {
     /// Reputation of the destination: `bad`, `warn`, `ok` or `none`. See [`rep_where`].
     #[serde(default)]
     rep: Option<String>,
+    /// Only what happened in the last this-many hours. See [`AlertFilter::hours`].
+    #[serde(default)]
+    hours: Option<i64>,
     #[serde(default)]
     sort: Option<String>,
     #[serde(default)]
@@ -161,6 +164,12 @@ pub(super) struct AlertFilter {
     source: Option<Uuid>,
     origin: Option<String>,
     rep: Option<String>,
+    /// Only alerts from the last this-many hours, measured on the same
+    /// timestamp the list sorts by (`coalesce(last_at, at)`) — a repeating
+    /// alert from last month that came back an hour ago belongs in „last
+    /// 24 hours", otherwise the newest rows would drop out of their own
+    /// window. `None` or anything not positive means: no limit.
+    hours: Option<i64>,
     category: AlertCategory,
     terms: Vec<String>,
 }
@@ -176,6 +185,7 @@ impl AlertFilter {
             source: q.source,
             origin: q.origin.clone(),
             rep: q.rep.clone(),
+            hours: q.hours,
             category: q.category,
             terms: search_terms(q.q.as_deref()),
         }
@@ -195,6 +205,7 @@ impl AlertFilter {
             source: b.source,
             origin: b.origin.clone(),
             rep: b.rep.clone(),
+            hours: b.hours,
             category: b.category,
             terms: search_terms(b.q.as_deref()),
         }
@@ -290,6 +301,10 @@ fn alert_where(b: &mut Binder, f: &AlertFilter) -> String {
     let agent = b.uuid(f.agent);
     let source = b.uuid(f.source);
     let origin = b.text(f.origin.clone());
+    // Not positive means no limit: the dashboard sends `0` for „any time",
+    // and a negative number would otherwise quietly turn into a window in
+    // the future that matches nothing.
+    let hours = b.i64_opt(f.hours.filter(|h| *h > 0));
     let category = match f.category {
         // See `AlertQuery::id`: the named row beats the drawer.
         _ if f.id.is_some() => "true".to_string(),
@@ -301,7 +316,8 @@ fn alert_where(b: &mut Binder, f: &AlertFilter) -> String {
         "({id}::bigint IS NULL OR id = {id}) AND ({open}::bool IS NULL OR ({open} AND acknowledged_at IS NULL) OR (NOT {open} AND acknowledged_at IS NOT NULL)) \
          AND ({verdict}::text IS NULL OR verdict = {verdict}) AND ({kind}::text IS NULL OR kind = {kind}) \
          AND ({agent}::uuid IS NULL OR agent_id = {agent}) AND ({source}::uuid IS NULL OR source_id = {source}) \
-         AND ({origin}::text IS NULL OR origin_name = {origin}) AND {category}"
+         AND ({origin}::text IS NULL OR origin_name = {origin}) \
+         AND ({hours}::bigint IS NULL OR coalesce(last_at, at) > now() - ({hours} * interval '1 hour')) AND {category}"
     );
     // A literal without placeholders, so it goes before the search terms: the
     // `Binder`'s numbering is left untouched by it.
@@ -331,6 +347,37 @@ pub(super) async fn alerts(State(st): State<Shared>, _u: User, Query(q): Query<A
         q.offset.unwrap_or(0).max(0),
     );
     Ok(Json(query.fetch_all(&st.pool).await?))
+}
+
+#[derive(Serialize)]
+pub(super) struct AlertCount {
+    total: i64,
+    /// The cap was reached: there are at least `total`, possibly many more.
+    capped: bool,
+}
+
+/// As far as the count is worth counting. Past it the exact number buys
+/// nothing — „more than ten thousand" is the same decision — while a
+/// `count(*)` over a table holding months of alerts would run once per open
+/// dashboard per refresh.
+const COUNT_CAP: i64 = 10_000;
+
+/// How many alerts the filter currently on screen matches.
+///
+/// The list fetches a page at a time and can therefore only ever say
+/// „100+". That is enough for reading, and not enough for „close all
+/// matching": that one is irreversible, and a number is what makes it a
+/// decision instead of a leap. Same filter, same condition, so the number
+/// and the button can never mean two different „all"s.
+pub(super) async fn alert_count(State(st): State<Shared>, _u: User, Query(q): Query<AlertQuery>) -> R<AlertCount> {
+    let mut binder = Binder::new();
+    let cond = alert_where(&mut binder, &AlertFilter::from_query(&q));
+    // Counted through a window, so the scan stops at the cap instead of
+    // walking the whole table. The bound is a constant of this module and
+    // never a request value.
+    let sql = format!("SELECT count(*) FROM (SELECT 1 FROM alerts WHERE {cond} LIMIT {}) t", COUNT_CAP + 1);
+    let total: i64 = binder.bind_as(sqlx::query_as(sqlx::AssertSqlSafe(sql))).fetch_one(&st.pool).await.map(|(n,): (i64,)| n)?;
+    Ok(Json(AlertCount { total: total.min(COUNT_CAP), capped: total > COUNT_CAP }))
 }
 
 pub(super) async fn ack_alert(State(st): State<Shared>, Admin(user): Admin, Path(id): Path<i64>) -> R<AlertRow> {
@@ -372,6 +419,8 @@ pub(super) struct AckBody {
     origin: Option<String>,
     #[serde(default)]
     rep: Option<String>,
+    #[serde(default)]
+    hours: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -405,7 +454,7 @@ pub(super) async fn ack_alerts(State(st): State<Shared>, Admin(user): Admin, Jso
             .await?
             .rows_affected()
     };
-    db::audit(&st.pool, (&user).into(), "alert_ack_bulk", json!({ "acked": acked, "all": b.all, "ids": b.ids.len(), "category": b.category, "q": b.q, "verdict": b.verdict, "kind": b.kind })).await;
+    db::audit(&st.pool, (&user).into(), "alert_ack_bulk", json!({ "acked": acked, "all": b.all, "ids": b.ids.len(), "category": b.category, "q": b.q, "verdict": b.verdict, "kind": b.kind, "hours": b.hours })).await;
     Ok(Json(Acked { acked }))
 }
 
@@ -501,6 +550,7 @@ pub(super) async fn counts(State(st): State<Shared>, _u: User, Query(q): Query<C
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sql::Arg;
 
     /// Only this resource's own list — that an unknown name falls back to
     /// `id` is checked once for all lists by
@@ -525,6 +575,7 @@ mod tests {
             source: None,
             origin: None,
             rep: None,
+            hours: None,
             category: AlertCategory::Alerts,
             terms: terms.iter().map(|s| s.to_string()).collect(),
         }
@@ -542,13 +593,33 @@ mod tests {
         assert!(cond.contains("($5::uuid IS NULL OR agent_id = $5)"), "{cond}");
         assert!(cond.contains("($6::uuid IS NULL OR source_id = $6)"), "{cond}");
         assert!(cond.contains("($7::text IS NULL OR origin_name = $7)"), "{cond}");
-        assert_eq!(b.i64(100), "$8", "Grenze und Versatz kommen danach");
-        assert_eq!(b.i64(0), "$9");
+        assert!(cond.contains("($8::bigint IS NULL OR coalesce(last_at, at) > now() - ($8 * interval '1 hour'))"), "{cond}");
+        assert_eq!(b.i64(100), "$9", "Grenze und Versatz kommen danach");
+        assert_eq!(b.i64(0), "$10");
 
         let mut b = Binder::new();
         let cond = alert_where(&mut b, &filter(&["%a%", "%b%"]));
-        assert!(cond.contains(&format!(" AND {ALERT_HAYSTACK} LIKE $8 AND {ALERT_HAYSTACK} LIKE $9")), "{cond}");
-        assert_eq!(b.i64(100), "$10");
+        assert!(cond.contains(&format!(" AND {ALERT_HAYSTACK} LIKE $9 AND {ALERT_HAYSTACK} LIKE $10")), "{cond}");
+        assert_eq!(b.i64(100), "$11");
+    }
+
+    /// „Any time" must not become a window, and neither must a negative
+    /// number — that would be a window in the future and would silently
+    /// match nothing at all.
+    #[test]
+    fn a_time_window_of_nothing_is_no_window() {
+        for h in [None, Some(0), Some(-24)] {
+            let mut b = Binder::new();
+            let mut f = filter(&[]);
+            f.hours = h;
+            alert_where(&mut b, &f);
+            assert_eq!(b.args()[7], Arg::I64Opt(None), "hours = {h:?}");
+        }
+        let mut b = Binder::new();
+        let mut f = filter(&[]);
+        f.hours = Some(24);
+        alert_where(&mut b, &f);
+        assert_eq!(b.args()[7], Arg::I64Opt(Some(24)));
     }
 
     /// The reputation filter must not shift the placeholders — it brings no
@@ -563,7 +634,7 @@ mod tests {
         let cond = alert_where(&mut b, &f);
         assert!(cond.contains("EXISTS (SELECT 1 FROM ip_reputations"), "{cond}");
         assert!(cond.contains("r.score >= 75"), "{cond}");
-        assert_eq!(b.i64(100), "$8", "der Ruffilter bindet keinen Wert");
+        assert_eq!(b.i64(100), "$9", "der Ruffilter bindet keinen Wert");
 
         assert!(rep_where(Some("warn")).unwrap().contains("r.score >= 25"));
         assert!(rep_where(Some("ok")).unwrap().contains("r.score < 25"));
@@ -599,6 +670,7 @@ mod tests {
             source: Some(source),
             origin: Some("DESKTOP-EXAMPLE".into()),
             rep: Some("bad".into()),
+            hours: Some(24),
             sort: None,
             dir: None,
             offset: None,
@@ -615,6 +687,7 @@ mod tests {
             source: Some(source),
             origin: Some("DESKTOP-EXAMPLE".into()),
             rep: Some("bad".into()),
+            hours: Some(24),
         };
         let (mut b1, mut b2) = (Binder::new(), Binder::new());
         let from_list = alert_where(&mut b1, &AlertFilter::from_query(&q));

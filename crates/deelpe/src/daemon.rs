@@ -405,6 +405,7 @@ async fn central_loop(st: Arc<Mutex<State>>, alerted: Arc<tokio::sync::Notify>, 
                     learn_phase: serde_json::to_value(s.learner.phase(now)).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(),
                     addrs: deelpe_core::netaddr::local_addrs(),
                     arch: deelpe_core::central::arch().into(),
+                    learn_until: s.learner.status(now).until,
                 }),
                 alerts: central::pending_alerts(s.alerts.alerts(), &mut cstate.sent),
                 // Only the server agent reports groups: on an endpoint
@@ -460,6 +461,20 @@ async fn central_loop(st: Arc<Mutex<State>>, alerted: Arc<tokio::sync::Notify>, 
                 // them.
                 if !learn.is_empty() {
                     apply_learn(&st, &mut cstate, &learn).await;
+                }
+                // The operator ended the learning phase in the dashboard —
+                // "Confirm all" from afar. Idempotent: the server stops asking
+                // once the status says "active".
+                if new_config.finish_learning {
+                    let mut s = st.lock().await;
+                    if s.learner.phase(chrono::Utc::now()) != deelpe_core::learn::Phase::Active {
+                        s.learner.confirm();
+                        s.learn_dirty = true;
+                        let n = s.learner.pair_count();
+                        drop(s);
+                        tracing::info!("central: learning phase finished, {n} pairs known");
+                        record_change(&format!("Central learn confirm ({n} pairs)"));
+                    }
                 }
                 if let Some(want) = &new_config.update_to_sha256 {
                     match self_update(session, want, &mut updater).await {
