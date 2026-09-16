@@ -350,8 +350,15 @@ const SHELL_METADATA: &[&str] = &["desktop.ini", "thumbs.db", "ehthumbs.db", "ic
 
 /// Does this file carry any user data at all? Applies to origin and target
 /// alike — a name that Windows assigns itself is neither of the two.
+///
+/// The `:Zone.Identifier` stream too: Windows writes it onto every file that
+/// comes off a share and reads it back whenever Explorer shows one. On
+/// 2026-09-16 the stream of a copy deleted long before kept tainting
+/// Explorer, and every look at the Downloads folder raised a fresh alert.
 fn is_shell_metadata(path: &Path) -> bool {
-    path.file_name().is_some_and(|n| SHELL_METADATA.iter().any(|m| n.eq_ignore_ascii_case(m)))
+    path.file_name().is_some_and(|n| {
+        SHELL_METADATA.iter().any(|m| n.eq_ignore_ascii_case(m)) || n.to_string_lossy().to_ascii_lowercase().ends_with(":zone.identifier")
+    })
 }
 
 fn write_target_counts(path: &Path) -> bool {
@@ -401,7 +408,11 @@ fn is_windows_own_storage(norm: &str) -> bool {
     if norm.contains("/temp/") {
         return false;
     }
-    let rest = if norm.as_bytes().get(1) == Some(&b':') { &norm[2..] } else { norm };
+    // The folder itself as well as what lies in it: on 2026-09-16 a write
+    // by Firefox on `C:\Program Files` made the folder a copy of the share,
+    // and every start of a program out of it tainted the process for a day.
+    let norm = format!("{norm}/");
+    let rest = if norm.as_bytes().get(1) == Some(&b':') { &norm[2..] } else { &norm };
     AFTER_DRIVE.iter().any(|p| rest.starts_with(p)) || ANYWHERE.iter().any(|i| norm.contains(i))
 }
 
@@ -2390,5 +2401,40 @@ mod tests {
         let now = Utc::now();
         c.ingest(&file(proc_named(5, Some(1), "/bin/cp", "com.apple.cp"), "/Users/me/Steuern/a.pdf", FileAction::Copy, Some("/Users/me/Steuern/b.pdf"), now));
         assert_eq!(c.derived_count(), 0);
+    }
+
+    fn gl() -> Config {
+        Config { strict: vec![crate::config::Strict { path: r"\\fs-01\GL".into(), allow: vec![], enforce: true }], min_bytes_out: 1000, ..Default::default() }
+    }
+
+    /// Lab 2026-09-16: Firefox read a screenshot out of GL and wrote on
+    /// `C:\Program Files`. The folder became a copy of the screenshot, and
+    /// hours later every look into it tainted Firefox again.
+    #[test]
+    fn a_write_on_program_files_itself_does_not_taint_later_readers() {
+        let mut c = Correlator::new(gl());
+        let t0 = Utc::now();
+        let ff = || proc_named(10324, Some(1), r"C:\Program Files\Mozilla Firefox\firefox.exe", "firefox.exe");
+        c.ingest(&open(ff(), r"\\fs-01\GL\Screenshot 2026-09-09 163639.png", t0));
+        c.ingest(&file(ff(), r"C:\Program Files", FileAction::Write, None, t0 + Duration::seconds(1)));
+        let later = t0 + Duration::hours(2);
+        c.ingest(&open(ff(), r"C:\Program Files", later));
+        assert!(c.ingest(&net_to(10324, "34.107.243.93", 443, 1900, later)).is_none());
+    }
+
+    /// Lab 2026-09-16: the `Zone.Identifier` stream of a copy out of GL kept
+    /// Explorer tainted, and every look at Downloads raised a new alert.
+    #[test]
+    fn the_zone_identifier_stream_taints_nobody() {
+        let mut c = Correlator::new(gl());
+        let t0 = Utc::now();
+        let ex = || proc_named(4000, Some(1), r"C:\Windows\explorer.exe", "EXPLORER.EXE.MUI");
+        let stream = r"C:\Users\dl-anna\Downloads\Zahlen-001.dat:Zone.Identifier";
+        c.ingest(&open(ex(), r"\\fs-01\GL\Zahlen\Zahlen-001.dat:Zone.Identifier", t0));
+        c.ingest(&file(ex(), stream, FileAction::Write, None, t0));
+        let later = t0 + Duration::hours(2);
+        c.ingest(&open(ex(), stream, later));
+        assert!(c.ingest(&file(ex(), stream, FileAction::Write, None, later)).is_none());
+        assert!(c.ingest(&net_to(4000, "92.123.27.161", 443, 765, later)).is_none());
     }
 }
