@@ -2,7 +2,7 @@
   import { go, handoff, showAlertsFor } from '../lib/router.svelte';
   import { onMount } from 'svelte';
   import { resource } from '../lib/resource.svelte';
-  import { agentOutdated, api, ago, canFinishLearning, certState, daysInReview, fmtBytes, fmtTime, fmtUtc, platformFor, selfReplacingPlatform, updateStuck } from '../lib/api';
+  import { agentOutdated, api, ago, bulkEligible, canFinishLearning, canUpdate, certState, daysInReview, fmtBytes, fmtTime, fmtUtc, platformFor, selfReplacingPlatform, updateStuck } from '../lib/api';
   import { notify, isAdmin } from '../lib/session.svelte';
   import { createSort, sortRows, matches } from '../lib/sort.svelte';
   import type { Agent, Binary, LogRow, ReleaseView, Token, TokenCreated } from '../lib/types';
@@ -278,6 +278,107 @@
     finally { relBusy = ''; }
   }
 
+  // ---------- Several at once ----------
+  // A fleet of a thousand devices cannot be walked through one row at a
+  // time. Ticked rows survive a reload as long as the agent is still in the
+  // list — the list refreshes itself every 15 seconds, and a selection that
+  // vanished with it would be unusable.
+  let picked = $state<Set<string>>(new Set());
+  /// For range selection with the shift key.
+  let anchor: string | null = null;
+  let bulkBusy = $state(false);
+  const pickedAgents = $derived(agents.filter((a) => picked.has(a.id)));
+  const eligible = $derived(bulkEligible(pickedAgents, binaries));
+  /// Select-all applies to what the filter shows, not to the whole fleet:
+  /// the search box is how a selection of 40 out of 1000 is made in the
+  /// first place.
+  const allPicked = $derived(view.length > 0 && view.every((a) => picked.has(a.id)));
+
+  $effect(() => {
+    // What is no longer in the list cannot stay ticked.
+    const here = new Set(agents.map((a) => a.id));
+    if ([...picked].some((id) => !here.has(id))) picked = new Set([...picked].filter((id) => here.has(id)));
+  });
+
+  function pick(a: Agent, e: MouseEvent) {
+    const next = new Set(picked);
+    const ids = e.shiftKey && anchor !== null ? rangeOf(anchor, a.id) : [a.id];
+    // The range follows the clicked row: ticking or unticking goes by what
+    // happens to that one.
+    const on = !picked.has(a.id);
+    for (const id of ids) (on ? next.add(id) : next.delete(id));
+    picked = next;
+    anchor = a.id;
+  }
+
+  /// All rows between two ids, in the order the table shows them.
+  function rangeOf(from: string, to: string): string[] {
+    const ids = view.map((a) => a.id);
+    const i = ids.indexOf(from), j = ids.indexOf(to);
+    if (i < 0 || j < 0) return [to];
+    return ids.slice(Math.min(i, j), Math.max(i, j) + 1);
+  }
+
+  function pickAll() {
+    picked = allPicked ? new Set() : new Set(view.map((a) => a.id));
+    anchor = null;
+  }
+
+  type BulkKind = keyof ReturnType<typeof bulkEligible>;
+
+  /// What each action says before it runs. The count is the one the buttons
+  /// show: what the server will actually reach, not how many boxes are
+  /// ticked — everything else it skips in silence.
+  function bulkAsk(action: BulkKind, n: number) {
+    const s = n === 1 ? '' : 's';
+    return {
+      finish_learning: {
+        title: 'Finish learning on the selected agents',
+        body: `${n} agent${s} treat what they learned as known.`,
+        detail: 'Each one reports new destinations and deviations from its next report on. File servers, revoked agents and any that already finished are not affected.',
+        confirmLabel: 'Finish learning',
+        danger: false,
+      },
+      update: {
+        title: 'Update the selected agents',
+        body: `${n} agent${s} replace their program with the one uploaded here.`,
+        detail: 'Each fetches the file on its next report, checks the checksum and restarts into it. If a new program does not come up, that agent goes offline and the previous one is still on the device as .old. Macs and agents from before self-update are skipped — they cannot fetch anything.',
+        confirmLabel: 'Update',
+        danger: false,
+      },
+      revoke: {
+        title: 'Revoke the selected agents',
+        body: `${n} agent${s} will no longer be let in.`,
+        detail: 'Their certificates are rejected from the next report on. The devices keep running and keep their local logs; they just cannot report any more. Getting one back means enrolling it again.',
+        confirmLabel: 'Revoke',
+        danger: true,
+      },
+      delete: {
+        title: 'Delete the selected agents for good',
+        body: `${n} revoked agent${s} disappear from the list.`,
+        detail: 'Their alerts stay — they are the record. Rules that applied only to one of these devices, and their access counts, go with them. Agents that are not revoked are not touched.',
+        confirmLabel: 'Delete',
+        danger: true,
+      },
+    }[action];
+  }
+
+  async function bulk(action: BulkKind) {
+    const n = eligible[action];
+    if (!n) return;
+    if (!(await ask(bulkAsk(action, n)))) return;
+    bulkBusy = true;
+    try {
+      // Every ticked id goes along, not just the ones counted: the server
+      // decides what qualifies, and it must not be a second opinion.
+      const r = await api<{ changed: number; asked: number }>('/api/agents/bulk', { method: 'POST', body: { action, ids: [...picked] } });
+      notify(`${r.changed} of ${r.asked} agent${r.asked === 1 ? '' : 's'} ${action === 'delete' ? 'deleted' : action === 'revoke' ? 'revoked' : 'reached — it goes out with their next report'}`);
+      picked = new Set();
+      anchor = null;
+      load();
+    } catch (err) { notify((err as Error).message, true); } finally { bulkBusy = false; }
+  }
+
   const spent = (t: Token) => t.max_uses != null && t.uses >= t.max_uses;
   async function delToken(t: Token) {
     if (!(await ask({ title: 'Revoke token', body: `"${t.label}" will no longer enroll any device.`, detail: 'Agents already enrolled with it keep running.', confirmLabel: 'Revoke', danger: true }))) return;
@@ -376,6 +477,28 @@
 <div class="toolbar">
   <SearchBox bind:value={q} placeholder="Name, address, version, state…" />
   <span class="spacer"></span>
+  {#if admin && picked.size > 0}
+    <!-- Every button says how many of the ticked agents it actually
+         reaches. The rest the server skips in silence — "Revoke (120)" that
+         revokes three is a button nobody trusts a second time. -->
+    <span class="badge accent">{picked.size} selected</span>
+    {#if eligible.finish_learning}
+      <button class="btn sm" disabled={bulkBusy} onclick={() => bulk('finish_learning')}
+              title="End the learning phase on the selected endpoints: what they learned counts as known.">Finish learning ({eligible.finish_learning})</button>
+    {/if}
+    {#if eligible.update}
+      <button class="btn sm" disabled={bulkBusy} onclick={() => bulk('update')}
+              title="Have the selected agents fetch the uploaded program on their next report.">Update ({eligible.update})</button>
+    {/if}
+    {#if eligible.revoke}
+      <button class="btn sm ghost danger" disabled={bulkBusy} onclick={() => bulk('revoke')}>Revoke ({eligible.revoke})</button>
+    {/if}
+    {#if eligible.delete}
+      <button class="btn sm ghost danger" disabled={bulkBusy} onclick={() => bulk('delete')}
+              title="Only agents that are already revoked can be deleted.">Delete ({eligible.delete})</button>
+    {/if}
+    <button class="btn ghost sm" onclick={() => { picked = new Set(); anchor = null; }}>Clear selection</button>
+  {/if}
   <span class="muted small">{view.length} of {agents.length}</span>
 </div>
 
@@ -394,6 +517,10 @@
   <div class="tablewrap">
     <table>
       <thead><tr>
+        {#if admin}
+          <th class="pick"><input type="checkbox" checked={allPicked} onchange={pickAll} disabled={view.length === 0}
+            title="Select every agent the filter shows" aria-label="Select every agent the filter shows" /></th>
+        {/if}
         <SortHeader {sort} key="name" label="Name" />
         <SortHeader {sort} key="kind" label="Kind" />
         <SortHeader {sort} key="version" label="Version" />
@@ -406,7 +533,14 @@
       <tbody>
         {#each view as a (a.id)}
           {@const cert = certState(a.cert_not_after)}
-          <tr class="click" class:open={expanded === a.id} onclick={() => toggle(a)}>
+          <tr class="click" class:open={expanded === a.id} class:picked={picked.has(a.id)} onclick={() => toggle(a)}>
+            {#if admin}
+              <!-- A click on the checkbox does not expand the row. -->
+              <td class="pick" onclick={(e) => e.stopPropagation()}>
+                <input type="checkbox" checked={picked.has(a.id)} onclick={(e) => pick(a, e)}
+                  aria-label="Select agent {a.name}" title="Shift-click selects a range" />
+              </td>
+            {/if}
             <td><strong>{a.name}</strong><div class="cell-2 mono">{a.id}</div></td>
             <td>{kinds[a.kind] ?? a.kind}</td>
             <td class="mono">{a.version || '–'}{#if a.status?.build}<div class="cell-2 mono" title="First 12 characters of the agent file's SHA-256 — compare with Get-FileHash on the device">{a.status.build}</div>{/if}
@@ -451,7 +585,7 @@
             </td>
           </tr>
           {#if expanded === a.id}
-            <tr class="sub"><td colspan="8">
+            <tr class="sub"><td colspan={admin ? 9 : 8}>
               {#if a.status}
                 <div class="kv">
                   <span class="k">Host</span><span>{a.status.hostname}{#if a.status.fqdn}<div class="cell-2 mono" title="Fully qualified name. The short name above is resolved by mechanisms that can be spoofed — this is the one that counts as evidence.">{a.status.fqdn}</div>{/if}</span>
@@ -679,6 +813,11 @@
   .binhead { display: flex; align-items: baseline; gap: 10px; font-weight: 600; margin-bottom: 2px; }
   .bin .spacer { flex: 1; }
   .rel-row .spacer { flex: 1; }
+
+  /* Narrow and centred: the column should not stand out next to the name. */
+  .pick { width: 30px; text-align: center; padding-right: 0 !important; }
+  .pick input { accent-color: var(--accent); cursor: pointer; margin: 0; }
+  tr.picked > td { background: var(--accent-2); }
 
   .logbox { margin-top: 14px; border-top: var(--rule); padding-top: 12px; }
   .logbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }

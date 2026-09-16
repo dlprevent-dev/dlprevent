@@ -131,19 +131,140 @@ pub(super) async fn finish_learning(State(st): State<Shared>, Admin(user): Admin
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// When finishing the learning phase means anything at all: only an
+/// endpoint learns pairs and waits for a confirm, a revoked agent takes no
+/// orders, and one already asked is not asked twice.
+///
+/// One constant, because „finish all" and „finish the selected ones" have to
+/// skip exactly the same agents — otherwise the two buttons next to each
+/// other would count differently.
+const CAN_FINISH_LEARNING: &str = "revoked_at IS NULL AND kind <> 'windows_server' AND learn_confirm_requested IS NULL \
+     AND COALESCE(status->>'learn_phase', '') IN ('learning', 'review')";
+
 /// The same for every endpoint agent that is still learning or waiting in
 /// review. Returns how many were asked.
 pub(super) async fn finish_learning_all(State(st): State<Shared>, Admin(user): Admin) -> R<serde_json::Value> {
-    let n = sqlx::query(
-        "UPDATE agents SET learn_confirm_requested = now() \
-         WHERE revoked_at IS NULL AND kind <> 'windows_server' AND learn_confirm_requested IS NULL \
-           AND COALESCE(status->>'learn_phase', '') IN ('learning', 'review')",
-    )
-    .execute(&st.pool)
-    .await?
-    .rows_affected();
+    let n = sqlx::query(sqlx::AssertSqlSafe(format!("UPDATE agents SET learn_confirm_requested = now() WHERE {CAN_FINISH_LEARNING}")))
+        .execute(&st.pool)
+        .await?
+        .rows_affected();
     db::audit(&st.pool, (&user).into(), "agent_finish_learning_all", json!({ "agents": n })).await;
     Ok(Json(json!({ "agents": n })))
+}
+
+// ---------- Several at once ----------
+
+/// What a bulk action does to the agents handed to it. The same four things
+/// the buttons on a row do — a fleet of a thousand devices cannot be walked
+/// through one row at a time.
+#[derive(Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum BulkAction {
+    FinishLearning,
+    Update,
+    Revoke,
+    Delete,
+}
+
+#[derive(Deserialize)]
+pub(super) struct BulkBody {
+    action: BulkAction,
+    ids: Vec<Uuid>,
+}
+
+#[derive(Serialize)]
+pub(super) struct BulkDone {
+    /// How many agents the action actually reached. Whatever does not
+    /// qualify is skipped in silence — with a selection of a thousand, an
+    /// error over the one revoked device in it would only mean doing it
+    /// again without that one.
+    changed: u64,
+    /// How many were handed in, so the dashboard can say „400 of 1000“
+    /// instead of leaving the difference to be guessed at.
+    asked: usize,
+}
+
+/// A selection cannot be larger than the list it comes from, and that list
+/// is not paged. Well past any fleet on one screen, and still far from a
+/// body that would have to be streamed.
+const BULK_IDS_MAX: usize = 5000;
+
+pub(super) async fn bulk(State(st): State<Shared>, Admin(user): Admin, Json(b): Json<BulkBody>) -> R<BulkDone> {
+    if b.ids.is_empty() {
+        return Err(bad("no agents given"));
+    }
+    if b.ids.len() > BULK_IDS_MAX {
+        return Err(bad(format!("at most {BULK_IDS_MAX} agents at once")));
+    }
+    let changed = match b.action {
+        BulkAction::FinishLearning => {
+            sqlx::query(sqlx::AssertSqlSafe(format!("UPDATE agents SET learn_confirm_requested = now() WHERE id = ANY($1) AND {CAN_FINISH_LEARNING}")))
+                .bind(&b.ids)
+                .execute(&st.pool)
+                .await?
+                .rows_affected()
+        }
+        BulkAction::Update => {
+            // Which of them has anything to fetch is not a question SQL can
+            // answer: it hangs on the role, on the architecture the agent
+            // reports, and on whether what lies on the server is a different
+            // file from the one the agent runs. The same question
+            // `update_due` asks before an order goes out at all.
+            //
+            // The ones already asked stay out of it, and that is not tidiness.
+            // Re-stamping an order that is stuck resets `update_requested`,
+            // and with it the „not picked up" mark on the row — the one hint
+            // that says the agent runs a build from before self-replacement
+            // and will never see the order.
+            let rows: Vec<(Uuid, String, Option<String>, Option<String>)> =
+                sqlx::query_as("SELECT id, kind, status->>'arch', status->>'build' FROM agents WHERE id = ANY($1) AND revoked_at IS NULL AND update_requested IS NULL")
+                    .bind(&b.ids)
+                    .fetch_all(&st.pool)
+                    .await?;
+            // One `stat` per platform, not one per agent: `sha256_of` goes to
+            // the file system and takes a lock every agent report contends
+            // for, and a selection may hold thousands of rows.
+            let mut staged: std::collections::HashMap<&'static str, Option<String>> = std::collections::HashMap::new();
+            let able: Vec<Uuid> = rows
+                .into_iter()
+                .filter(|(_, kind, arch, build)| {
+                    let Some(platform) = crate::binaries::self_replacing_platform(kind, arch.as_deref().unwrap_or_default()) else {
+                        return false;
+                    };
+                    let sha = staged.entry(platform).or_insert_with(|| crate::binaries::sha256_of(&st, platform));
+                    sha.as_deref().is_some_and(|sha| deelpe_core::central::update_due(sha, build.as_deref().unwrap_or_default()))
+                })
+                .map(|(id, ..)| id)
+                .collect();
+            if able.is_empty() {
+                0
+            } else {
+                sqlx::query("UPDATE agents SET update_requested = now() WHERE id = ANY($1)").bind(&able).execute(&st.pool).await?.rows_affected()
+            }
+        }
+        BulkAction::Revoke => sqlx::query("UPDATE agents SET revoked_at = now() WHERE id = ANY($1) AND revoked_at IS NULL")
+            .bind(&b.ids)
+            .execute(&st.pool)
+            .await?
+            .rows_affected(),
+        BulkAction::Delete => {
+            // Revoke first, then delete — the same order as on a single row,
+            // and a device that is still allowed in is not swept off the
+            // list by a tick in a box.
+            let mut tx = st.pool.begin().await?;
+            let gone: Vec<Uuid> = sqlx::query_scalar("DELETE FROM agents WHERE id = ANY($1) AND revoked_at IS NOT NULL RETURNING id")
+                .bind(&b.ids)
+                .fetch_all(&mut *tx)
+                .await?;
+            // `access_counts` has no foreign key on `agents`, and only what
+            // is really gone takes its counts with it.
+            sqlx::query("DELETE FROM access_counts WHERE origin = ANY($1)").bind(&gone).execute(&mut *tx).await?;
+            tx.commit().await?;
+            gone.len() as u64
+        }
+    };
+    db::audit(&st.pool, (&user).into(), "agent_bulk", json!({ "action": b.action, "asked": b.ids.len(), "changed": changed })).await;
+    Ok(Json(BulkDone { changed, asked: b.ids.len() }))
 }
 
 /// Remove a revoked agent for good. Revoke first, then delete: the

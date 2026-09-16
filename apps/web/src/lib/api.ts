@@ -1,5 +1,5 @@
 import { session } from './session.svelte';
-import type { Alert, Binary } from './types';
+import type { Agent, Alert, Binary } from './types';
 
 export class ApiError extends Error {
   status: number;
@@ -179,6 +179,31 @@ export function canFinishLearning(agent: { kind: string; revoked_at: string | nu
   if (agent.revoked_at || agent.kind === 'windows_server') return false;
   const phase = agent.status?.learn_phase;
   return phase === 'learning' || phase === 'review';
+}
+
+/** Is there an update to order for this agent, and none on its way already?
+ *  The same line as the button on the row — and the same question the server
+ *  asks again in `agents::bulk` before it writes the order, because what an
+ *  agent cannot fetch must not be ordered of it. */
+export function canUpdate(agent: Agent, binaries: Binary[]): boolean {
+  return !agent.revoked_at && !agent.update_requested && agentOutdated(agent, binaries);
+}
+
+/** How many of a selection each bulk action would actually reach.
+ *
+ *  The server skips whatever does not qualify in silence — with a thousand
+ *  ticked boxes, refusing the lot over the one revoked device in it would
+ *  only mean doing it again without that one. But then the dashboard has to
+ *  say the number **beforehand**: „Revoke (120)" that revokes three is a
+ *  button nobody can trust twice. */
+export function bulkEligible(agents: Agent[], binaries: Binary[]) {
+  return {
+    finish_learning: agents.filter((a) => canFinishLearning(a) && !a.learn_confirm_requested).length,
+    update: agents.filter((a) => canUpdate(a, binaries)).length,
+    revoke: agents.filter((a) => !a.revoked_at).length,
+    // Revoke first, then delete: the same order as on a single row.
+    delete: agents.filter((a) => !!a.revoked_at).length,
+  };
 }
 
 /** Whole days an agent has been waiting in review, from `learn_until`.
