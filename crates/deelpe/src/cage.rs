@@ -256,8 +256,9 @@ impl Cages {
     }
 
     /// The flows the platform refused since the last call, as events for the
-    /// correlator. Only the macOS filter reports them: a refused flow sends
-    /// no byte, so nettop never sees it. Belongs on the same tick as
+    /// correlator. A refused flow sends no byte, so neither nettop nor
+    /// procnet ever sees it: the macOS filter keeps a log, the nft table a
+    /// set per cage. Belongs on the same tick as
     /// [`Cages::expire`].
     pub fn refused(&mut self) -> Vec<Event> {
         self.backend.refused().unwrap_or_else(|e| {
@@ -320,19 +321,17 @@ pub fn refused_events(line: &str) -> anyhow::Result<Vec<Event>> {
     Ok(refusals
         .into_iter()
         .map(|r| {
-            Event::Refused(NetEvent {
-                at: chrono::DateTime::from_timestamp_millis((r.at * 1000.0) as i64).unwrap_or_else(chrono::Utc::now),
-                pid: r.pid,
-                ppid: r.ppid,
-                process_name: process_name(r.pid).unwrap_or_default(),
-                // A name instead of an address (`chatgpt.com`) stays unnamed.
-                remote: r.ip.split('%').next().and_then(|ip| ip.parse().ok()),
-                remote_port: r.port,
-                bytes_out: 0,
-                bytes_in: 0,
-            })
+            let at = chrono::DateTime::from_timestamp_millis((r.at * 1000.0) as i64).unwrap_or_else(chrono::Utc::now);
+            // A name instead of an address (`chatgpt.com`) stays unnamed.
+            refusal(at, r.pid, r.ppid, r.ip.split('%').next().and_then(|ip| ip.parse().ok()), r.port)
         })
         .collect())
+}
+
+/// A refused flow as the correlator takes it: no byte went out.
+#[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
+fn refusal(at: chrono::DateTime<chrono::Utc>, pid: u32, ppid: Option<u32>, remote: Option<std::net::IpAddr>, remote_port: Option<u16>) -> Event {
+    Event::Refused(NetEvent { at, pid, ppid, process_name: process_name(pid).unwrap_or_default(), remote, remote_port, bytes_out: 0, bytes_in: 0 })
 }
 
 /// One line to the macOS relay: the cages and what is always let through.
@@ -401,9 +400,16 @@ mod backend {
             cage::is_caged(pid)
         }
 
-        /// nft drops without a word to us.
+        /// The cage's sets name the cage, not the child in it that sent.
+        ///
+        /// ponytail: the alert names the caged process; a child that sent
+        /// shows as its parent. The cgroup could say which, at a cost.
         pub fn refused(&mut self) -> Result<Vec<deelpe_core::event::Event>> {
-            Ok(Vec::new())
+            if self.table.is_empty() {
+                return Ok(Vec::new());
+            }
+            let now = chrono::Utc::now();
+            Ok(cage::refused()?.into_iter().map(|(pid, ip, port)| super::refusal(now, pid, None, Some(ip), Some(port))).collect())
         }
     }
 }
