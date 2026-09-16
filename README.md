@@ -4,7 +4,7 @@
 
 # DLPrevent
 
-**Lean data-loss detection for macOS and Windows — with a central dashboard**
+**Lean data-loss detection for macOS, Windows and Linux — with a central dashboard**
 
 You pick the folders; the tool warns when a program reads from one of them
 and then sends data outward.
@@ -13,8 +13,8 @@ and then sends data outward.
 [![Rust](https://img.shields.io/badge/Rust-1.90%2B-b7410e?logo=rust&logoColor=white)](rust-toolchain.toml)
 [![Postgres](https://img.shields.io/badge/Postgres-18%2B-336791?logo=postgresql&logoColor=white)](docs/SERVER.md)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ed?logo=docker&logoColor=white)](docs/INSTALL.md)
-[![Platforms](https://img.shields.io/badge/Agents-macOS%20%C2%B7%20Windows-555)](docs/INSTALL.md)
-[![Status](https://img.shields.io/badge/Status-Z1%20observe%20%26%20report-e07a3f)](#status)
+[![Platforms](https://img.shields.io/badge/Agents-macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-555)](docs/INSTALL.md)
+[![Status](https://img.shields.io/badge/Status-Z2%20observe%20%26%20report%20%C2%B7%20Z3%20open-e07a3f)](#status)
 
 </div>
 
@@ -57,10 +57,10 @@ and, in the places where it matters most, to make the answer *"nothing did"*.
 - **A folder that really is closed.** Declare a folder strict and nothing may
   leave it except to destinations you listed — every other one is an alert
   from the very first byte, never learned away, never silenced. Tick
-  **Enforce** as well and a Windows workstation stops acting politely: the
-  browser upload is refused before a byte moves (Firefox today), the sending
-  program loses its network, and a copy that made it out of the folder is
-  deleted again.
+  **Enforce** as well and the agent stops acting politely: the sending
+  program loses its network on all three systems, and on a Windows
+  workstation the browser upload is refused before a byte moves (Firefox
+  today) and a copy that made it out of the folder is deleted again.
 
 **And a promise about what it is not.** This is a detection tool with a
 narrow enforcement edge, not a guarantee. Nobody can stop a photograph of a
@@ -104,8 +104,9 @@ problem, and DLPrevent will do no more than tell you it is being read.
 
 **The network is yours to segment.** The agent port (8444) belongs in the
 agent networks, the dashboard (8443) in the administration networks, and
-syslog (514) must never leave the internal network — it is unauthenticated
-and the sender address can be forged. The central server holds `ca.key`;
+syslog (5514, mapped from 514 in Docker) must never leave the internal
+network — it is unauthenticated and the sender address can be forged. The
+central server holds `ca.key`;
 whoever takes that can enrol as any agent. Put the server on a segment that
 matches what it is worth, keep its backups off the shared drive, and verify
 the firewall rules rather than assuming them. The documentation names the
@@ -200,8 +201,8 @@ Unsigned programs are always reported.
 
 - Warnings arrive as notifications; a click opens the window. The icon turns
   red on a new warning and orange when a protected folder lives inside a
-  sync folder (iCloud Drive, Nextcloud, Dropbox, OneDrive), because the sync
-  client stays on the exception list.
+  sync folder (iCloud Drive, Nextcloud, Dropbox, OneDrive, Google Drive,
+  Proton Drive), because the sync client stays on the exception list.
 - "How" in a warning shows the route the data took to the sender.
 - Filter field over the warning table: every word must occur, `-word`
   excludes. Export as CSV or JSON.
@@ -229,17 +230,30 @@ installation per customer, deliberately without tenants. Docker or
 Ubuntu/Debian package.
 
 - **Dashboard with login:** open alerts, verdicts, reads per folder, top
-  readers, working through warnings.
+  readers, working through warnings. Narrow the list by time, source,
+  verdict, kind and destination reputation, and close what you have dealt
+  with — one entry, a selection, or everything the filter matches.
+- **Two-factor authentication:** TOTP or a passkey (WebAuthn), and you can
+  require a second factor per role.
+- **Audit log:** who changed a rule, revoked an agent, closed an alert.
 - **Agents enrol with one command.** An administrator uploads the installer
-  once; the command shown in the dashboard downloads it onto the device,
+  once, or lets the server fetch a signed release by itself; the command
+  shown in the dashboard downloads it onto the device,
   checks its checksum and enrols in one go. The agent generates its own key,
   the dashboard's fingerprint pins the server, and a token is good for
   one device or, for a mass rollout, for any number until you revoke it, for
   hours, days or weeks. Enrolled agents report every 30 seconds and pick up
   protected folders from the server.
-- **Three roles from two artefacts:** Windows workstation and Windows file
+- **Four roles from four artefacts:** Windows workstation and Windows file
   server share the same EXE, the role is chosen at enrolment; macOS gets the
-  app bundle.
+  app bundle; Linux gets the program for its architecture (amd64, arm64).
+- **Agents update themselves from the dashboard.** The program is staged on
+  the server, its signature checked against the release key; an agent fetches
+  it on its next report, verifies the checksum and restarts into it. One
+  device first, or the whole fleet. Certificates renew without a new token.
+- **Several agents at once.** Select what the filter shows and finish the
+  learning phase, order an update, revoke or delete for all of them — a
+  thousand devices are not managed one row at a time.
 - **NAS over syslog:** Synology, QNAP, TrueNAS/Samba send their file access
   log to the server; sources appear with the first packet.
 - **Rules for critical folders:** strict folder with allow list, emergency
@@ -272,26 +286,32 @@ the network from a program that has read from a strict folder.
 
 ## Status
 
-Milestone 1 (macOS, warn) and the learning phase (M2) are in, plus the
-central server at stage Z1: observe and report. The first intervention is the
-strict folder — on the Mac and on the **Windows workstation**, whose sensors
-have run on real hardware (Windows 11 Enterprise, 2026-09-07). That also
-catches what a file server fundamentally cannot see: dragging a file from
-the share into a browser or an AI service.
-Stopping such an upload before it moves needs the browser to ask, and today
-only **Firefox** does — Chrome and Edge are reported after the fact, see
+Milestone 1 (macOS, warn), the learning phase (M2) and the Linux agent (M3)
+are in, and the central server is at stage Z2: both Windows roles observe and
+report. The first intervention is the strict folder — on the Mac, on the
+**Windows workstation**, whose sensors have run on real hardware (Windows 11
+Enterprise, 2026-09-07), and on **Linux**. That also catches what a file
+server fundamentally cannot see: dragging a file from the share into a
+browser or an AI service.
+Stopping such an upload before it moves needs the browser to ask. The
+connector speaks Google's Content Analysis protocol, which **Firefox** (137
+and newer) and Chrome both speak — but only Firefox's policy is written for
+you at installation, so anything else is reported after the fact, see
 [SERVER.md](docs/SERVER.md).
 
-The **Linux agent** (M3) reports as of 2026-09-12: fanotify for file access,
-`ss` for the bytes sent, same binary and same dashboard as the Mac, as a
-`.deb` for Debian and Ubuntu. It watches; it does not block.
+The **Windows file server agent** (Z2) reads the security log (4663/5145) and
+the share table, and was validated against the lab domain controller on
+2026-09-06. The **Linux agent** (M3) reports as of 2026-09-12: fanotify for
+file access, `ss` for the bytes sent, same binary and same dashboard as the
+Mac, as a `.deb` for Debian and Ubuntu — and the network cage runs there too,
+through nftables and a cgroup per process.
 
-Next up is the Windows server agent (Z2, observe only), then locking down at
-the file server (Z3: lockdown by permission, blocking on mass access,
-emergency stop). Blocking at the endpoint on macOS
-needs an Apple Developer account and is v2; on Windows the file-level layer
-reports and deletes the copy, while the upload itself is stopped by the
-browser connector and the network cage.
+Still open is **Z3**: locking down at the file server — lockdown by
+permission, blocking on mass access, emergency stop. The rule fields are in
+the dashboard; no agent acts on them yet. Blocking at the endpoint on macOS
+needs a Developer ID build, because the network filter is a system extension;
+on Windows the file-level layer reports and deletes the copy, while the
+upload itself is stopped by the browser connector and the network cage.
 
 ## Roadmap
 
@@ -301,9 +321,6 @@ browser connector and the network cage.
 - **Linux, the rest of it.** Read-then-send detection and the network cage
   of strict folders are in. Still missing: uploads over QUIC — the kernel
   keeps no byte counter for UDP — and external volumes.
-- **macOS app signing.** `build.sh` signs and notarizes with a Developer ID
-  (needed for the network filter, docs/INSTALL.md); the published app is not
-  built that way yet.
 - **Cloud hosting on request.** A hosted central server per customer,
   operated by us. Ask via info@dlprevent.ch.
 - **Finer-grained access control.** Today an account is either administrator
