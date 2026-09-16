@@ -257,10 +257,17 @@ struct LocalAlert {
     last_at: DateTime<Utc>,
 }
 
-/// One alert per sender and strict folder for all its denied destinations.
-/// A touched browser talks to a dozen CDNs within seconds, and one row per
-/// destination turned one blocked upload into fifteen alerts (lab
-/// 2026-09-16). What stays per destination is the threshold in [`Flow`].
+/// One alert per sender and strict folder for all its denied destinations
+/// within [`DENIED_BURST_SECS`] of the first report. A touched browser talks
+/// to a dozen CDNs within seconds, and one row per destination turned one
+/// blocked upload into fifteen alerts (lab 2026-09-16). What stays per
+/// destination is the threshold in [`Flow`].
+///
+/// Only a burst, not the whole touch: a browser that keeps sending keeps its
+/// group alive, and a Gemini upload an hour later went into the old row —
+/// which the dashboard lists by its first report, so nobody saw it.
+const DENIED_BURST_SECS: i64 = 60;
+
 #[derive(Debug)]
 struct DeniedAlert {
     /// ID and time of the first report, once there was one.
@@ -1130,10 +1137,28 @@ impl Correlator {
         }
         flow.denied_reported = denied.is_some();
         flow.reported = flow.bytes;
-        let group = denied.as_ref().and_then(|p| self.denied_alerts.get_mut(&(n.pid, p.clone())));
+        let mut group = denied.as_ref().and_then(|p| self.denied_alerts.get_mut(&(n.pid, p.clone())));
+        let burst = Duration::seconds(DENIED_BURST_SECS);
+        let over = |a: Option<(u64, DateTime<Utc>)>| a.is_some_and(|(_, at)| n.at - at > burst);
+        if group.as_ref().is_some_and(|g| over(g.alert)) {
+            if force {
+                // A new destination after the burst: a new attempt, a row of
+                // its own.
+                if let Some(g) = group.as_mut() {
+                    **g = DeniedAlert { alert: None, remote: (n.remote, n.remote_port), bytes: n.bytes_out, destinations: 0, last_at: n.at };
+                }
+            } else {
+                // A known flow that grew: its own row, alone.
+                group = None;
+            }
+        }
         // A flow that already had an ordinary alert keeps its row when it
-        // becomes denied, and takes the other destinations into it.
-        let prior = group.as_ref().and_then(|g| g.alert).or(flow.alert);
+        // becomes denied, and takes the other destinations into it — if that
+        // row is from this burst.
+        let prior = match &group {
+            Some(g) => g.alert.or(flow.alert.filter(|a| !over(Some(*a)))),
+            None => flow.alert,
+        };
         let (id, at, is_new) = match prior {
             Some((id, at)) => (id, at, false),
             None => {
@@ -1891,6 +1916,34 @@ mod tests {
         // Another sender is its own alert.
         c.ingest(&open(proc_(11), "/w/GL/shot.png", t0));
         assert_ne!(c.ingest(&net_to(11, "151.101.1.91", 443, 39, t0)).unwrap().id, first.id);
+    }
+
+    /// A browser that keeps sending to denied destinations kept its group
+    /// alive for an hour: the Gemini upload at 17:45 on 2026-09-16 went into
+    /// the row of 16:39, and the dashboard, sorted by first report, never
+    /// showed it. A group covers one burst; a later attempt is a new alert.
+    #[test]
+    fn a_later_denied_attempt_is_a_new_alert_even_while_the_sender_keeps_sending() {
+        let cfg = Config { strict: vec![crate::config::Strict { path: "/w/GL".into(), allow: vec![], enforce: true }], ..cfg() };
+        let mut c = Correlator::new(cfg);
+        let t0 = Utc::now();
+        c.ingest(&open(proc_(10), "/w/GL/a.pdf", t0));
+        let first = c.ingest(&net_to(10, "10.10.77.99", 443, 5000, t0)).unwrap();
+        // The trickle to the first destination never lets the group expire,
+        // and stays in its own row.
+        for m in 1..=10 {
+            let at = t0 + Duration::minutes(m);
+            c.ingest(&open(proc_(10), "/w/GL/a.pdf", at));
+            if let Some(a) = c.ingest(&net_to(10, "10.10.77.99", 443, 50_000 * m as u64, at)) {
+                assert_eq!(a.id, first.id, "growth of a known flow is no new row");
+            }
+        }
+        let at = t0 + Duration::minutes(10) + Duration::seconds(5);
+        let gemini = Event::Refused(NetEvent { at, pid: 10, ppid: None, process_name: "curl".into(), remote: Some("142.250.1.1".parse().unwrap()), remote_port: Some(443), bytes_out: 0, bytes_in: 0 });
+        let later = c.ingest(&gemini).expect("the attempt is reported");
+        assert!(later.is_new(), "a new row, not an update of the old one");
+        assert_ne!(later.id, first.id);
+        assert_eq!(later.remote, Some("142.250.1.1".parse().unwrap()));
     }
 
     /// The case from the review: the flow was already running as an ordinary
