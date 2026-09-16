@@ -34,6 +34,20 @@
   // over the 100 loaded rows would be a different one from what the paging
   // and "close all" mean.
   let rep = $state('');
+  // How far back to look, in hours; 0 is "any time". Filtering happens on
+  // the server, over the same timestamp the list sorts by — a repeating
+  // alert from last month that came back an hour ago belongs in "last 24
+  // hours", otherwise the newest rows would drop out of their own window.
+  let hours = $state(0);
+  const RANGES: [number, string][] = [[0, 'Any time'], [1, 'Last hour'], [24, 'Last 24 hours'], [24 * 7, 'Last 7 days'], [24 * 30, 'Last 30 days']];
+  // How many entries the filter matches, not just how many are loaded. The
+  // list fetches a page at a time and can only ever say "100+" by itself —
+  // and "close all matching" is irreversible, so the number is what makes it
+  // a decision instead of a leap. `null` means the count did not arrive.
+  let total = $state<number | null>(null);
+  /// The server stops counting at a cap: past it "more than ten thousand" is
+  /// the same decision, and the count runs on every refresh.
+  let capped = $state(false);
   // Narrowed to one origin: set by a click on the source column or when
   // arriving from the agents or sources page.
   let origin = $state<AlertOrigin | null>(takeAlertOrigin());
@@ -53,7 +67,7 @@
   // Sorting happens in the database: the table has more rows than the page
   // holds.
   const sort = createSort('id', { asc: false, descFirst: true, onchange: () => load() });
-  const filtered = $derived(q.trim() !== '' || verdict !== '' || kind !== '' || rep !== '' || origin !== null || only !== null || status !== 'open');
+  const filtered = $derived(q.trim() !== '' || verdict !== '' || kind !== '' || rep !== '' || hours !== 0 || origin !== null || only !== null || status !== 'open');
 
   function params(offset: number) {
     const p = new URLSearchParams({ category, limit: String(PAGE), sort: sort.key, dir: sort.asc ? 'asc' : 'desc' });
@@ -63,6 +77,7 @@
     if (verdict) p.set('verdict', verdict);
     if (kind) p.set('kind', kind);
     if (rep) p.set('rep', rep);
+    if (hours) p.set('hours', String(hours));
     if (origin?.agent) p.set('agent', origin.agent);
     if (origin?.source) p.set('source', origin.source);
     if (origin && !origin.agent && !origin.source) p.set('origin', origin.name);
@@ -73,6 +88,12 @@
   async function load(append = false) {
     const requestId = ++loadId;
     busy = true;
+    // The old filter's count must not stand while the new one is on its way.
+    // The list answers faster than the count, and „close all matching" goes
+    // live again the moment it does — with the previous number in the
+    // dialog, on an action that cannot be undone. No number is the safe
+    // state: the dialog then says „every open one matching", which is true.
+    if (!append) total = null;
     try {
       const r = await api<Alert[]>('/api/alerts?' + params(append ? rows.length : 0));
       // A slow response from the previous category must not replace this list.
@@ -87,8 +108,23 @@
       more = r.length === PAGE;
       error = '';
       loadReps();
+      // Only for the list itself: "load more" does not change what the
+      // filter matches, and the count must not be asked for a second time
+      // on every page.
+      if (!append) countMatching(requestId);
     } catch (e) { if (requestId === loadId) error = (e as Error).message; }
     finally { if (requestId === loadId) { loading = false; busy = false; } }
+  }
+
+  /** How many entries the filter matches. A count of its own, and not part
+   *  of the list response: it costs a second query, and the list is
+   *  refreshed every 20 seconds while nobody is searching. A failed count
+   *  leaves the list standing — it is a number, not the evidence. */
+  async function countMatching(requestId: number) {
+    try {
+      const r = await api<{ total: number; capped: boolean }>('/api/alerts/count?' + params(0));
+      if (requestId === loadId) { total = r.total; capped = r.capped; }
+    } catch { if (requestId === loadId) total = null; }
   }
 
   // ---------- IP reputation (AbuseIPDB) ----------
@@ -176,6 +212,9 @@
     category = next;
     verdict = '';
     rows = [];
+    // The old drawer's count must not stand over the new drawer's empty
+    // list for the moment the request takes.
+    total = null;
     picked = new Set();
     anchor = null;
     expanded = null;
@@ -236,12 +275,20 @@
    *  otherwise be every open one in the category while a single one is on
    *  screen. That one is closed by its own tick. */
   async function ackAll() {
-    if (!(await ask({ title: 'Close all matching', body: `Every open ${category} that matches the filter in effect is marked done.`, detail: 'Not just the page you can see. This cannot be undone.', confirmLabel: 'Close all', danger: true }))) return;
+    if (!(await ask({
+      title: 'Close all matching',
+      body: total === null
+        ? `Every open ${category.slice(0, -1)} that matches the filter in effect is marked done.`
+        : `${capped ? 'More than ' : ''}${total} open ${total === 1 && !capped ? category.slice(0, -1) : category} matching the filter in effect ${total === 1 && !capped ? 'is' : 'are'} marked done.`,
+      detail: 'Not just the page you can see. This cannot be undone.',
+      confirmLabel: 'Close all',
+      danger: true,
+    }))) return;
     busy = true;
     try {
       const r = await api<{ acked: number }>('/api/alerts/ack', {
         method: 'POST',
-        body: { all: true, category, q: q.trim() || null, verdict: verdict || null, kind: kind || null, rep: rep || null, agent: origin?.agent ?? null, source: origin?.source ?? null, origin: origin && !origin.agent && !origin.source ? origin.name : null },
+        body: { all: true, category, q: q.trim() || null, verdict: verdict || null, kind: kind || null, rep: rep || null, hours: hours || null, agent: origin?.agent ?? null, source: origin?.source ?? null, origin: origin && !origin.agent && !origin.source ? origin.name : null },
       });
       notify(`${r.acked} entries marked done`);
       picked = new Set();
@@ -291,7 +338,7 @@
     } catch (err) { notify((err as Error).message, true); }
   }
 
-  function reset() { q = ''; verdict = ''; kind = ''; rep = ''; origin = null; only = null; status = 'open'; picked = new Set(); load(); }
+  function reset() { q = ''; verdict = ''; kind = ''; rep = ''; hours = 0; origin = null; only = null; status = 'open'; picked = new Set(); load(); }
 
   /** Click on the source column: only this device or this source any more.
    *  A second click on the same origin lifts the restriction again. The name
@@ -340,6 +387,10 @@
     <option value="ok">Clean</option>
     <option value="none">Not checked</option>
   </select>
+  <select bind:value={hours} onchange={() => load()} aria-label="Time range"
+    title="Counted from when an entry was last seen, so a repeating alert that came back an hour ago stays in the short windows">
+    {#each RANGES as [h, l]}<option value={h}>{l}</option>{/each}
+  </select>
   {#if origin}
     <span class="badge accent">
       {origin.agent ? 'Agent' : origin.source ? 'Source' : 'Origin'}: {origin.name}
@@ -367,7 +418,10 @@
       <Icon name="check" size={14} /> Close all {filtered ? 'matching' : 'open'}
     </button>
   {/if}
-  <span class="muted small">{rows.length}{more ? '+' : ''} entries</span>
+  <!-- What is loaded, and what the filter matches. Without the second
+       number the list could only ever say "100+", and "close all matching"
+       would be a leap. -->
+  <span class="muted small">{total === null ? `${rows.length}${more ? '+' : ''} entries` : capped || total > rows.length ? `${rows.length} of ${total}${capped ? '+' : ''} entries` : `${total} ${total === 1 ? 'entry' : 'entries'}`}</span>
   <button class="iconbtn" onclick={() => load()} title="Reload" aria-label="Reload" disabled={busy}><Icon name="refresh" /></button>
 </div>
 
