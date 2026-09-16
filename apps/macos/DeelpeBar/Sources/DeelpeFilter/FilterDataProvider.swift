@@ -57,7 +57,11 @@ final class FilterDataProvider: NEFilterDataProvider {
         var verdict = CageVerdict.watch
         for token in [flow.sourceProcessAuditToken, flow.sourceAppAuditToken] {
             guard let pid = Self.pid(token) else { continue }
-            verdict = table.verdict(ip: ip, port: port, chain: Self.chain(pid), armed: armed)
+            let chain = Self.chain(pid)
+            verdict = table.verdict(ip: ip, port: port, chain: chain, armed: armed)
+            // Refused before its first byte: no sensor sees it, so the filter
+            // reports it.
+            if verdict == .drop { CageStore.shared.refused(chain: chain, table: table, ip: ip, port: port) }
             if verdict != .watch { break }
         }
         return verdict
@@ -109,6 +113,7 @@ final class CageStore: @unchecked Sendable {
     private var table = CageTable()
     /// When each caged PID first showed up. Kept while it stays in the table.
     private var armed: [Int32: Date] = [:]
+    private var refusals = CageRefusals()
 
     func replace(_ new: CageTable) {
         lock.lock()
@@ -116,6 +121,18 @@ final class CageStore: @unchecked Sendable {
         let now = Date()
         armed = Dictionary(new.cages.map { ($0.pid, armed[$0.pid] ?? now) }, uniquingKeysWith: { a, _ in a })
         table = new
+    }
+
+    func refused(chain: [ProcessLink], table: CageTable, ip: String, port: UInt16?) {
+        lock.lock()
+        defer { lock.unlock() }
+        refusals.record(chain: chain, table: table, ip: ip, port: port, at: Date())
+    }
+
+    func drainRefusals() -> [CageRefusal] {
+        lock.lock()
+        defer { lock.unlock() }
+        return refusals.drain()
     }
 
     func snapshot() -> (CageTable, [Int32: Date]) {

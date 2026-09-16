@@ -113,4 +113,6 @@ extension CageTable {
     /// `table`: one JSON line as the service wrote it. The reply is `nil`, or
     /// why the table was not taken.
     func apply(_ table: Data, withReply reply: @escaping (String?) -> Void)
+    /// The flows refused since the last call, as a JSON array of `CageRefusal`.
+    func refused(withReply reply: @escaping (Data) -> Void)
 }

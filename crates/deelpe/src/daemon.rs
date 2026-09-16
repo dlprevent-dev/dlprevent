@@ -207,6 +207,8 @@ pub async fn run() -> Result<()> {
             }
         });
     }
+    // The cage's refusals go in with the sensors' events.
+    let refused_tx = tx.clone();
     drop(tx);
 
     let st = state.clone();
@@ -280,7 +282,14 @@ pub async fn run() -> Result<()> {
         let mut tick = tokio::time::interval(Duration::from_secs(5));
         loop {
             tick.tick().await;
-            cages_tick.lock().await.expire(Instant::now());
+            let refused = {
+                let mut cages = cages_tick.lock().await;
+                cages.expire(Instant::now());
+                cages.refused()
+            };
+            for ev in refused {
+                let _ = refused_tx.send(ev).await;
+            }
         }
     });
 

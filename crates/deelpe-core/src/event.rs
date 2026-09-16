@@ -97,6 +97,9 @@ pub struct ExitEvent {
 pub enum Event {
     File(FileEvent),
     Net(NetEvent),
+    /// A connection the network cage refused before its first byte (the
+    /// macOS content filter). No sensor that counts bytes ever sees it.
+    Refused(NetEvent),
     Mount(MountEvent),
     Exit(ExitEvent),
 }

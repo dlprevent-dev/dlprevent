@@ -22,6 +22,7 @@
 //! to the dashboard: nobody notices by themselves that a cage no longer bites.
 
 use deelpe_core::allow::{Permit, CAGE_TTL};
+use deelpe_core::event::{Event, NetEvent};
 use std::collections::HashMap;
 use std::time::Instant;
 
@@ -254,6 +255,17 @@ impl Cages {
         }
     }
 
+    /// The flows the platform refused since the last call, as events for the
+    /// correlator. Only the macOS filter reports them: a refused flow sends
+    /// no byte, so nettop never sees it. Belongs on the same tick as
+    /// [`Cages::expire`].
+    pub fn refused(&mut self) -> Vec<Event> {
+        self.backend.refused().unwrap_or_else(|e| {
+            tracing::warn!("network cage refusals: {e:#}");
+            Vec::new()
+        })
+    }
+
     /// Open every cage: orderly stop, and the start of a new run.
     pub fn release_all(&mut self) {
         let gone: Vec<(u32, Cage)> = self.open.drain().collect();
@@ -288,6 +300,40 @@ impl Cages {
 /// One cage as the platform gets it: PID, permits, and whether the children
 /// that already ran when it went up count as caged too.
 pub type Entry<'a> = (u32, &'a [Permit], bool);
+
+/// A flow the macOS filter refused: `CageRefusal` in
+/// `apps/macos/DeelpeBar/Sources/DeelpeProtocol/CageRefusals.swift`.
+#[derive(serde::Deserialize)]
+struct Refusal {
+    pid: u32,
+    ppid: Option<u32>,
+    ip: String,
+    port: Option<u16>,
+    /// Seconds since 1970.
+    at: f64,
+}
+
+/// The relay's answer to `refused`: a JSON array of refusals, as events.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn refused_events(line: &str) -> anyhow::Result<Vec<Event>> {
+    let refusals: Vec<Refusal> = serde_json::from_str(line)?;
+    Ok(refusals
+        .into_iter()
+        .map(|r| {
+            Event::Refused(NetEvent {
+                at: chrono::DateTime::from_timestamp_millis((r.at * 1000.0) as i64).unwrap_or_else(chrono::Utc::now),
+                pid: r.pid,
+                ppid: r.ppid,
+                process_name: process_name(r.pid).unwrap_or_default(),
+                // A name instead of an address (`chatgpt.com`) stays unnamed.
+                remote: r.ip.split('%').next().and_then(|ip| ip.parse().ok()),
+                remote_port: r.port,
+                bytes_out: 0,
+                bytes_in: 0,
+            })
+        })
+        .collect())
+}
 
 /// One line to the macOS relay: the cages and what is always let through.
 /// The filter keeps no list of its own — the house comes from here, so there
@@ -354,6 +400,11 @@ mod backend {
         pub fn inside(&self, pid: u32) -> bool {
             cage::is_caged(pid)
         }
+
+        /// nft drops without a word to us.
+        pub fn refused(&mut self) -> Result<Vec<deelpe_core::event::Event>> {
+            Ok(Vec::new())
+        }
     }
 }
 
@@ -361,6 +412,7 @@ mod backend {
 mod backend {
     use anyhow::{bail, Context, Result};
     use deelpe_core::allow::Permit;
+    use deelpe_core::event::Event;
     use std::io::{BufRead, BufReader, Write};
     use std::process::{Child, ChildStdout, Command, Stdio};
 
@@ -386,7 +438,24 @@ mod backend {
             if table.is_empty() && self.relay.is_none() {
                 return Ok(());
             }
-            let res = self.send(&super::relay_line(table));
+            match self.ask(&super::relay_line(table))?.as_str() {
+                "ok" => Ok(()),
+                other => bail!("network filter relay: unexpected answer {other}"),
+            }
+        }
+
+        pub fn refused(&mut self) -> Result<Vec<Event>> {
+            // No relay, no filter that could have refused anything.
+            if self.relay.is_none() {
+                return Ok(Vec::new());
+            }
+            super::refused_events(&self.ask("refused")?)
+        }
+
+        /// One line out, one answer back. A relay that failed is ended, the
+        /// next call starts a new one.
+        fn ask(&mut self, line: &str) -> Result<String> {
+            let res = self.exchange(line);
             if res.is_err() {
                 if let Some((mut child, _)) = self.relay.take() {
                     let _ = child.kill();
@@ -396,7 +465,7 @@ mod backend {
             res
         }
 
-        fn send(&mut self, line: &str) -> Result<()> {
+        fn exchange(&mut self, line: &str) -> Result<String> {
             if self.relay.is_none() {
                 if !std::path::Path::new(FILTER).exists() {
                     bail!("no network filter in this app (built without a Developer ID, see docs/INSTALL.md)");
@@ -419,9 +488,9 @@ mod backend {
             let mut answer = String::new();
             out.read_line(&mut answer).context("network filter relay")?;
             match answer.trim() {
-                "ok" => Ok(()),
                 "" => bail!("the network filter relay ended; is the filter enabled in the DLPrevent app?"),
-                other => bail!("network filter: {}", other.trim_start_matches("error: ")),
+                other if other.starts_with("error: ") => bail!("network filter: {}", other.trim_start_matches("error: ")),
+                other => Ok(other.to_string()),
             }
         }
 
@@ -457,6 +526,9 @@ mod backend {
     impl Backend {
         pub fn new() -> Self {
             Backend { fail: false }
+        }
+        pub fn refused(&mut self) -> Result<Vec<deelpe_core::event::Event>> {
+            Ok(Vec::new())
         }
         pub fn sync(&mut self, _table: &[super::Entry]) -> Result<()> {
             if self.fail {
@@ -502,6 +574,19 @@ mod tests {
         assert!(line.starts_with(r#"{"always":[{"bits":8,"net":"10.0.0.0","port":null},"#), "{line}");
         assert!(line.ends_with(r#""cages":[{"children":false,"permits":[{"bits":32,"net":"203.0.113.9","port":443}],"pid":4242}]}"#), "{line}");
         assert!(!line.contains('\n'), "one line per table");
+    }
+
+    /// The literal comes from `testARefusalIsReportedOncePerProcessAndDestination`
+    /// in apps/macos/DeelpeBar/Tests/DeelpeProtocolTests/CageTableTests.swift.
+    #[test]
+    fn the_refused_line_is_what_the_service_reads() {
+        let evs = refused_events(r#"[{"at":1000000,"ip":"1.1.1.1","pid":300,"port":443,"ppid":100},{"at":1000001.5,"ip":"chatgpt.com","pid":301}]"#).unwrap();
+        let [Event::Refused(a), Event::Refused(b)] = evs.as_slice() else { panic!("{evs:?}") };
+        assert_eq!((a.pid, a.ppid, a.remote, a.remote_port, a.bytes_out), (300, Some(100), Some("1.1.1.1".parse().unwrap()), Some(443), 0));
+        assert_eq!(a.at.timestamp(), 1_000_000);
+        assert_eq!((b.remote, b.remote_port, b.ppid), (None, None, None));
+        assert!(refused_events("[]").unwrap().is_empty());
+        assert!(refused_events("error: nope").is_err());
     }
 
     #[test]

@@ -25,6 +25,10 @@ final class CageListener: NSObject, NSXPCListenerDelegate, CageFilterXPC {
             reply("the filter could not read the cage table: \(error)")
         }
     }
+
+    func refused(withReply reply: @escaping (Data) -> Void) {
+        reply((try? JSONEncoder().encode(CageStore.shared.drainRefusals())) ?? Data("[]".utf8))
+    }
 }
 
 autoreleasepool {

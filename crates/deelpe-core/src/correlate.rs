@@ -575,12 +575,13 @@ impl Correlator {
         let own = std::process::id();
         match ev {
             Event::File(f) if f.process.pid == own => return None,
-            Event::Net(n) if n.pid == own => return None,
+            Event::Net(n) | Event::Refused(n) if n.pid == own => return None,
             _ => {}
         }
         match ev {
             Event::File(f) => self.on_file(f),
-            Event::Net(n) => self.on_net(n),
+            Event::Net(n) => self.on_net(n, false),
+            Event::Refused(n) => self.on_net(n, true),
             Event::Mount(m) => {
                 if m.mounted {
                     if !NEVER_EXTERNAL.iter().any(|p| m.mount_point == Path::new(p)) {
@@ -1036,9 +1037,9 @@ impl Correlator {
         self.derived.insert(target.to_path_buf(), Derived { origin, at });
     }
 
-    fn on_net(&mut self, n: &NetEvent) -> Option<Outcome> {
+    fn on_net(&mut self, n: &NetEvent, refused: bool) -> Option<Outcome> {
         self.expire(n.at);
-        if n.bytes_out == 0 {
+        if n.bytes_out == 0 && !refused {
             return None;
         }
         let sender = self.identities.get(&n.pid).cloned();
@@ -1832,6 +1833,25 @@ mod tests {
         // A protected but not strict folder stays with the threshold.
         c.ingest(&open(proc_(11), "/w/andere/a.txt", t0));
         assert!(c.ingest(&net_to(11, "203.0.113.9", 443, 1, t0 + Duration::seconds(3))).is_none());
+    }
+
+    /// The macOS cage refuses a flow before its first byte, so nettop never
+    /// sees it. On 2026-09-16 every upload of a caged LibreWolf was blocked
+    /// and none showed up in the dashboard. The filter's refusal is the
+    /// report.
+    #[test]
+    fn a_flow_the_cage_refused_is_denied_without_a_byte() {
+        let cfg = Config { strict: vec![crate::config::Strict { path: "/w/GL".into(), allow: vec![], enforce: true }], ..cfg() };
+        let mut c = Correlator::new(cfg);
+        let t0 = Utc::now();
+        c.ingest(&open(proc_(10), "/w/GL/a.pdf", t0));
+        let refused = |at| Event::Refused(NetEvent { at, pid: 10, ppid: None, process_name: "curl".into(), remote: Some("203.0.113.9".parse().unwrap()), remote_port: Some(443), bytes_out: 0, bytes_in: 0 });
+        let a = c.ingest(&refused(t0 + Duration::seconds(1))).expect("a refusal is a denied upload");
+        assert_eq!(a.verdict, Verdict::Denied);
+        assert_eq!(a.remote, Some("203.0.113.9".parse().unwrap()));
+        assert!(c.ingest(&refused(t0 + Duration::seconds(2))).is_none(), "the same refusal again is no new row");
+        // A zero-byte measurement is still nothing.
+        assert!(c.ingest(&net_to(10, "198.51.100.1", 443, 0, t0 + Duration::seconds(3))).is_none());
     }
 
     #[test]
