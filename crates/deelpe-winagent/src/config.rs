@@ -184,6 +184,43 @@ pub fn hostname() -> String {
     std::env::var("COMPUTERNAME").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "unknown".into())
 }
 
+/// The 8.3 short name of a folder — `C:\Freigaben\GL` → `C:\FREIG~1\GL`.
+///
+/// Both spellings are real directory entries on NTFS, and both event tracing
+/// on the workstation and the security log on the file server report
+/// whichever one was opened. A rule written with the long name would
+/// otherwise miss a read through the short one, and no amount of string
+/// normalising can undo that — `FREIG~1` cannot be turned back into
+/// `Freigaben` without asking the file system. So it is asked once per
+/// ruleset, never per event.
+///
+/// `None` when the folder is not there, when the volume carries no short
+/// names (`fsutil 8dot3name`, and a good idea on a file server) or when
+/// nothing about the path shortens. The buffer is generous on purpose: a
+/// short name is never longer than the long one, so whatever does not fit in
+/// it is not an answer worth having.
+#[cfg(windows)]
+pub fn short_name(path: &Path) -> Option<PathBuf> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::GetShortPathNameW;
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let mut buf = [0u16; 1024];
+    let n = unsafe { GetShortPathNameW(PCWSTR(wide.as_ptr()), Some(&mut buf)) };
+    if n == 0 || n as usize > buf.len() {
+        return None;
+    }
+    Some(PathBuf::from(String::from_utf16_lossy(&buf[..n as usize])))
+}
+
+/// On the machine the agent is built on there is no such thing. The halves
+/// that decide are pure and get tested here anyway
+/// (`deelpe_core::config::add_path_aliases`, `agent::add_rule_aliases`).
+#[cfg(not(windows))]
+pub fn short_name(_: &Path) -> Option<PathBuf> {
+    None
+}
+
 /// The fully qualified name of the machine, e.g. `fs-01.corp.example`.
 ///
 /// Not assembled from `COMPUTERNAME` + `USERDNSDOMAIN`: the second variable
