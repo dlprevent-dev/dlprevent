@@ -105,7 +105,12 @@ impl Policy {
     }
 
     /// Adopt a ruleset version — everywhere.
-    async fn adopt(&self, cfg: Config) {
+    async fn adopt(&self, mut cfg: Config) {
+        // A protected folder is reachable under its 8.3 short name as well,
+        // and event tracing reports whichever spelling the program opened.
+        // Asked once per ruleset, never per event — see
+        // [`deelpe_core::config::add_path_aliases`].
+        deelpe_core::config::add_path_aliases(&mut cfg, short_name);
         // The sensor has to know the protected folders, otherwise it pushes
         // every file event of the system through the channel and under load
         // drops the interesting one of all things (lab log 2026-09-07). Its
@@ -117,6 +122,35 @@ impl Policy {
         *self.connector.write().await = cfg.clone();
         self.state.lock().await.corr.set_config(cfg);
     }
+}
+
+/// The 8.3 short name of a folder — `C:\Freigaben\GL` → `C:\FREIG~1\GL`.
+///
+/// `None` when the folder is not there, when the volume has no short names
+/// (`fsutil 8dot3name set 1`, and a good idea on a file server) or when
+/// nothing about the path is shortened. The buffer is generous on purpose:
+/// a short name is never longer than the long one, so anything that does
+/// not fit in it is not an answer we want.
+#[cfg(windows)]
+fn short_name(path: &std::path::Path) -> Option<PathBuf> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::GetShortPathNameW;
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let mut buf = [0u16; 1024];
+    let n = unsafe { GetShortPathNameW(PCWSTR(wide.as_ptr()), Some(&mut buf)) };
+    if n == 0 || n as usize > buf.len() {
+        return None;
+    }
+    Some(PathBuf::from(String::from_utf16_lossy(&buf[..n as usize])))
+}
+
+/// On the machine the agent is built on there is no such thing, and the
+/// pure half is tested there anyway
+/// (`deelpe_core::config::add_path_aliases`).
+#[cfg(not(windows))]
+fn short_name(_: &std::path::Path) -> Option<PathBuf> {
+    None
 }
 
 struct State {

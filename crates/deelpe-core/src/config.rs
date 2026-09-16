@@ -291,6 +291,49 @@ pub fn normalize(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
+/// Add every other spelling under which a protected folder reaches the same
+/// bytes, so the textual comparison in [`crate::path::under`] sees them all.
+///
+/// The case this exists for is the **8.3 short name** on Windows. NTFS keeps
+/// `C:\Freigaben\GL` reachable as `C:\FREIG~1\GL`, both are real directory
+/// entries, and event tracing reports whichever one the program opened. A
+/// rule written with the long name therefore misses a read through the short
+/// one — not an exotic trick but a known way past a folder watch, and one no
+/// amount of string normalising can undo: `FREIG~1` cannot be turned back
+/// into `Freigaben` without asking the file system.
+///
+/// So it is asked **once**, when a ruleset arrives, and not per event: the
+/// folders are few and the events are many. `alias` is passed in rather than
+/// called here because the answer comes from Win32
+/// (`GetShortPathNameW`) — this half stays pure, and gets tested on the
+/// machine the agent is built on.
+///
+/// A folder that does not exist, or has no second spelling, adds nothing.
+/// The direction of the error is "more protection": an alias only ever adds
+/// a path that leads to the folder that was already protected.
+pub fn add_path_aliases(cfg: &mut Config, alias: impl Fn(&Path) -> Option<PathBuf>) {
+    let mut extra: Vec<PathBuf> = Vec::new();
+    for w in &cfg.watched {
+        if let Some(a) = alias(w).filter(|a| a != w && !cfg.watched.contains(a)) {
+            extra.push(a);
+        }
+    }
+    extra.dedup();
+    cfg.watched.extend(extra);
+
+    // A strict folder carries its allow list with it, so the alias has to be
+    // a strict folder of its own with the same list — put behind the
+    // original, so `strict_for`, which prefers the longest path, keeps
+    // picking the spelling the rule was written in wherever both match.
+    let mut extra: Vec<Strict> = Vec::new();
+    for s in &cfg.strict {
+        if let Some(a) = alias(&s.path).filter(|a| *a != s.path && !cfg.strict.iter().any(|o| o.path == *a)) {
+            extra.push(Strict { path: a, allow: s.allow.clone(), enforce: s.enforce });
+        }
+    }
+    cfg.strict.extend(extra);
+}
+
 /// Checks a rule before it goes into the list. Rejects anything that would
 /// switch off everything or all Apple programs.
 pub fn validate_ignore_rule(rule: &str) -> Result<(), String> {
@@ -469,6 +512,44 @@ mod path_tests {
         assert!(c.is_watched(Path::new("/System/Volumes/Data/Users/me/Steuern/a")));
         assert!(c.is_watched(Path::new("/Volumes/com.apple.TimeMachine.localsnapshots/Backups.backupdb/Mac/2026-09-05-101010/Data/Users/me/Steuern/a")));
         assert!(!c.is_watched(Path::new("/Users/me/Other/a")));
+    }
+
+    /// A folder reachable under a second spelling has to be watched under
+    /// both. On Windows that is the 8.3 short name: `C:\FREIG~1\GL` and
+    /// `C:\Freigaben\GL` are the same directory, event tracing reports
+    /// whichever one was opened, and the comparison is textual — so a read
+    /// through the short name walks past a rule written with the long one.
+    #[test]
+    fn a_folder_is_watched_under_every_spelling_that_reaches_it() {
+        // Stands in for `GetShortPathNameW`: only this one folder has a
+        // second spelling, and only it may gain one.
+        let alias = |p: &Path| match p.to_str() {
+            Some(r"C:\Freigaben\GL") => Some(PathBuf::from(r"C:\FREIG~1\GL")),
+            _ => None,
+        };
+        let mut cfg = Config {
+            watched: vec![r"C:\Freigaben\GL".into(), r"C:\Kurz".into()],
+            strict: vec![Strict { path: r"C:\Freigaben\GL".into(), allow: vec!["10.0.0.5".into()], enforce: true }],
+            ..Default::default()
+        };
+        assert!(!cfg.is_watched(Path::new(r"C:\FREIG~1\GL\zahlen.xlsx")), "ohne Alias geht der kurze Name durch");
+        add_path_aliases(&mut cfg, alias);
+
+        assert!(cfg.is_watched(Path::new(r"C:\FREIG~1\GL\zahlen.xlsx")));
+        assert!(cfg.is_watched(Path::new(r"C:\Freigaben\GL\zahlen.xlsx")), "der lange Name bleibt");
+        assert!(!cfg.is_watched(Path::new(r"C:\Anderes\a.txt")));
+        // The alias is a strict folder in its own right, or the allow list
+        // would not apply to it and the folder would report instead of act.
+        let s = cfg.strict_for(Path::new(r"C:\FREIG~1\GL\zahlen.xlsx")).expect("der kurze Name ist streng");
+        assert_eq!(s.allow, ["10.0.0.5"]);
+        assert!(s.enforce);
+        // A folder without a second spelling adds nothing, and running it
+        // twice must not pile up duplicates — a ruleset arrives on every
+        // change, and the lists are rebuilt from it each time.
+        assert_eq!(cfg.watched.len(), 3);
+        let (w, s) = (cfg.watched.len(), cfg.strict.len());
+        add_path_aliases(&mut cfg, alias);
+        assert_eq!((cfg.watched.len(), cfg.strict.len()), (w, s), "zweimal angewandt bleibt es dasselbe");
     }
 
     /// The sensor's starting value (`etw::DEFAULT_TAINT_TTL`) is computed
