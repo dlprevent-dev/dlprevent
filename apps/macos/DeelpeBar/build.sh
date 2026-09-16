@@ -16,6 +16,10 @@ APP=build/DLPrevent.app
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp Info.plist "$APP/Contents/"
+# macOS replaces an activated system extension only when its version changed,
+# so every build gets its own.
+BUILD=$(date -u +%Y%m%d%H%M)
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD" "$APP/Contents/Info.plist"
 cp .build/release/DeelpeBar "$APP/Contents/MacOS/DeelpeBar"
 cp .build/release/DeelpeCageRelay "$APP/Contents/MacOS/DeelpeCageRelay"
 swift icon/make-icon.swift "$APP/Contents/Resources/AppIcon.icns"
@@ -37,6 +41,7 @@ if [ -n "${DEVELOPER_ID:-}" ]; then
   SYSX="$APP/Contents/Library/SystemExtensions/ch.deelpe.bar.filter.systemextension"
   mkdir -p "$SYSX/Contents/MacOS"
   sed "s/TEAM_ID/$TEAM_ID/g" Signing/Filter-Info.plist > "$SYSX/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD" "$SYSX/Contents/Info.plist"
   cp .build/release/DeelpeFilter "$SYSX/Contents/MacOS/ch.deelpe.bar.filter"
   cp "$FILTER_PROFILE" "$SYSX/Contents/embedded.provisionprofile"
   cp "$APP_PROFILE" "$APP/Contents/embedded.provisionprofile"
