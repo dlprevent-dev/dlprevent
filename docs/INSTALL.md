@@ -1440,7 +1440,9 @@ Three parts, and the third is the one people forget:
 2. **Service** — the app installs it interactively, which does not work
    unattended. For MDM, have a post-install script place
    `/usr/local/bin/deelpe` and `packaging/ch.deelpe.daemon.plist` directly and
-   load it with `launchctl bootstrap system …`.
+   load it with `launchctl bootstrap system …`. Remove the quarantine flag
+   first (`xattr -d com.apple.quarantine` on both files): since macOS 27
+   launchd refuses a quarantined plist.
 3. **Full Disk Access** — this **cannot** be granted by script. It needs a
    **PPPC profile** (Privacy Preferences Policy Control) from the MDM,
    granting `SystemPolicyAllFiles` to `/usr/local/bin/deelpe` with its code

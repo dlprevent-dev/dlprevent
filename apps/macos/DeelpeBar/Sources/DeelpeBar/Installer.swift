@@ -33,6 +33,10 @@ enum Installer {
         launchctl bootout system \(daemonPlistDest) 2>/dev/null || true
         install -m 755 -o root -g wheel '\(bin.path)' '\(binaryDest)'
         install -m 644 -o root -g wheel '\(plist.path)' '\(daemonPlistDest)'
+        # install copies the bundle's quarantine flag; since macOS 27 launchd
+        # refuses a quarantined plist ("Bootstrap failed: 5").
+        xattr -d com.apple.quarantine '\(binaryDest)' 2>/dev/null || true
+        xattr -d com.apple.quarantine '\(daemonPlistDest)' 2>/dev/null || true
         launchctl bootstrap system '\(daemonPlistDest)'
         """
         try runAsAdmin(script)
@@ -86,6 +90,7 @@ enum Installer {
         try FileManager.default.createDirectory(at: agentPlistDest.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? FileManager.default.removeItem(at: agentPlistDest)
         try FileManager.default.copyItem(at: plist, to: agentPlistDest)
+        removexattr(agentPlistDest.path, "com.apple.quarantine", 0) // launchd refuses quarantined plists
     }
 
     static func disableLoginItem() throws {

@@ -15,6 +15,15 @@ terminal (iTerm, Terminal.app). Then **Restart service…** in the app. On
 MDM-managed Macs see
 [INSTALL.md → macOS via MDM](INSTALL.md#macos-via-mdm-jamf-intune-kandji).
 
+**"Service not reachable", `Bootstrap failed: 5: Input/output error`.**
+Since macOS 27, launchd refuses a LaunchDaemon plist that carries the
+`com.apple.quarantine` flag; `/var/log/system.log` (or `log show`) says
+*Refusing to execute/trust quarantined program/file*. Apps built before
+2026-09-17 copied the flag from the bundle. Update the app and click
+**Reinstall…**, or by hand:
+`sudo xattr -d com.apple.quarantine /Library/LaunchDaemons/ch.deelpe.daemon.plist`,
+then `sudo launchctl bootstrap system /Library/LaunchDaemons/ch.deelpe.daemon.plist`.
+
 **Service does not start or is killed with Bitdefender installed.** The
 antivirus blocks the binary. Add an exception for `/usr/local/bin/deelpe`.
 
