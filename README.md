@@ -80,6 +80,14 @@ Two parts, usable separately:
   rules for business-critical folders with an emergency brake and a learned
   baseline per user.
 
+And one add-on, for a Linux host that runs an **AI agent** (Hermes):
+- **[dlprevent-guard](https://github.com/dlprevent-dev/dlprevent-guard).** A
+  container between the agent and its model provider that reports prompt
+  injections and data on its way out. The Linux agent needs nothing extra:
+  it already reads the agent's tool calls and the guard's findings, and shows
+  both on the dashboard once the guard runs next to it. See
+  [docs/HERMES.md](docs/HERMES.md).
+
 **Language:** English throughout — app, dashboard, command line, protocol,
 this documentation and the comments in the source.
 

@@ -868,6 +868,15 @@ The same program as on the Mac — `deelpe`, one binary, service plus CLI.
 Underneath it is **fanotify** for file access and **`ss`** for the bytes
 sent. No kernel module, but root: fanotify needs `CAP_SYS_ADMIN`.
 
+**Does the host run an AI agent (Hermes)?** Then two more things are worth
+switching on, and the agent already carries both: every tool call of the AI
+agent in the log, and the findings of **dlprevent-guard**, a separate
+container between the AI agent and its model that catches prompt injections
+and data on its way out. The agent's sensors *hermes* and *llm guard* start
+with it and idle until there is something to read — green in `deelpe status`
+either way. What to install beside it, and how to harden the AI agent
+itself: [HERMES.md](HERMES.md).
+
 ### Building the package
 
 ```bash
