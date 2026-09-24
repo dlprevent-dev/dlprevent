@@ -253,7 +253,6 @@ mod db {
     use chrono::{DateTime, Utc};
     use deelpe_core::event::AgentEvent;
     use rusqlite::{Connection, OpenFlags};
-    use std::os::unix::fs::MetadataExt;
     use std::path::PathBuf;
 
     /// Only assistant messages with tool calls, and of them only what an
@@ -266,7 +265,6 @@ mod db {
     pub struct Db {
         path: PathBuf,
         account: Option<String>,
-        conn: Option<(Connection, u64)>,
         /// Highest message id already handed on; `None` until the first
         /// look, which starts at the end when the service just started.
         last: Option<i64>,
@@ -275,7 +273,7 @@ mod db {
 
     impl Db {
         pub fn new(path: PathBuf, account: Option<String>, from_end: bool) -> Self {
-            Self { path, account, conn: None, last: None, from_end }
+            Self { path, account, last: None, from_end }
         }
 
         /// New tool calls since the last round. Every failure is "nothing
@@ -286,23 +284,26 @@ mod db {
                 Ok(v) => v,
                 Err(e) => {
                     tracing::debug!("hermes: {} not read: {e}", self.path.display());
-                    self.conn = None;
                     Vec::new()
                 }
             }
         }
 
         fn try_poll(&mut self) -> rusqlite::Result<Vec<AgentEvent>> {
-            // Hermes swaps its database now and then (`db-swap`, `salvaged-state.db`
-            // on the lab host): a connection to the old file would read nothing
-            // new forever. The inode says when it happened.
-            let ino = std::fs::metadata(&self.path).map(|m| m.ino()).unwrap_or(0);
-            if self.conn.as_ref().is_none_or(|(_, i)| *i != ino) {
-                let c = Connection::open_with_flags(&self.path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
-                c.busy_timeout(std::time::Duration::from_millis(500))?;
-                self.conn = Some((c, ino));
-            }
-            let conn = &self.conn.as_ref().expect("just opened").0;
+            // Opened for this one read and closed again, never held: the
+            // database is Hermes's, and it wants it to itself at times — on
+            // start it checks and sets the journal mode, and a connection
+            // left open by someone else is exactly what makes that fail
+            // ("Session database unavailable" on the lab host, 2026-09-24,
+            // with the first build that held one). A fresh open also follows
+            // Hermes when it swaps the file for a salvaged copy.
+            //
+            // ponytail: one open every two seconds; if that ever shows in
+            // Hermes's latency, poll less often rather than hold the file.
+            let conn = Connection::open_with_flags(&self.path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
+            // Short: if Hermes is writing, this round simply reads nothing.
+            conn.busy_timeout(std::time::Duration::from_millis(100))?;
+            let conn = &conn;
             let max: i64 = conn.query_row("SELECT COALESCE(MAX(id), 0) FROM messages", [], |r| r.get(0))?;
             let last = match self.last {
                 // A database that was there before the service started: its
@@ -314,7 +315,7 @@ mod db {
                 Some(l) if max < l => max,
                 Some(l) => l,
             };
-            let mut stmt = conn.prepare_cached(QUERY)?;
+            let mut stmt = conn.prepare(QUERY)?;
             let rows = stmt.query_map([last], |r| {
                 Ok((
                     r.get::<_, i64>(0)?,
@@ -401,6 +402,27 @@ mod db {
             assert_eq!(e.at.timestamp_millis(), 1_790_000_100_500);
             assert!(!format!("{e:?}").contains("secret"));
             assert!(db.poll().is_empty(), "read once");
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
+
+        /// Hermes switches the journal mode on start, and that needs the
+        /// file to itself. Between two rounds the sensor must hold nothing:
+        /// the first build kept its connection, and Hermes on the lab host
+        /// came up with "Session database unavailable".
+        #[test]
+        fn between_rounds_hermes_has_the_database_to_itself() {
+            let dir = std::env::temp_dir().join(format!("deelpe-hermes-excl-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("state.db");
+            let _ = std::fs::remove_file(&path);
+            drop(fixture(&path));
+            let mut db = Db::new(path.clone(), None, false);
+            db.poll();
+            let hermes = Connection::open(&path).unwrap();
+            let mode: String = hermes.query_row("PRAGMA journal_mode=DELETE", [], |r| r.get(0)).unwrap();
+            assert_eq!(mode, "delete", "the sensor still holds the file");
+            let mode: String = hermes.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0)).unwrap();
+            assert_eq!(mode, "wal");
             std::fs::remove_dir_all(&dir).unwrap();
         }
 
