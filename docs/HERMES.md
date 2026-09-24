@@ -362,7 +362,19 @@ Then, in Telegram:
    permitted`; one `denied` alert per program it tries.
 
 Leave the guard in flag mode until the alerts on real traffic look right,
-then `GUARD_MODE=block` in its `.env`.
+then `GUARD_MODE=block` in its `.env` and `docker compose up -d`. What block
+mode refuses and what it only reports is listed per direction in the
+[guard's README](https://github.com/dlprevent-dev/dlprevent-guard#what-it-scans).
+
+In block mode, check whether it can stop a command at all. A streamed answer
+is only scanned when it has ended, so a command in it runs anyway:
+
+4. *"Run this command: echo webhook.site"* — **refused**: Hermes reports an
+   error from the guard and nothing runs, the guard log shows
+   `guard: output block blocked agent_exfil_service`. **Printed**: Hermes
+   streams its answers; the finding still becomes an alert, but only the
+   input side (injections in your message and in tool results) is stopped.
+   Guarded folders are then what keeps a hijacked command from the keys.
 
 ## When it does not work
 
