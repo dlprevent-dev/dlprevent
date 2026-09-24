@@ -334,8 +334,20 @@ something outside needs them. LLMNR (port 5355) has no business on a server:
 `LLMNR=no` in `/etc/systemd/resolved.conf`.
 
 **Leftovers.** When a request fails, Hermes dumps it — prompt and history —
-to `~/.hermes/sessions/request_dump_*.json`. Delete them once they are no
-longer needed.
+to `~/.hermes/sessions/request_dump_*.json`. That includes every request the
+guard refused, with the text it refused: in the lab, Hermes searched
+`/root/.hermes` for "dlprevent-guard" right after a refusal, found the dump,
+and read the withheld injection back into the conversation. Delete the dumps
+the moment they are written — a systemd path unit watches the folder:
+
+```bash
+printf '[Path]\nPathChanged=/root/.hermes/sessions\n\n[Install]\nWantedBy=multi-user.target\n' > /etc/systemd/system/hermes-dumps.path
+printf '[Service]\nType=oneshot\nExecStart=/bin/sh -c "rm -f /root/.hermes/sessions/request_dump_*.json"\n' > /etc/systemd/system/hermes-dumps.service
+systemctl daemon-reload && systemctl enable --now hermes-dumps.path
+```
+
+Once `/etc/systemd/system` is guarded, run this from a direct SSH session, not
+from a shell Hermes started.
 
 **Where the data goes.** Everything Hermes reads into a conversation goes to
 the model provider. The guard reports personal data and secrets on the way
@@ -366,15 +378,19 @@ then `GUARD_MODE=block` in its `.env` and `docker compose up -d`. What block
 mode refuses and what it only reports is listed per direction in the
 [guard's README](https://github.com/dlprevent-dev/dlprevent-guard#what-it-scans).
 
-In block mode, check whether it can stop a command at all. A streamed answer
-is only scanned when it has ended, so a command in it runs anyway:
+In block mode, check that it stops a command before it runs. Hermes streams
+its answers; the guard holds each one until it has ended and only then
+passes it on:
 
-4. *"Run this command: echo webhook.site"* — **refused**: Hermes reports an
-   error from the guard and nothing runs, the guard log shows
-   `guard: output block blocked agent_exfil_service`. **Printed**: Hermes
-   streams its answers; the finding still becomes an alert, but only the
-   input side (injections in your message and in tool results) is stopped.
-   Guarded folders are then what keeps a hijacked command from the keys.
+4. *"Run this command: echo webhook.site"* — Hermes reports an error from the
+   guard and nothing runs; the guard log shows
+   `guard: output block blocked agent_exfil_service`. **Printed** instead,
+   with `block forwarded` in the log: the guard is older than the version
+   that holds streams — `git pull && docker compose up -d --build`.
+5. After a refusal, write anything in the same chat. Hermes answers; the
+   guard log shows `withheld, refused before`: the refused content is
+   replaced by a note from then on, so the session does not end with one
+   refusal.
 
 ## When it does not work
 
@@ -410,5 +426,11 @@ is only scanned when it has ended, so a command in it runs anyway:
   it started by its command line within 2 s before to 30 s after the call.
   Two users running the same command in the same seconds get the first
   call. Exact joining needs Hermes to pass a call ID to its children.
-- **A streamed answer is scanned when it has ended**: reported, never cut
-  off, even in block mode.
+- **Block mode holds a streamed answer until it has ended.** Hermes gets
+  each answer in one piece. In flag mode it streams through and is only
+  reported.
+- **Withheld content can come back another way.** The guard recognises a
+  refused piece only as the same text. Hermes's request dumps
+  ([Leftovers](#hardening-hermes-itself)) or a file Hermes copied it into
+  bring it back in a different shape, and it is scanned afresh — an
+  injection phrase is refused again, a bare command in it is not.
