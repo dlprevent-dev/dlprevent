@@ -270,7 +270,7 @@ unsafe extern "system" fn on_event(rec: *mut EVENT_RECORD) {
     // inheritance is decided in the event itself.
     for p in ctx.procs.take_pending() {
         let path = p.path.clone();
-        let intro = Event::File(FileEvent { at: Utc::now(), process: p, path, action: FileAction::Exec, target: None, inode: None, nlink: None });
+        let intro = Event::File(FileEvent { at: Utc::now(), process: p, path, action: FileAction::Exec, target: None, inode: None, nlink: None, argv: None });
         if ctx.tx.try_send(intro).is_err() {
             break;
         }
@@ -365,6 +365,7 @@ fn file_event(ctx: &mut Ctx, rec: *mut EVENT_RECORD, id: u16) -> Option<Event> {
                 target: None,
                 inode: None,
                 nlink: None,
+                argv: None,
             }))
         }
         _ => None,

@@ -39,6 +39,27 @@ pub struct Config {
     /// `ignored`. Enforced in [`crate::pipeline::judge`]. Handed out by the
     /// central server.
     pub allow_processes: std::collections::BTreeSet<String>,
+    /// Folders whose files may not even be opened (Linux only). See
+    /// [`Guard`]. Kept in the local file for now; the central server does
+    /// not hand them out yet.
+    pub guarded: Vec<Guard>,
+}
+
+/// A folder the kernel holds every open in until the service has answered
+/// (`FAN_OPEN_PERM`), and the answer is no for the programs named here.
+///
+/// The other rules act after the fact — the touch, the cage, the removed
+/// copy. This one acts before the first byte: `cat` gets `Permission
+/// denied`. It is meant for what an AI agent must never read
+/// (`/root/.ssh`), not for a share people work in.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Guard {
+    pub path: PathBuf,
+    /// Pieces of a command line (`hermes`). An open is refused when the
+    /// process or one of its ancestors carries one of them. Empty: refused
+    /// for every program except this service.
+    pub processes: Vec<String>,
 }
 
 /// A folder out of which nothing may go outside, except to the
@@ -120,6 +141,7 @@ impl Default for Config {
             ignored: DEFAULT_IGNORED.iter().map(|s| s.to_string()).collect(),
             strict: Vec::new(),
             allow_processes: Default::default(),
+            guarded: Vec::new(),
         }
     }
 }
@@ -219,6 +241,12 @@ impl Config {
     pub fn strict_for(&self, file: &Path) -> Option<&Strict> {
         let file = normalize(file);
         self.strict.iter().filter(|s| under(&file, &s.path)).max_by_key(|s| s.path.as_os_str().len())
+    }
+
+    /// The guarded folder a file lies in, the longest one if they nest.
+    pub fn guard_for(&self, file: &Path) -> Option<&Guard> {
+        let file = normalize(file);
+        self.guarded.iter().filter(|g| under(&file, &g.path)).max_by_key(|g| g.path.as_os_str().len())
     }
 
     /// The strict folder that forbids this flow: the first one among the

@@ -219,6 +219,23 @@ orb run -m dlp-cage-test -u root bash -c '
 The two ignored tests cage a real shell and cut a real connection; they need
 root and leave nothing behind.
 
+The open guard (`linux/guard.rs`) needs the same real kernel and root; the
+container from above is enough (`CONFIG_FANOTIFY_ACCESS_PERMISSIONS`). With
+the daemon from that recipe running:
+
+```bash
+  apt-get install -y -qq jq
+  mkdir -p /root/.ssh/sub && echo k > /root/.ssh/sub/id && echo k > /tmp/free
+  jq '.guarded=[{"path":"/root/.ssh","processes":["hermes"]}]' /etc/deelpe/config.json > /tmp/c && mv /tmp/c /etc/deelpe/config.json
+  pkill -x deelpe; /target/debug/deelpe daemon & sleep 3
+  cat /root/.ssh/sub/id                               # allowed: not an agent
+  # A shell named hermes, and `; true` so it forks cat instead of becoming it:
+  bash -c 'exec -a hermes bash -c "cat /root/.ssh/sub/id; true"'   # Permission denied
+  time cat /tmp/free                                   # unmarked: no delay
+  /target/debug/deelpe alerts                          # one denied alert
+  pkill -x deelpe; cat /root/.ssh/sub/id               # nothing hangs after the stop
+```
+
 Bitdefender: add an exception for `/usr/local/bin/deelpe`.
 
 ## Migrations

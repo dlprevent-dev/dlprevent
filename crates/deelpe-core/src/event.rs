@@ -49,6 +49,11 @@ pub struct FileEvent {
     /// Number of hard links to the file; > 1 means there are further names.
     #[serde(default)]
     pub nlink: Option<u32>,
+    /// Command line of the started program, for `Exec`, if the sensor can
+    /// read it: the binary alone does not tell `rm -rf /data` from
+    /// `rm /tmp/x`, and an agent's terminal command is joined on it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub argv: Option<String>,
 }
 
 /// A process sent data outward (delta since the last measurement).
@@ -102,4 +107,38 @@ pub enum Event {
     Refused(NetEvent),
     Mount(MountEvent),
     Exit(ExitEvent),
+    /// An open the permission listener refused before the first byte
+    /// (`FAN_OPEN_PERM` on Linux). `action` is `Open`.
+    Blocked(FileEvent),
+    /// What an AI agent (Hermes) asked a tool to do.
+    Agent(AgentEvent),
+}
+
+/// One tool call of an AI agent, as its session log recorded it.
+///
+/// **Metadata only**: tool, command, path, query. Prompt and response stay
+/// in the agent's own log — the DLP side must not become a second copy of
+/// every conversation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentEvent {
+    /// The time the agent recorded, not the time the line was read.
+    pub at: DateTime<Utc>,
+    /// Session log name without its extension.
+    pub session_id: String,
+    /// `telegram`, `cli`, … — empty if the log does not say.
+    pub platform: String,
+    pub model: Option<String>,
+    /// The account whose home the session log lives in. The log itself
+    /// names no user, and a gateway serving many people runs under one
+    /// account: this is not the person.
+    pub user: Option<String>,
+    pub call_id: String,
+    /// `function.name` of the call.
+    pub tool: String,
+    /// Shell command, for `terminal`.
+    pub command: Option<String>,
+    /// File or folder, for `read_file`, `write_file`, `patch`, `search_files`.
+    pub path: Option<PathBuf>,
+    /// Search text or URL, for `web_search`, `web_extract`.
+    pub query: Option<String>,
 }

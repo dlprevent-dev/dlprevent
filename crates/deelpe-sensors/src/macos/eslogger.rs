@@ -100,7 +100,7 @@ pub fn parse_line(line: &str) -> Option<Event> {
         // program's identity is in `target`. PID and PPID are the same.
         let target = e.get("target").and_then(process_ref).or_else(|| process_ref(process))?;
         let path = target.path.clone();
-        return Some(Event::File(FileEvent { at, process: target, path, action: FileAction::Exec, target: None, inode: None, nlink: None }));
+        return Some(Event::File(FileEvent { at, process: target, path, action: FileAction::Exec, target: None, inode: None, nlink: None, argv: None }));
     }
     let process = process_ref(process)?;
     let (path, action, target, file) = if let Some(o) = event.get("open") {
@@ -123,7 +123,7 @@ pub fn parse_line(line: &str) -> Option<Event> {
         return None;
     };
     let (inode, nlink) = file.map(stat_of).unwrap_or((None, None));
-    Some(Event::File(FileEvent { at, process, path: PathBuf::from(path), action, target, inode, nlink }))
+    Some(Event::File(FileEvent { at, process, path: PathBuf::from(path), action, target, inode, nlink, argv: None }))
 }
 
 /// (device, inode) and link count from the `stat` of an es_file_t.

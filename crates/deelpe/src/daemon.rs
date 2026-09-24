@@ -926,6 +926,7 @@ fn update_config(st: &mut State, f: impl FnOnce(&mut Config)) -> Result<()> {
 fn arm_sensors(cfg: &Config) {
     let paths: Vec<String> = cfg.watched.iter().map(|p| p.display().to_string()).collect();
     deelpe_sensors::set_watched(deelpe_sensors::Watch::Folders { paths: &paths, taint_ttl: cfg.sensor_taint_ttl() });
+    deelpe_sensors::set_guarded(&cfg.guarded);
 }
 
 /// Tighten an existing file to 0600 (older versions wrote 0644).

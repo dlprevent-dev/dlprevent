@@ -1047,6 +1047,46 @@ reports. `nft list table inet deelpe_cage` shows what is caged right now.
 The table is removed when the service stops, crashes included
 (`ExecStopPost`).
 
+### AI agents (Hermes)
+
+If an account on the machine runs the Hermes agent, the service reads its
+session logs (`/root/.hermes/sessions/`, `/home/*/.hermes/sessions/`) every
+two seconds: tool name, shell command, path or search query — never prompts,
+answers or tool results. It joins each call to the program start or file
+access it caused, and an alert about that process or its children then names
+the call: ``agent session 20260525_075516_a58d38a9 (telegram, account anna), tool
+terminal `cat … | curl …`, call call_00_…``. The account is the one whose home
+the log lies in — the log names no person, and a gateway serving several
+people runs under one account. The join is by command line and time (up to 2 s before and
+30 s after the call); a gateway that runs the same command for two users in
+the same seconds gets the first call.
+
+### Guarded folders
+
+A guarded folder is refused before the first byte: the kernel holds every
+open in it until the service answers (fanotify permission events), and `cat`
+gets `Permission denied`. For what an agent must never read, not for a share
+people work in. Local only for now, in `/etc/deelpe/config.json`, then restart
+the service:
+
+```json
+"guarded": [{ "path": "/root/.ssh", "processes": ["hermes"] }]
+```
+
+`processes` are pieces of a command line; the open is refused when the
+process or one of its ancestors carries one, so the agent's shell and its
+`cat` are refused and the owner's `ssh` is not. The match is plain text:
+`ssh hermes-host` carries `hermes` too and is refused, so pick a piece only
+the agent's command line has (its install path). And the ancestors are
+walked as the kernel sees them: a program the agent detached (`setsid -f`,
+a double fork) hangs off PID 1 and is no longer the agent's. Empty: refused for every
+program but the service. Each refusal is a `denied` alert without a
+destination. Only the folder and its subfolders are marked, never the
+filesystem; a subfolder created later is covered within 30 s. Anything the
+service cannot decide is allowed, and if it stops, the kernel allows whatever
+was waiting. Program starts are not refused: the kernel asks before the new
+program's arguments exist.
+
 ### Updating and uninstalling
 
 **From the dashboard (agents from 0.1.4 on).** `scripts/build-agent-deb.sh`

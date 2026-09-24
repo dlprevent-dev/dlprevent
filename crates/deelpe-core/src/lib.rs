@@ -2,6 +2,7 @@
 //! correlation. Knows no sensors and no platform.
 
 pub mod access;
+pub mod agent;
 #[cfg(feature = "net")]
 pub mod agentlog;
 pub mod allow;
