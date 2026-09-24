@@ -3,7 +3,7 @@
 //! Everything else on Linux acts after the fact — the touch, the cage, the
 //! alert. For a guarded folder ([`deelpe_core::config::Guard`]) the kernel
 //! holds the `open()` until this listener has answered, and a no comes
-//! back to the caller as `EACCES`. No race, the same guarantee the browser
+//! back to the caller as `EPERM`. No race, the same guarantee the browser
 //! connector gives on Windows.
 //!
 //! The price is that every open under a marked folder **waits for us**.
@@ -34,7 +34,7 @@
 // sweep, up to REMARK later; until then its files open freely. FAN_CREATE
 // would close that, but only a group that reports file handles gets it.
 
-use super::fanotify::{cmdline, ppid_of, process_ref, readlink, Ctx};
+use super::fanotify::{cmdline, identity_of, ppid_of, readlink, Ctx};
 use crate::Sensor;
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
@@ -137,16 +137,19 @@ fn listen(fan: OwnedFd, tx: mpsc::Sender<Event>) -> Result<()> {
             let path = readlink(&format!("/proc/self/fd/{}", efd.as_raw_fd()));
             let pid = meta.pid as u32;
             let deny = meta.mask & libc::FAN_OPEN_PERM != 0 && pid != own && path.as_deref().is_some_and(|p| crate::filter::refuses(p, || chain(pid)));
+            // Who it was, before the answer: a refused `cat` exits at once,
+            // and afterwards `/proc/<pid>` is gone. Two readlinks, no open.
+            let who = deny.then(|| (readlink(&format!("/proc/{pid}/exe")), ppid_of(pid)));
             respond(fd, efd.as_raw_fd(), !deny);
             drop(efd);
-            if let (true, Some(p)) = (deny, path) {
-                blocked.push((pid, p));
+            if let (Some(who), Some(p)) = (who, path) {
+                blocked.push((pid, who, p));
             }
         }
         // Answered, all of them: now the slow part.
-        for (pid, path) in blocked {
+        for (pid, (exe, ppid), path) in blocked {
             tracing::warn!("open guard: refused {path} to PID {pid}");
-            let process = name(&mut ctx, pid);
+            let process = name(&mut ctx, pid, exe, ppid);
             let ev = Event::Blocked(FileEvent { at: Utc::now(), process, path: path.into(), action: FileAction::Open, target: None, inode: None, nlink: None, argv: None });
             match tx.try_send(ev) {
                 Ok(()) => {}
@@ -183,13 +186,10 @@ fn chain(mut pid: u32) -> Vec<String> {
 
 /// The process for the alert. A binary inside a guarded folder is named,
 /// not hashed: hashing opens it, and that open would wait on this thread.
-fn name(ctx: &mut Ctx, pid: u32) -> ProcessRef {
-    match readlink(&format!("/proc/{pid}/exe")) {
-        Some(exe) if crate::filter::is_guarded(&exe) => {
-            ProcessRef { pid, ppid: ppid_of(pid), responsible: None, path: PathBuf::from(&exe), identity: ProcessIdentity::Unknown { path: exe } }
-        }
-        _ => process_ref(ctx, pid),
-    }
+fn name(ctx: &mut Ctx, pid: u32, exe: Option<String>, ppid: Option<u32>) -> ProcessRef {
+    let exe = exe.unwrap_or_else(|| format!("pid {pid}"));
+    let identity = if exe.starts_with('/') && !crate::filter::is_guarded(&exe) { identity_of(ctx, exe.clone()) } else { ProcessIdentity::Unknown { path: exe.clone() } };
+    ProcessRef { pid, ppid, responsible: None, path: PathBuf::from(exe), identity }
 }
 
 /// Mark every directory under the guarded folders, unmark what fell out.

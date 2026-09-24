@@ -1065,7 +1065,7 @@ the same seconds gets the first call.
 
 A guarded folder is refused before the first byte: the kernel holds every
 open in it until the service answers (fanotify permission events), and `cat`
-gets `Permission denied`. For what an agent must never read, not for a share
+gets `Operation not permitted`. For what an agent must never read, not for a share
 people work in. Local only for now, in `/etc/deelpe/config.json`, then restart
 the service:
 

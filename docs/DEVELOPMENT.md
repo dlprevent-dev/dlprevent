@@ -224,13 +224,13 @@ container from above is enough (`CONFIG_FANOTIFY_ACCESS_PERMISSIONS`). With
 the daemon from that recipe running:
 
 ```bash
-  apt-get install -y -qq jq
+  apt-get install -y -qq jq procps
   mkdir -p /root/.ssh/sub && echo k > /root/.ssh/sub/id && echo k > /tmp/free
   jq '.guarded=[{"path":"/root/.ssh","processes":["hermes"]}]' /etc/deelpe/config.json > /tmp/c && mv /tmp/c /etc/deelpe/config.json
   pkill -x deelpe; /target/debug/deelpe daemon & sleep 3
   cat /root/.ssh/sub/id                               # allowed: not an agent
   # A shell named hermes, and `; true` so it forks cat instead of becoming it:
-  bash -c 'exec -a hermes bash -c "cat /root/.ssh/sub/id; true"'   # Permission denied
+  bash -c 'exec -a hermes bash -c "cat /root/.ssh/sub/id; true"'   # Operation not permitted
   time cat /tmp/free                                   # unmarked: no delay
   /target/debug/deelpe alerts                          # one denied alert
   pkill -x deelpe; cat /root/.ssh/sub/id               # nothing hangs after the stop

@@ -393,14 +393,18 @@ pub(super) fn process_ref(ctx: &mut Ctx, pid: u32) -> ProcessRef {
         let gone = format!("pid {pid}");
         return ProcessRef { pid, ppid, responsible: None, path: PathBuf::from(&gone), identity: ProcessIdentity::Unknown { path: gone } };
     };
-    let path = PathBuf::from(&exe);
-    let identity = match hash_of(ctx, &path) {
+    ProcessRef { pid, ppid, responsible: None, path: PathBuf::from(&exe), identity: identity_of(ctx, exe) }
+}
+
+/// The identity of a binary: its hash, or its path alone if it cannot be
+/// read.
+pub(super) fn identity_of(ctx: &mut Ctx, exe: String) -> ProcessIdentity {
+    match hash_of(ctx, &PathBuf::from(&exe)) {
         Some(sha256) => ProcessIdentity::Hashed { path: exe, sha256 },
         // Unreadable binary (a container's own mount namespace, a race with
         // exit): reported rather than silently trusted.
         None => ProcessIdentity::Unknown { path: exe },
-    };
-    ProcessRef { pid, ppid, responsible: None, path, identity }
+    }
 }
 
 /// The command line of a process, arguments joined by spaces.
