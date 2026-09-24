@@ -51,6 +51,12 @@ any other program.
 What you do **not** see: a message like "hi" produces nothing — only tool
 calls are logged, and only findings become alerts.
 
+Expect some flags that are not attacks: `PII detected` when an email address
+or a phone number is in the conversation (it is on its way to the provider —
+whether that matters is yours to judge), and `cipher_payload` on a subagent's
+instructions, which Hermes writes itself and which carry format strings like
+`'+%Y-%m-%d %H:%M'`. In flag mode they are notices; mark them done.
+
 ## Install
 
 On the Hermes host, as root.
@@ -107,9 +113,27 @@ systemctl restart hermes-gateway
 curl -s https://api.deepseek.com/v1/models -H "Authorization: Bearer $(sed -n 's/^DEEPSEEK_API_KEY=//p' /root/.hermes/.env)" | head -c 120
 ```
 
-The last command must answer `Authentication Fails`. Rotate the key in the
-guard's `.env` only; delete the backup once everything works — it holds the
-real key.
+The last command must answer `Authentication Fails`. If the copy found
+nothing (`grep -c GUARD_UPSTREAM_KEY .env` says `0` — an `.env` line in an
+unusual form), type the key in instead, without it showing:
+
+```bash
+read -rs -p 'Key: ' K && sed -i '/^GUARD_UPSTREAM_KEY=/d' .env && echo "GUARD_UPSTREAM_KEY=$K" >> .env && chmod 600 .env && unset K
+```
+
+**Hermes has a second place for keys**, its credential pool. A key stored
+there by hand (`manual`) is the fallback when the one from `.env` fails —
+and once that one is a placeholder, it fails on every path around the guard.
+List it and remove what is not a placeholder:
+
+```bash
+hermes auth list          # look for entries marked "manual"
+hermes auth remove <provider> <id>
+```
+
+Revoke a key removed there at the provider too, unless something else uses
+it. Rotate keys in the guard's `.env` only; delete the backup once everything
+works — it holds the real key.
 
 **4. Point Hermes at the guard.** In `/root/.hermes/config.yaml`, the provider
 entry's `base_url` becomes the guard; the key line stays:
@@ -122,8 +146,12 @@ custom_providers:
 ```
 
 Check the aliases too: `ds: deepseek:deepseek-v4-pro` uses Hermes's
-**built-in** provider and goes around the guard; `ds: custom:deepseek:deepseek-v4-pro`
-goes through it. `fallback_providers` should stay empty for the same reason.
+**built-in** provider and goes around the guard. Give aliases the plain model
+name, `ds: deepseek-v4-pro` — it stays on the provider of `model:`, the
+guarded one. (`custom:deepseek:deepseek-v4-pro` is what the docs suggest, but
+current Hermes reads a `provider:model` string in `/model` as one model name,
+and an alias may fare the same.) `fallback_providers` should stay empty for
+the same reason.
 
 **5. Run Hermes as the service that has its configuration.** The unit shipped
 with Hermes may run it as another user with an empty `HERMES_HOME` — it then
@@ -209,16 +237,28 @@ In `/etc/deelpe/config.json`, then `systemctl restart deelpe`:
   { "path": "/home/ubuntu/.ssh",                   "processes": ["/usr/local/lib/hermes-agent/"] },
   { "path": "/home/ubuntu/dlprevent-guard/guard",  "processes": ["/usr/local/lib/hermes-agent/"] },
   { "path": "/etc/deelpe",                         "processes": ["/usr/local/lib/hermes-agent/"] },
-  { "path": "/var/log/dlprevent-guard",            "processes": ["/usr/local/lib/hermes-agent/"] }
+  { "path": "/var/log/dlprevent-guard",            "processes": ["/usr/local/lib/hermes-agent/"] },
+  { "path": "/var/lib/deelpe",                     "processes": ["/usr/local/lib/hermes-agent/"] }
 ]
 ```
+
+Without `jq` on the host, Python adds one (here `/var/lib/deelpe`):
+
+```bash
+python3 -c "import json;p='/etc/deelpe/config.json';c=json.load(open(p));c.setdefault('guarded',[]).append({'path':'/var/lib/deelpe','processes':['/usr/local/lib/hermes-agent/']});json.dump(c,open(p,'w'),indent=2);print([g['path'] for g in c['guarded']])"
+systemctl restart deelpe
+```
+
+Once `/etc/deelpe` is guarded, that command is refused if your shell
+descends from Hermes (see the table below); stop the agent around it
+(`systemctl stop deelpe; …; systemctl start deelpe`).
 
 | Folder | Why |
 |---|---|
 | `~/.ssh` of every account | keys to your other servers |
 | `~/.aws`, `~/.kube`, `~/.docker`, `~/.config/gh`, `~/.gnupg` | cloud, cluster, registry, GitHub and signing credentials, where present |
 | the guard's `guard/` folder | its `.env` holds the provider key |
-| `/etc/deelpe`, `/var/log/dlprevent-guard` | the rules that watch the agent, and the guard's findings about it |
+| `/etc/deelpe`, `/var/log/dlprevent-guard`, `/var/lib/deelpe` | the rules that watch the agent, the guard's findings about it, and DLPrevent's own alert list and log — in the lab Hermes went looking there by itself, after a refusal, to find out what had stopped it |
 | `/etc/systemd/system`, `/etc/cron.d`, `/var/spool/cron` | where an attacker makes a foothold survive a reboot |
 
 `/usr/local/lib/hermes-agent/` is in the command line of every Hermes process
@@ -335,6 +375,10 @@ then `GUARD_MODE=block` in its `.env`.
 | Agent log empty although Hermes works | Hermes saved nothing (see the line above), or the call was not a tool call | `journalctl -u hermes-gateway | grep FATAL`; ask for something that needs a tool |
 | Many guard alerts on ordinary tool output | guard older than `a9faa21` scanned tool results with prompt heuristics | `git pull && docker compose up -d --build` |
 | A guard alert "data-drop service" when Hermes only *warned* about an attack | guard older than `e0275e4` checked the prose of the answer, not just its tool calls | `git pull && docker compose up -d --build` |
+| Guard log full of `GET /api/tags`, `/props`, `/version` -> 404 | harmless: Hermes takes a `127.0.0.1` address for a local model server and probes for Ollama and llama.cpp endpoints the provider does not have | nothing to do; `GET /v1/models -> 200` means the key works |
+| Alerts from the guard do not show on the dashboard | usually a stale view | reload, clear the filters; on the host `deelpe alerts | head` lists the newest and `journalctl -u deelpe | grep 'central: reported'` shows the report went out |
+| A second provider still answers after its key became a placeholder | a key in Hermes's credential pool (`hermes auth list`, `manual`) | `hermes auth remove <provider> <id>` |
+| `jq: command not found` when editing `/etc/deelpe/config.json` | not installed on the host | the Python line under [Guarded folders](#guarded-folders), or `apt install jq` |
 | Telegram works but the guard log shows no `POST` from it | the chat is a session from before the switch, still on the old provider | `/new`, step 6 |
 | `Operation not permitted` in your own shell on a guarded folder | your shell descends from a Hermes process (a tmux server Hermes started) | work in a direct SSH session; or `systemctl stop deelpe`, change, `systemctl start deelpe` |
 | `docker compose`: `no configuration file provided` / `GUARD_UPSTREAM is missing` | run outside `guard/`, or `.env` not in `guard/` | `cd dlprevent-guard/guard` |

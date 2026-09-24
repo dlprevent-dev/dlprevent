@@ -153,6 +153,33 @@ same store.
 
 Docker image and packages: [INSTALL.md](INSTALL.md).
 
+**amd64 from Apple Silicon without Rosetta.** `build-agent-deb.sh amd64` runs
+the build in an emulated amd64 container. Docker Desktop and OrbStack emulate
+through Rosetta; Colima's default VM (`vmType: vz`, `rosetta: false`) uses
+QEMU, and there the linker dies with `SIGSEGV` (2026-09-24). Either start
+Colima with `--vz-rosetta`, or cross-compile from a native arm64 container —
+nothing emulated:
+
+```bash
+docker run --rm --platform linux/arm64 -v "$PWD":/src -v deelpe-deb-arm64:/target -v "$PWD/dist":/out \
+  -w /src -e CARGO_TARGET_DIR=/target -e CARGO_INSTALL_ROOT=/target/tools \
+  -e PATH=/target/tools/bin:/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+  -e CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc \
+  -e CC_x86_64_unknown_linux_gnu=x86_64-linux-gnu-gcc -e AR_x86_64_unknown_linux_gnu=x86_64-linux-gnu-ar \
+  -e PKG_CONFIG_ALLOW_CROSS=1 -e PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig \
+  rust:1.90-slim-bookworm bash -euo pipefail -c '
+    dpkg --add-architecture amd64 && apt-get update -qq
+    apt-get install -y -qq dpkg-dev pkg-config gcc-x86-64-linux-gnu libc6-dev-amd64-cross libsqlite3-dev:amd64
+    rustup target add x86_64-unknown-linux-gnu
+    command -v cargo-deb >/dev/null || cargo install cargo-deb --quiet
+    cargo deb -p deelpe --target x86_64-unknown-linux-gnu
+    cp /target/x86_64-unknown-linux-gnu/debian/deelpe_*_amd64.deb /out/'
+```
+
+Colima also shares only your home folder with its VM: a file under `/tmp`
+arrives in a container as an empty directory — pipe a script in over stdin
+instead (`docker run -i … bash -s < script.sh`).
+
 ## Tests
 
 ```bash
