@@ -1061,6 +1061,21 @@ people runs under one account. The join is by command line and time (up to 2 s b
 30 s after the call); a gateway that runs the same command for two users in
 the same seconds gets the first call.
 
+### LLM guard (prompt injection)
+
+The agent's session logs say what Hermes did; they cannot say whether a web
+page it read talked it into doing so. That is the job of `dlprevent-guard`,
+a separate container between Hermes and its model provider (its own
+repository, AnveGuard's engine plus rules for agent commands). It scans the
+user's turn, every tool result and the model's answer, and writes each
+finding — rule names and reasons, never the text — to
+`/var/log/dlprevent-guard/verdicts.jsonl`.
+
+This service reads that file (sensor *llm guard*) and makes each finding an
+alert from `dlprevent-guard`: a finding in flag mode is `new`, a request the
+guard refused is `denied`. Repeats of the same rules count up in one row for
+10 minutes. Nothing to configure here; without the guard the sensor idles.
+
 ### Guarded folders
 
 A guarded folder is refused before the first byte: the kernel holds every

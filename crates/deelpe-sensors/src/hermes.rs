@@ -123,7 +123,7 @@ fn head_meta(path: &Path) -> Meta {
 /// The complete lines appended since `offset`, which moves past them. A
 /// line still being written stays for the next round; a file that shrank
 /// was replaced and is read from the start.
-fn read_new(path: &Path, offset: &mut u64) -> std::io::Result<String> {
+pub(crate) fn read_new(path: &Path, offset: &mut u64) -> std::io::Result<String> {
     let mut f = std::fs::File::open(path)?;
     let len = f.metadata()?.len();
     if len < *offset {

@@ -18,7 +18,7 @@
 //!   touch.
 
 use crate::config::Config;
-use crate::event::{AgentEvent, Event, FileAction, FileEvent, NetEvent, ProcessRef};
+use crate::event::{AgentEvent, Event, FileAction, FileEvent, GuardEvent, NetEvent, ProcessRef};
 use crate::identity::ProcessIdentity;
 use crate::learn::Verdict;
 use chrono::{DateTime, Duration, Utc};
@@ -319,6 +319,16 @@ struct Touched {
     copies: Vec<PathBuf>,
 }
 
+/// One alert per kind of guard finding while the touch deadline runs.
+#[derive(Debug)]
+struct GuardAlert {
+    id: u64,
+    first_at: DateTime<Utc>,
+    last_at: DateTime<Utc>,
+    count: u32,
+    blocked: u32,
+}
+
 /// The call a process was attributed to.
 #[derive(Debug)]
 struct AgentTag {
@@ -509,6 +519,8 @@ pub struct Correlator {
     arrivals: HashMap<(u32, PathBuf), Arrival>,
     /// (PID, guarded folder) → running alert about refused opens.
     blocked_alerts: HashMap<(u32, PathBuf), LocalAlert>,
+    /// (direction, rules) → running alert about the LLM guard's verdicts.
+    guard_alerts: HashMap<(String, String), GuardAlert>,
     /// Recent tool calls of an AI agent, oldest first ([`crate::agent`]).
     agent_calls: VecDeque<AgentEvent>,
     /// Recent program starts and file accesses, for a call logged after
@@ -554,6 +566,7 @@ impl Correlator {
             denied_alerts: HashMap::new(),
             arrivals: HashMap::new(),
             blocked_alerts: HashMap::new(),
+            guard_alerts: HashMap::new(),
             agent_calls: VecDeque::new(),
             agent_seen: VecDeque::new(),
             agent_tags: HashMap::new(),
@@ -649,6 +662,7 @@ impl Correlator {
                 self.on_file(f)
             }
             Event::Blocked(f) => self.on_blocked(f),
+            Event::Guard(g) => self.on_guard(g),
             Event::Agent(a) => {
                 self.agent_call(a);
                 None
@@ -1353,6 +1367,64 @@ impl Correlator {
             Some(n) => Some(via.map_or(n.to_string(), |v| format!("{v}, {n}"))),
             None => via,
         }
+    }
+
+    /// A verdict of the LLM guard. No process and no file: the guard sits
+    /// between the agent and its model, and what it found is text. So the
+    /// alert names the guard as its sender and says the rest in `via` —
+    /// the same row format the dashboard already shows.
+    ///
+    /// One row per direction and set of rules while the touch deadline
+    /// runs: in flag mode the same false positive can fire on every turn,
+    /// and one row counting up beats a table full of copies.
+    fn on_guard(&mut self, g: &GuardEvent) -> Option<Outcome> {
+        let ttl = self.touch_ttl();
+        self.guard_alerts.retain(|_, a| g.at - a.last_at <= ttl);
+        let key = (g.direction.clone(), g.rules.join(","));
+        let is_new = !self.guard_alerts.contains_key(&key);
+        if is_new {
+            let id = self.take_id();
+            self.guard_alerts.insert(key.clone(), GuardAlert { id, first_at: g.at, last_at: g.at, count: 0, blocked: 0 });
+        }
+        let a = self.guard_alerts.get_mut(&key)?;
+        a.last_at = g.at;
+        a.count += 1;
+        a.blocked += u32::from(g.blocked);
+        let what = match g.direction.as_str() {
+            "tool_result" => format!("prompt injection in the result of tool {}", g.origin.as_deref().unwrap_or("?")),
+            "output" => "the model's answer or tool call".to_string(),
+            _ => "the user's prompt".to_string(),
+        };
+        let mut via = format!("LLM guard: {} × {what}, rules {}", a.count, g.rules.join(", "));
+        if a.blocked > 0 {
+            via.push_str(&format!(", {} refused", a.blocked));
+        }
+        if let Some(m) = &g.model {
+            via.push_str(&format!(", model {m}"));
+        }
+        let (id, first_at, blocked) = (a.id, a.first_at, a.blocked > 0);
+        let alert = Alert {
+            id,
+            at: first_at,
+            pid: 0,
+            identity: ProcessIdentity::Unknown { path: "dlprevent-guard".into() },
+            files: Vec::new(),
+            remote: None,
+            remote_port: None,
+            bytes_out: 0,
+            via: Some(via),
+            last_at: if is_new { None } else { Some(g.at) },
+            // Refused by the guard: denied, like a strict folder. Only
+            // flagged: a finding for the learning phase to leave alone — an
+            // unnamed sender is always reported (`learn::judge`).
+            verdict: if blocked { Verdict::Denied } else { Verdict::New },
+            reason: g.reason.clone(),
+            volume: None,
+            copy_to: None,
+            sender_read_directly: false,
+            upload_url: None,
+        };
+        Some(if is_new { Outcome::New(alert) } else { Outcome::Updated(alert) })
     }
 
     /// The permission listener refused an open. Nothing was read and
@@ -2795,6 +2867,40 @@ mod tests {
         c.ingest(&open(proc_named(21, Some(20), "/bin/cat", "cat"), "/Users/me/Steuern/a.pdf", now));
         let a = c.ingest(&net(21, "cat", now)).unwrap().into_alert();
         assert!(!a.via.unwrap_or_default().contains("agent"));
+    }
+
+    // --- LLM guard verdicts
+
+    fn guard(direction: &str, rules: &[&str], blocked: bool, at: DateTime<Utc>) -> Event {
+        Event::Guard(crate::event::GuardEvent {
+            at,
+            direction: direction.into(),
+            verdict: "block".into(),
+            blocked,
+            model: Some("m".into()),
+            origin: Some("web_extract".into()),
+            rules: rules.iter().map(|r| r.to_string()).collect(),
+            reason: Some("Attempt to override prior instructions.".into()),
+        })
+    }
+
+    #[test]
+    fn a_guard_verdict_is_an_alert_and_repeats_count_up() {
+        let mut c = Correlator::new(cfg());
+        let now = Utc::now();
+        let o = c.ingest(&guard("tool_result", &["ignore_prior_instructions"], false, now)).unwrap();
+        assert!(o.is_new());
+        assert_eq!(o.verdict, Verdict::New, "flag mode: reported, not denied");
+        assert_eq!(o.target(), Target::Unknown);
+        assert_eq!(o.via.as_deref(), Some("LLM guard: 1 × prompt injection in the result of tool web_extract, rules ignore_prior_instructions, model m"));
+        let o2 = c.ingest(&guard("tool_result", &["ignore_prior_instructions"], true, now)).unwrap();
+        assert_eq!(o2.id, o.id);
+        assert_eq!(o2.verdict, Verdict::Denied, "once refused, the row is denied");
+        assert!(o2.via.as_deref().unwrap().contains("2 × prompt injection"));
+        // Other rules, other row.
+        let o3 = c.ingest(&guard("output", &["agent_exfil_service"], false, now)).unwrap();
+        assert!(o3.is_new());
+        assert_ne!(o3.id, o.id);
     }
 
     // --- Opens refused by the permission listener

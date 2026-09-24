@@ -112,6 +112,30 @@ pub enum Event {
     Blocked(FileEvent),
     /// What an AI agent (Hermes) asked a tool to do.
     Agent(AgentEvent),
+    /// A verdict of the LLM guard (dlprevent-guard) on what went between an
+    /// agent and its model: a prompt injection, secrets on their way out.
+    Guard(GuardEvent),
+}
+
+/// One verdict line of the LLM guard. Metadata only, as the guard writes it:
+/// rules and reasons, never the text they were found in.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GuardEvent {
+    pub at: DateTime<Utc>,
+    /// `input` (the user's turn), `tool_result` or `output` (the model's
+    /// answer and the tools it calls).
+    pub direction: String,
+    /// `flag`, `block` or `sanitize`, as the guard's engine judged it.
+    pub verdict: String,
+    /// Did the guard refuse the request? Only in its block mode.
+    pub blocked: bool,
+    pub model: Option<String>,
+    /// The tool whose result it was, for `tool_result`.
+    pub origin: Option<String>,
+    /// The rules that fired, strongest first as the guard lists them.
+    pub rules: Vec<String>,
+    /// The first rule's reason.
+    pub reason: Option<String>,
 }
 
 /// One tool call of an AI agent, as its session log recorded it.

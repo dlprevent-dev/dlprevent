@@ -31,6 +31,8 @@ pub mod filter;
 // run where the host sensors fill in the command lines it is joined on.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub mod hermes;
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub mod guardlog;
 
 /// Blueprint for a sensor: the service restarts it after a failure (say
 /// when eslogger dies, or when disk access only comes through later), hence
@@ -106,6 +108,7 @@ pub fn platform_sensors() -> Vec<SensorSpec> {
             SensorSpec { name: "fanotify", make: |_| Box::new(linux::fanotify::Fanotify::default()) },
             SensorSpec { name: "procnet", make: |s| Box::new(linux::procnet::ProcNet::new(s)) },
             SensorSpec { name: "hermes", make: |_| Box::new(hermes::Hermes) },
+            SensorSpec { name: "llm guard", make: |_| Box::new(guardlog::GuardLog) },
             SensorSpec { name: "open guard", make: |_| Box::new(linux::guard::OpenGuard) },
         ]
     }
