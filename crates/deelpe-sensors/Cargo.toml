@@ -19,6 +19,12 @@ libc = "0.2"
 # Linux has no signature the kernel vouches for, so the identity of a
 # process is the hash of its binary (`ProcessIdentity::Hashed`).
 sha2 = "0.11"
+# Hermes keeps its sessions in SQLite (state.db). The system library, not
+# the bundled one: bundled needs a C cross compiler even for `cargo linux`,
+# which only type-checks. libsqlite3-0 is on every Debian/Ubuntu anyway; the
+# package declares it. The version matches libsqlite3-sys, which sqlx
+# already pulls into the lockfile.
+rusqlite = "0.39"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62.2", features = [

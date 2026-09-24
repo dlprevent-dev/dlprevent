@@ -56,7 +56,9 @@ docker run --rm --platform "linux/$ARCH" \
   -e PATH=/target/tools/bin:/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
   "$IMAGE" bash -euo pipefail -c "
     apt-get update -qq >/dev/null
-    apt-get install -y -qq dpkg-dev >/dev/null
+    # libsqlite3-dev: the Hermes sensor reads its state.db through the
+    # system SQLite; the package then depends on libsqlite3-0 (\$auto).
+    apt-get install -y -qq dpkg-dev libsqlite3-dev >/dev/null
     # Into the volume, not the container: otherwise every run reinstalls
     # cargo-deb, which takes longer than the build it is there for.
     command -v cargo-deb >/dev/null || cargo install cargo-deb --quiet

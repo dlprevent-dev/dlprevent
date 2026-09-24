@@ -57,4 +57,19 @@ final class CageTableTests: XCTestCase {
         XCTAssertEqual(table().verdict(ip: "1.1.1.1", port: 443, chain: before, armed: armed), .watch)
         XCTAssertEqual(table(children: true).verdict(ip: "1.1.1.1", port: 443, chain: before, armed: armed), .drop)
     }
+
+    /// The service reads this line in `crates/deelpe/src/cage.rs`
+    /// (`the_refused_line_is_what_the_service_reads`).
+    func testARefusalIsReportedOncePerProcessAndDestination() throws {
+        var log = CageRefusals()
+        let chain = [ProcessLink(pid: 300, started: t0), ProcessLink(pid: 200, started: t0), ProcessLink(pid: 100, started: t0)]
+        log.record(chain: chain, table: table(), ip: "1.1.1.1", port: 443, at: t0)
+        log.record(chain: chain, table: table(), ip: "1.1.1.1", port: 443, at: t0.addingTimeInterval(1))
+        let drained = log.drain()
+        XCTAssertEqual(drained, [CageRefusal(pid: 300, ppid: 100, ip: "1.1.1.1", port: 443, at: 1_000_000)], "the caged ancestor, not the parent")
+        XCTAssertEqual(log.drain(), [], "drained is gone")
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        XCTAssertEqual(String(decoding: try encoder.encode(drained), as: UTF8.self), #"[{"at":1000000,"ip":"1.1.1.1","pid":300,"port":443,"ppid":100}]"#)
+    }
 }

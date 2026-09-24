@@ -248,11 +248,44 @@ fn apply(c: &AgentConfig, rules: &mut Vec<Rule>, learn_days: &mut u32, st: &mut 
     st.generation = c.generation;
     *learn_days = c.learn_days.max(1);
     *rules = c.rules.iter().filter(|r| r.enabled).cloned().collect();
+    // A share folder is reachable under its 8.3 short name too, and the
+    // security log reports whichever spelling the client opened. Asked once
+    // here, never per event.
+    add_rule_aliases(rules, crate::config::short_name);
     info!(generation = c.generation, rules = rules.len(), "configuration applied");
 
     // Rules that are gone lose their meter.
     let ids: std::collections::HashSet<&str> = rules.iter().map(|r| r.id.as_str()).collect();
     st.meters.retain(|k, _| ids.contains(k.split('|').next().unwrap_or("")));
+}
+
+/// Add a rule for every other spelling its folder is reachable under.
+///
+/// The counterpart to [`deelpe_core::config::add_path_aliases`] on the
+/// endpoint, for the shape the file server works in: a flat list of rules
+/// rather than a `Config`.
+///
+/// The alias **keeps the rule's id**, and that is the point. Meters are kept
+/// per rule id (`AgentState::meters`), so a user who reads half the share
+/// through the long name and half through the short one still trips one
+/// mass-access threshold instead of two half-filled ones. Nothing is counted
+/// twice for it: a path is spelled one way or the other, so it matches one of
+/// the two entries, never both.
+///
+/// `alias` is passed in rather than called here because the answer comes from
+/// Win32 — this half stays pure and gets tested on the machine the agent is
+/// built on.
+fn add_rule_aliases(rules: &mut Vec<Rule>, alias: impl Fn(&std::path::Path) -> Option<std::path::PathBuf>) {
+    let mut extra: Vec<Rule> = Vec::new();
+    for r in rules.iter() {
+        let Some(short) = alias(std::path::Path::new(&r.path)) else { continue };
+        let short = short.to_string_lossy().to_string();
+        if short == r.path || rules.iter().chain(extra.iter()).any(|o| o.path == short) {
+            continue;
+        }
+        extra.push(Rule { path: short, ..r.clone() });
+    }
+    rules.extend(extra);
 }
 
 /// Upper bounds for what waits on a reachable central. At half a minute per
@@ -533,6 +566,49 @@ mod tests {
         assert!(r.read && !r.write);
         // Attribute access alone stays what it was: nothing.
         assert!(access_from(&raw("0x80", "Zahlen.xlsx")).is_none());
+    }
+
+    /// A share folder is reachable under its 8.3 short name as well, and the
+    /// security log reports whichever spelling the client opened. The alias
+    /// rule keeps the id: reading half the share under one name and half
+    /// under the other has to trip one threshold, not two half-full ones.
+    #[test]
+    fn a_rule_covers_the_folders_short_name_under_the_same_id() {
+        let rule = |id: &str, path: &str| Rule {
+            id: id.into(),
+            name: "GL".into(),
+            path: path.into(),
+            allowed_groups: Vec::new(),
+            lockdown: false,
+            allow_destinations: Vec::new(),
+            strict: false,
+            enforce: false,
+            hard_max_files: 100,
+            window_secs: 60,
+            ad_lock: false,
+            enabled: true,
+        };
+        // Stands in for `GetShortPathNameW`: only this folder shortens.
+        let alias = |p: &std::path::Path| match p.to_str() {
+            Some(r"C:\Freigaben\GL") => Some(std::path::PathBuf::from(r"C:\FREIG~1\GL")),
+            _ => None,
+        };
+        let mut rules = vec![rule("a", r"C:\Freigaben\GL"), rule("b", r"C:\Kurz")];
+        add_rule_aliases(&mut rules, alias);
+        assert_eq!(rules.len(), 3, "nur der lange Name bekommt eine Zweitschreibweise");
+        let short = rules.iter().find(|r| r.path == r"C:\FREIG~1\GL").expect("Alias fehlt");
+        assert_eq!(short.id, "a", "gleiche Regel, gleicher Zaehler");
+        assert_eq!(short.hard_max_files, 100);
+        // The short name now matches, and the long one still does.
+        assert!(rules.iter().any(|r| rule_matches(&r.path, r"C:\FREIG~1\GL\zahlen.xlsx")));
+        assert!(rules.iter().any(|r| rule_matches(&r.path, r"C:\Freigaben\GL\zahlen.xlsx")));
+        // A single access must not count against both entries, or every
+        // threshold would be reached at half the files.
+        let hits = rules.iter().filter(|r| rule_matches(&r.path, r"C:\FREIG~1\GL\zahlen.xlsx")).count();
+        assert_eq!(hits, 1, "eine Schreibweise trifft eine Regel");
+        // Applied twice — a ruleset arrives on every change — stays the same.
+        add_rule_aliases(&mut rules, alias);
+        assert_eq!(rules.len(), 3);
     }
 
     /// A file that has just come into being is an arrival; the same file

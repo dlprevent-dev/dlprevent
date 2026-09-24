@@ -3,7 +3,8 @@ import Foundation
 
 // The service (Rust, root) cannot speak XPC; this helper can. One JSON line
 // from the service on stdin, one answer on stdout: `ok` or `error: …`,
-// always within two seconds. It ends when the filter's connection does — the
+// always within two seconds. The line `refused` instead drains the filter's
+// refused flows: one JSON array, or `error: …`. It ends when the filter's connection does — the
 // service notices at its next table and starts it again.
 
 func fail(_ message: String) -> Never {
@@ -41,9 +42,16 @@ while let line = readLine() {
         done.signal()
     } as? CageFilterXPC
     guard let proxy else { fail("the network filter speaks a different protocol") }
-    proxy.apply(Data(line.utf8)) { error in
-        answer.set(error.map { "error: \($0)" } ?? "ok")
-        done.signal()
+    if line == "refused" {
+        proxy.refused { data in
+            answer.set(String(decoding: data, as: UTF8.self))
+            done.signal()
+        }
+    } else {
+        proxy.apply(Data(line.utf8)) { error in
+            answer.set(error.map { "error: \($0)" } ?? "ok")
+            done.signal()
+        }
     }
     _ = done.wait(timeout: .now() + 2)
     print(answer.get())

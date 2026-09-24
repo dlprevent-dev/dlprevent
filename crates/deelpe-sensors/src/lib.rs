@@ -27,6 +27,12 @@ pub mod winpath;
 // The same for the sensor's bookkeeping: which events come into being at
 // all, and who recently read from a protected folder.
 pub mod filter;
+// Reads a log, no system call of any platform: built and tested everywhere,
+// run where the host sensors fill in the command lines it is joined on.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub mod hermes;
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub mod guardlog;
 
 /// Blueprint for a sensor: the service restarts it after a failure (say
 /// when eslogger dies, or when disk access only comes through later), hence
@@ -74,6 +80,12 @@ pub fn set_watched(watch: Watch<'_>) {
     }
 }
 
+/// Folders whose opens are refused ([`deelpe_core::config::Guard`]). Only
+/// the Linux open guard reads them; the listener marks what is set here.
+pub fn set_guarded(guards: &[deelpe_core::config::Guard]) {
+    filter::set_guarded(guards)
+}
+
 /// Events that were lost because the engine could not keep up. Goes to the
 /// central server as sensor status: silent loss is worse than a red line.
 /// Only Windows counts them; 0 everywhere else.
@@ -95,6 +107,9 @@ pub fn platform_sensors() -> Vec<SensorSpec> {
         vec![
             SensorSpec { name: "fanotify", make: |_| Box::new(linux::fanotify::Fanotify::default()) },
             SensorSpec { name: "procnet", make: |s| Box::new(linux::procnet::ProcNet::new(s)) },
+            SensorSpec { name: "hermes", make: |_| Box::new(hermes::Hermes) },
+            SensorSpec { name: "llm guard", make: |_| Box::new(guardlog::GuardLog) },
+            SensorSpec { name: "open guard", make: |_| Box::new(linux::guard::OpenGuard) },
         ]
     }
     #[cfg(windows)]

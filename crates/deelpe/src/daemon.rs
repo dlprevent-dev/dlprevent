@@ -207,6 +207,8 @@ pub async fn run() -> Result<()> {
             }
         });
     }
+    // The cage's refusals go in with the sensors' events.
+    let refused_tx = tx.clone();
     drop(tx);
 
     let st = state.clone();
@@ -214,6 +216,13 @@ pub async fn run() -> Result<()> {
     let cages_ev = cages.clone();
     tokio::spawn(async move {
         while let Some(ev) = rx.recv().await {
+            // Every tool call of an AI agent into the log, which the
+            // dashboard shows per agent: what the agent did, not only what
+            // became an alert. The same metadata line an alert carries —
+            // never a prompt or an answer.
+            if let Event::Agent(a) = &ev {
+                tracing::info!("{}", deelpe_core::agent::note(a));
+            }
             let (outcome, touches) = {
                 let mut s = st.lock().await;
                 if matches!(ev, Event::File(_) | Event::Exit(_)) {
@@ -225,10 +234,7 @@ pub async fn run() -> Result<()> {
             // be up before anybody sends (ADR 0002).
             if !touches.is_empty() {
                 let now = Instant::now();
-                let mut c = cages_ev.lock().await;
-                for (pid, name, allow, children) in touches {
-                    c.on_touch(pid, &name, &allow, children, now);
-                }
+                cages_ev.lock().await.on_touches(touches, now);
             }
             let Some(o) = outcome else { continue };
             let mut s = st.lock().await;
@@ -283,7 +289,14 @@ pub async fn run() -> Result<()> {
         let mut tick = tokio::time::interval(Duration::from_secs(5));
         loop {
             tick.tick().await;
-            cages_tick.lock().await.expire(Instant::now());
+            let refused = {
+                let mut cages = cages_tick.lock().await;
+                cages.expire(Instant::now());
+                cages.refused()
+            };
+            for ev in refused {
+                let _ = refused_tx.send(ev).await;
+            }
         }
     });
 
@@ -920,6 +933,7 @@ fn update_config(st: &mut State, f: impl FnOnce(&mut Config)) -> Result<()> {
 fn arm_sensors(cfg: &Config) {
     let paths: Vec<String> = cfg.watched.iter().map(|p| p.display().to_string()).collect();
     deelpe_sensors::set_watched(deelpe_sensors::Watch::Folders { paths: &paths, taint_ttl: cfg.sensor_taint_ttl() });
+    deelpe_sensors::set_guarded(&cfg.guarded);
 }
 
 /// Tighten an existing file to 0600 (older versions wrote 0644).

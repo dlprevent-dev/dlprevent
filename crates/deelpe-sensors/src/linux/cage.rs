@@ -28,6 +28,13 @@
 //!    move, and whatever they start later is born inside the cage. Other
 //!    instances of the same program stay free.
 //!
+//! 4. **Report what it refuses.** A refused flow sends no byte, so the
+//!    procnet sensor never sees it. Each cage chain adds the destination to
+//!    its sets `r4_p<pid>` / `r6_p<pid>` before the reject; [`refused`]
+//!    reads them. An element lives [`REFUSED_TIMEOUT`] and a retry does not
+//!    renew it, so a drain every 5 s sees each attempt once or twice — the
+//!    correlator reports a destination once.
+//!
 //! ponytail: the cage cgroup sits beside systemd's tree, not inside it. For
 //! the 60 s a process is caged, `systemctl stop` of its unit no longer
 //! reaches it. Delegation (`Delegate=yes`) is the upgrade if that bites.
@@ -42,6 +49,9 @@ use std::process::{Command, Stdio};
 const CGROOT: &str = "/sys/fs/cgroup";
 const CAGE_DIR: &str = "deelpe-cage";
 pub const TABLE: &str = "deelpe_cage";
+/// How long a refused destination stays in its cage's set: longer than the
+/// service's drain tick.
+const REFUSED_TIMEOUT: &str = "10s";
 
 /// A process that was moved into a cage, and the cgroup it came from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,6 +72,11 @@ fn cage_path(id: u32) -> String {
 /// a machine that has no table yet.
 pub fn ruleset(cages: &[(u32, &[Permit])], flows: &[Flow]) -> String {
     let mut s = format!("add table inet {TABLE}\ndelete table inet {TABLE}\ntable inet {TABLE} {{\n");
+    for (id, _) in cages {
+        for (v, ty) in [(4, "ipv4_addr"), (6, "ipv6_addr")] {
+            s.push_str(&format!("  set r{v}_p{id} {{ type {ty} . inet_service; flags dynamic,timeout; timeout {REFUSED_TIMEOUT}; size 512; }}\n"));
+        }
+    }
     s.push_str("  chain out {\n    type filter hook output priority 0; policy accept;\n");
     for f in flows {
         let family = if f.remote.is_ipv4() { "ip" } else { "ip6" };
@@ -81,6 +96,8 @@ pub fn ruleset(cages: &[(u32, &[Permit])], flows: &[Flow]) -> String {
             let port = p.port.map(|x| format!(" th dport {x}")).unwrap_or_default();
             s.push_str(&format!("    {family} daddr {}/{}{port} accept\n", network(p.net, p.bits), p.bits));
         }
+        s.push_str(&format!("    meta nfproto ipv4 add @r4_p{id} {{ ip daddr . th dport }}\n"));
+        s.push_str(&format!("    meta nfproto ipv6 add @r6_p{id} {{ ip6 daddr . th dport }}\n"));
         s.push_str("    meta l4proto tcp reject with tcp reset\n    drop\n  }\n");
     }
     s.push_str("}\n");
@@ -127,6 +144,31 @@ fn nft(script: &str) -> Result<()> {
         bail!("nft: {}", String::from_utf8_lossy(&out.stderr).trim_end());
     }
     Ok(())
+}
+
+/// The destinations the cages refused lately: cage PID, address, port.
+pub fn refused() -> Result<Vec<(u32, IpAddr, u16)>> {
+    let out = Command::new("nft").args(["-j", "list", "table", "inet", TABLE]).output().context("run nft (package nftables)")?;
+    if !out.status.success() {
+        bail!("nft: {}", String::from_utf8_lossy(&out.stderr).trim_end());
+    }
+    Ok(parse_refused(&String::from_utf8_lossy(&out.stdout)))
+}
+
+fn parse_refused(json: &str) -> Vec<(u32, IpAddr, u16)> {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else { return Vec::new() };
+    let mut out = Vec::new();
+    for set in v["nftables"].as_array().into_iter().flatten().filter_map(|o| o.get("set")) {
+        let name = set["name"].as_str().unwrap_or_default();
+        let Some(id) = name.strip_prefix("r4_p").or_else(|| name.strip_prefix("r6_p")).and_then(|x| x.parse().ok()) else { continue };
+        for elem in set["elem"].as_array().into_iter().flatten() {
+            // With a timeout nft wraps the value: `{"elem": {"val": …}}`.
+            let val = elem.get("elem").map_or(elem, |e| &e["val"]);
+            let (Some(ip), Some(port)) = (val["concat"][0].as_str().and_then(|s| s.parse().ok()), val["concat"][1].as_u64()) else { continue };
+            out.push((id, ip, port as u16));
+        }
+    }
+    out
 }
 
 /// Move the process into cage `id`, with its current descendants if
@@ -293,6 +335,35 @@ mod tests {
         assert!(r.contains("drop"));
     }
 
+    /// What a cage refuses goes into its sets first: nft tells nobody.
+    #[test]
+    fn the_ruleset_records_what_it_refuses() {
+        let r = ruleset(&[(42, &[p("10.0.0.0/8")])], &[]);
+        assert!(r.contains("set r4_p42 { type ipv4_addr . inet_service; flags dynamic,timeout; timeout 10s; size 512; }"), "{r}");
+        assert!(r.contains("meta nfproto ipv4 add @r4_p42 { ip daddr . th dport }"), "{r}");
+        assert!(r.contains("meta nfproto ipv6 add @r6_p42 { ip6 daddr . th dport }"), "{r}");
+        assert!(r.find("accept").unwrap() < r.find("add @r4_p42").unwrap(), "a permitted flow is not refused: {r}");
+        assert!(r.find("add @r6_p42").unwrap() < r.find("reject").unwrap(), "{r}");
+    }
+
+    /// `nft -j list table inet deelpe_cage` on nftables 1.0.6 (OrbStack
+    /// Debian, 2026-09-16), shortened.
+    #[test]
+    fn the_refusals_are_read_out_of_the_table() {
+        let json = r#"{"nftables": [{"metainfo": {"version": "1.0.6"}}, {"table": {"family": "inet", "name": "deelpe_cage"}},
+            {"set": {"family": "inet", "name": "r4_p42", "table": "deelpe_cage", "type": ["ipv4_addr", "inet_service"], "flags": ["timeout"], "timeout": 10,
+              "elem": [{"elem": {"val": {"concat": ["9.9.9.9", 53]}, "expires": 9}}, {"elem": {"val": {"concat": ["1.1.1.1", 443]}, "expires": 9}}]}},
+            {"set": {"family": "inet", "name": "r6_p7", "table": "deelpe_cage", "elem": [{"concat": ["2001:db8::1", 443]}]}},
+            {"set": {"family": "inet", "name": "r6_p42", "table": "deelpe_cage", "timeout": 10}},
+            {"chain": {"family": "inet", "table": "deelpe_cage", "name": "p42"}}]}"#;
+        let r = parse_refused(json);
+        assert_eq!(
+            r,
+            vec![(42, "9.9.9.9".parse().unwrap(), 53), (42, "1.1.1.1".parse().unwrap(), 443), (7, "2001:db8::1".parse().unwrap(), 443)]
+        );
+        assert!(parse_refused("not json").is_empty());
+    }
+
     /// No cages: the table stands empty, nothing is filtered.
     #[test]
     fn without_cages_the_table_filters_nothing() {
@@ -339,6 +410,7 @@ mod tests {
         assert!(moved.len() >= 2, "{moved:?}");
         assert!(cgroup_of(child.id()).unwrap().starts_with("/deelpe-cage/"));
         assert!(!child.wait().unwrap().success(), "caged: must be refused");
+        assert!(refused().unwrap().contains(&(child.id(), "127.0.0.1".parse().unwrap(), port)), "the refusal is recorded");
 
         // Opened again: through.
         leave(child.id(), &moved);

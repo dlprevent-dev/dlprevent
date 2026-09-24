@@ -13,6 +13,21 @@ final class NetworkFilter: NSObject, ObservableObject {
     @Published var enabled = false
     @Published var note: String?
 
+    override init() {
+        super.init()
+        // A new app carries a new filter, but the running one stays until it
+        // is asked for again: an enabled filter never showed the button, so a
+        // fix to it never ran (2026-09-16). macOS does nothing when the
+        // version is the same, and replaces it when build.sh stamped a new one.
+        guard bundled else { return }
+        NEFilterManager.shared().loadFromPreferences { _ in
+            Task { @MainActor in
+                self.enabled = NEFilterManager.shared().isEnabled
+                if self.enabled { self.enable() }
+            }
+        }
+    }
+
     /// Only a signed build carries the extension (build.sh with DEVELOPER_ID).
     var bundled: Bool {
         FileManager.default.fileExists(atPath: Bundle.main.bundleURL

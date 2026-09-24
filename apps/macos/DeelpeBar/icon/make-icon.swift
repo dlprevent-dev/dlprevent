@@ -1,6 +1,6 @@
-// Draws the app icon (rounded square, blue gradient, white lock shield) and
-// writes an .icns. Call: swift icon/make-icon.swift <ziel.icns>
-// Deliberately plain, the same symbol as in the menu bar (lock.shield.fill).
+// Draws the app icon, the DLPrevent emblem (output/branding/dlprevent-emblem.svg)
+// on the macOS icon grid, and writes an .icns.
+// Call: swift icon/make-icon.swift <target.icns>
 import AppKit
 
 let out = CommandLine.arguments.dropFirst().first ?? "AppIcon.icns"
@@ -27,26 +27,34 @@ func render(_ px: Int) -> Data {
     path.fill()
     ctx.restoreGState()
 
-    // Gradient: light blue at the top, dark navy at the bottom
+    // The emblem's own tile colour.
     path.addClip()
-    let g = NSGradient(colors: [NSColor(calibratedRed: 0.27, green: 0.56, blue: 0.93, alpha: 1),
-                                NSColor(calibratedRed: 0.09, green: 0.22, blue: 0.48, alpha: 1)])!
-    g.draw(in: tile, angle: -90)
+    NSColor(srgbRed: 0xfa / 255, green: 0xf8 / 255, blue: 0xf4 / 255, alpha: 1).setFill()
+    tile.fill()
 
-    // White lock shield
-    let cfg = NSImage.SymbolConfiguration(pointSize: tile.width * 0.56, weight: .medium)
-    guard let sym = NSImage(systemSymbolName: "lock.shield.fill", accessibilityDescription: nil)?.withSymbolConfiguration(cfg) else {
-        fatalError("Symbol fehlt")
-    }
-    let white = NSImage(size: sym.size, flipped: false) { r in
-        sym.draw(in: r)
-        NSColor.white.set()
-        r.fill(using: .sourceAtop)
-        return true
-    }
-    let sz = white.size
-    let origin = CGPoint(x: tile.midX - sz.width / 2, y: tile.midY - sz.height / 2 + tile.height * 0.01)
-    white.draw(in: CGRect(origin: origin, size: sz))
+    // The SVG's paths, in its 128 × 128 viewBox (y down), with its
+    // `translate(12 10) scale(.9)`.
+    ctx.translateBy(x: tile.minX, y: tile.maxY)
+    ctx.scaleBy(x: tile.width / 128, y: -tile.height / 128)
+    ctx.translateBy(x: 12, y: 10)
+    ctx.scaleBy(x: 0.9, y: 0.9)
+    let d = CGMutablePath()
+    d.move(to: CGPoint(x: 8, y: 8))
+    d.addLine(to: CGPoint(x: 55, y: 8))
+    d.addCurve(to: CGPoint(x: 108, y: 60), control1: CGPoint(x: 87, y: 8), control2: CGPoint(x: 108, y: 29))
+    d.addCurve(to: CGPoint(x: 55, y: 112), control1: CGPoint(x: 108, y: 91), control2: CGPoint(x: 87, y: 112))
+    d.addLine(to: CGPoint(x: 8, y: 112))
+    d.addLine(to: CGPoint(x: 8, y: 90))
+    d.addLine(to: CGPoint(x: 54, y: 90))
+    d.addCurve(to: CGPoint(x: 84, y: 60), control1: CGPoint(x: 73, y: 90), control2: CGPoint(x: 84, y: 79))
+    d.addCurve(to: CGPoint(x: 54, y: 30), control1: CGPoint(x: 84, y: 41), control2: CGPoint(x: 73, y: 30))
+    d.addLine(to: CGPoint(x: 8, y: 30))
+    d.closeSubpath()
+    ctx.addPath(d)
+    ctx.setFillColor(CGColor(srgbRed: 0x17 / 255, green: 0x18 / 255, blue: 0x1a / 255, alpha: 1))
+    ctx.fillPath()
+    ctx.setFillColor(CGColor(srgbRed: 0x9e / 255, green: 0x47 / 255, blue: 0x08 / 255, alpha: 1))
+    ctx.fill(CGRect(x: 16, y: 43, width: 34, height: 34))
     img.unlockFocus()
 
     let rep = NSBitmapImageRep(cgImage: img.cgImage(forProposedRect: nil, context: nil, hints: nil)!)

@@ -105,7 +105,12 @@ impl Policy {
     }
 
     /// Adopt a ruleset version — everywhere.
-    async fn adopt(&self, cfg: Config) {
+    async fn adopt(&self, mut cfg: Config) {
+        // A protected folder is reachable under its 8.3 short name as well,
+        // and event tracing reports whichever spelling the program opened.
+        // Asked once per ruleset, never per event — see
+        // [`deelpe_core::config::add_path_aliases`].
+        deelpe_core::config::add_path_aliases(&mut cfg, crate::config::short_name);
         // The sensor has to know the protected folders, otherwise it pushes
         // every file event of the system through the channel and under load
         // drops the interesting one of all things (lab log 2026-09-07). Its

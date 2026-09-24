@@ -193,7 +193,9 @@ impl Learner {
             return Decision::Store { verdict: Verdict::Inbound, reason: a.reason.clone() };
         }
         if !a.identity.is_trusted_form() {
-            return Decision::Store { verdict: Verdict::New, reason: None };
+            // The correlator's reason stays: the LLM guard's findings come
+            // with no nameable sender, and their reason is the finding.
+            return Decision::Store { verdict: Verdict::New, reason: a.reason.clone() };
         }
         let key = pair_key(a);
         match self.phase(now) {

@@ -80,6 +80,14 @@ Two parts, usable separately:
   rules for business-critical folders with an emergency brake and a learned
   baseline per user.
 
+And one add-on, for a Linux host that runs an **AI agent** (Hermes):
+- **[dlprevent-guard](https://github.com/dlprevent-dev/dlprevent-guard).** A
+  container between the agent and its model provider that reports prompt
+  injections and data on its way out. The Linux agent needs nothing extra:
+  it already reads the agent's tool calls and the guard's findings, and shows
+  both on the dashboard once the guard runs next to it. See
+  [docs/HERMES.md](docs/HERMES.md).
+
 **Language:** English throughout — app, dashboard, command line, protocol,
 this documentation and the comments in the source.
 
@@ -141,6 +149,7 @@ can judge, and it stays the operator's responsibility.
 | Something does not work | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) |
 | Building, layout, tests | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) |
 | Design and decisions | [docs/DESIGN.md](docs/DESIGN.md) |
+| AI agents (Hermes): tool-call log, LLM guard, guarded folders, hardening | [docs/HERMES.md](docs/HERMES.md) |
 
 ## What it detects
 
@@ -183,6 +192,14 @@ can judge, and it stays the operator's responsibility.
 - **Copying out of a strict folder is forbidden as well** — to local disk,
   a USB stick or a network drive. On a Windows workstation the agent removes
   the copy again when "Enforce" is set; the Mac only reports it.
+- **AI agents (Linux).** Every tool call of a Hermes agent — tool, command,
+  and the Telegram user who asked — goes into the agent's log, and an alert
+  about one of its processes names the session and call behind it. A
+  companion container, [dlprevent-guard](https://github.com/dlprevent-dev/dlprevent-guard),
+  sits between the agent and its model and reports prompt injections and
+  data on its way out as alerts. **Guarded folders** refuse the agent an
+  open before the first byte — its shell gets `Operation not permitted` on
+  `~/.ssh`, yours does not. See [docs/HERMES.md](docs/HERMES.md).
 - **AirDrop and LAN neighbours** are labelled as such.
 - **Detours to the same data:** Time Machine snapshots, system firmlinks and
   hard links count as the original.

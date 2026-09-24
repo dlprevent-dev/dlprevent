@@ -115,7 +115,7 @@ impl Sensor for Fanotify {
 }
 
 /// What the sensor carries between events.
-struct Ctx {
+pub(super) struct Ctx {
     tainted: TaintTable,
     /// Binary → SHA-256, keyed by size and mtime as well: a swapped binary
     /// must not keep the identity of the one that was checked.
@@ -323,7 +323,11 @@ fn event(ctx: &mut Ctx, fd: &OwnedFd, mask: u64, pid: u32) -> Option<Event> {
     // machine and be thrown away at the end. An agent that is not enrolled
     // yet and has no folder of its own sits in exactly this state, and it
     // is the state a fresh installation ships in.
-    if crate::filter::watches_nothing() && !ctx.tainted.is_tainted(pid) {
+    // Program starts pass as well once an agent runs on the machine: its
+    // terminal command is joined on the shell's command line, and the shell
+    // starts from `/bin` (`filter::pass_execs`).
+    let exec = mask & libc::FAN_OPEN_EXEC != 0 && crate::filter::passes_execs();
+    if crate::filter::watches_nothing() && !exec && !ctx.tainted.is_tainted(pid) {
         return None;
     }
     let path = readlink(&format!("/proc/self/fd/{}", fd.as_raw_fd()))?;
@@ -336,7 +340,7 @@ fn event(ctx: &mut Ctx, fd: &OwnedFd, mask: u64, pid: u32) -> Option<Event> {
     // their writes elsewhere count — that write is the copy.
     if wanted(&path) {
         ctx.tainted.taint(pid);
-    } else if !ctx.tainted.is_tainted(pid) {
+    } else if !exec && !ctx.tainted.is_tainted(pid) {
         return None;
     }
     // **Opening is not yet reading**, and the difference decides who counts
@@ -360,7 +364,8 @@ fn event(ctx: &mut Ctx, fd: &OwnedFd, mask: u64, pid: u32) -> Option<Event> {
     };
     let (inode, nlink) = stat_of(fd);
     let process = process_ref(ctx, pid);
-    Some(Event::File(FileEvent { at: Utc::now(), process, path: PathBuf::from(path), action, target: None, inode, nlink }))
+    let argv = if action == FileAction::Exec { cmdline(pid) } else { None };
+    Some(Event::File(FileEvent { at: Utc::now(), process, path: PathBuf::from(path), action, target: None, inode, nlink, argv }))
 }
 
 /// (device, inode) and link count of the object the event points at.
@@ -382,20 +387,36 @@ fn stat_of(fd: &OwnedFd) -> (Option<(u64, u64)>, Option<u32>) {
 /// the file, the action and the copy trail as well, and those are exactly
 /// what the correlator needs. So an unnamed sender is reported rather than
 /// nothing: `Unknown` is the identity that is always worth a line anyway.
-fn process_ref(ctx: &mut Ctx, pid: u32) -> ProcessRef {
+pub(super) fn process_ref(ctx: &mut Ctx, pid: u32) -> ProcessRef {
     let ppid = ppid_of(pid);
     let Some(exe) = readlink(&format!("/proc/{pid}/exe")) else {
         let gone = format!("pid {pid}");
         return ProcessRef { pid, ppid, responsible: None, path: PathBuf::from(&gone), identity: ProcessIdentity::Unknown { path: gone } };
     };
-    let path = PathBuf::from(&exe);
-    let identity = match hash_of(ctx, &path) {
+    ProcessRef { pid, ppid, responsible: None, path: PathBuf::from(&exe), identity: identity_of(ctx, exe) }
+}
+
+/// The identity of a binary: its hash, or its path alone if it cannot be
+/// read.
+pub(super) fn identity_of(ctx: &mut Ctx, exe: String) -> ProcessIdentity {
+    match hash_of(ctx, &PathBuf::from(&exe)) {
         Some(sha256) => ProcessIdentity::Hashed { path: exe, sha256 },
         // Unreadable binary (a container's own mount namespace, a race with
         // exit): reported rather than silently trusted.
         None => ProcessIdentity::Unknown { path: exe },
-    };
-    ProcessRef { pid, ppid, responsible: None, path, identity }
+    }
+}
+
+/// The command line of a process, arguments joined by spaces.
+///
+// ponytail: read when the event is drained, not when the program started.
+// Usually the exec is through by then; a program that is already gone
+// yields nothing, and one caught mid-exec still shows its parent's line.
+// Exact would be the exec tracepoint (eBPF), not fanotify.
+pub(super) fn cmdline(pid: u32) -> Option<String> {
+    let raw = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+    let args: Vec<String> = raw.split(|b| *b == 0).filter(|s| !s.is_empty()).map(|s| String::from_utf8_lossy(s).into_owned()).collect();
+    (!args.is_empty()).then(|| args.join(" "))
 }
 
 /// SHA-256 of the binary, cached by size and mtime.
@@ -440,7 +461,7 @@ fn hash_of(ctx: &mut Ctx, path: &PathBuf) -> Option<String> {
 /// Parent process from `/proc/<pid>/status`. Not from `stat`: the program
 /// name sits in brackets there and may itself contain brackets and spaces,
 /// which shifts every field behind it.
-fn ppid_of(pid: u32) -> Option<u32> {
+pub(super) fn ppid_of(pid: u32) -> Option<u32> {
     let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
     parse_ppid(&status)
 }
@@ -450,7 +471,7 @@ pub fn parse_ppid(status: &str) -> Option<u32> {
     status.lines().find_map(|l| l.strip_prefix("PPid:")).and_then(|v| v.trim().parse().ok())
 }
 
-fn readlink(path: &str) -> Option<String> {
+pub(super) fn readlink(path: &str) -> Option<String> {
     std::fs::read_link(path).ok()?.to_str().map(str::to_string)
 }
 

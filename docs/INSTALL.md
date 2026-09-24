@@ -868,6 +868,15 @@ The same program as on the Mac — `deelpe`, one binary, service plus CLI.
 Underneath it is **fanotify** for file access and **`ss`** for the bytes
 sent. No kernel module, but root: fanotify needs `CAP_SYS_ADMIN`.
 
+**Does the host run an AI agent (Hermes)?** Then two more things are worth
+switching on, and the agent already carries both: every tool call of the AI
+agent in the log, and the findings of **dlprevent-guard**, a separate
+container between the AI agent and its model that catches prompt injections
+and data on its way out. The agent's sensors *hermes* and *llm guard* start
+with it and idle until there is something to read — green in `deelpe status`
+either way. What to install beside it, and how to harden the AI agent
+itself: [HERMES.md](HERMES.md).
+
 ### Building the package
 
 ```bash
@@ -1046,6 +1055,70 @@ RHEL carry it; Docker Desktop's VM kernel does not). If any is missing,
 reports. `nft list table inet deelpe_cage` shows what is caged right now.
 The table is removed when the service stops, crashes included
 (`ExecStopPost`).
+
+### AI agents (Hermes)
+
+The whole setup — the agent, the LLM guard, guarded folders and hardening
+Hermes itself — is in [HERMES.md](HERMES.md). In short:
+
+If an account on the machine runs the Hermes agent, the service reads its
+sessions every two seconds — from `~/.hermes/state.db` (current Hermes) or
+the older `~/.hermes/sessions/*.jsonl`, under `/root` and `/home/*`: tool
+name, shell command, path or search query, never prompts, answers or tool
+results. Every call becomes a line in the agent's log on the dashboard. It
+is also joined to the program start or file access it caused, and an alert
+about that process or its children then names the call:
+``agent session 20260924_112608_edaedc (telegram, user Jane Doe (123456789)), tool
+terminal `cat … | curl …`, call call_00_…``. The database names the platform
+user; the older session files do not, and then the line names the account
+whose home the log lies in (`account root`). The join is by command line and
+time (up to 2 s before and 30 s after the call); a gateway that runs the same
+command for two users in the same seconds gets the first call. The database
+is opened for each read and closed again — Hermes refuses to start its
+session store while another process holds it.
+
+### LLM guard (prompt injection)
+
+The agent's session logs say what Hermes did; they cannot say whether a web
+page it read talked it into doing so. That is the job of `dlprevent-guard`,
+a separate container between Hermes and its model provider (its own
+repository, AnveGuard's engine plus rules for agent commands). It scans the
+user's turn, every tool result and the model's answer, and writes each
+finding — rule names and reasons, never the text — to
+`/var/log/dlprevent-guard/verdicts.jsonl`.
+
+This service reads that file (sensor *llm guard*) and makes each finding an
+alert from `dlprevent-guard`: a finding in flag mode is `new`, a request the
+guard refused is `denied`. Repeats of the same rules count up in one row for
+10 minutes. Nothing to configure here; without the guard the sensor idles.
+
+### Guarded folders
+
+A guarded folder is refused before the first byte: the kernel holds every
+open in it until the service answers (fanotify permission events), and `cat`
+gets `Operation not permitted`. For what an agent must never read, not for a share
+people work in. Local only for now, in `/etc/deelpe/config.json`, then restart
+the service:
+
+```json
+"guarded": [{ "path": "/root/.ssh", "processes": ["/usr/local/lib/hermes-agent/"] }]
+```
+
+Which folders are worth it on an agent host: [HERMES.md](HERMES.md#guarded-folders).
+
+`processes` are pieces of a command line; the open is refused when the
+process or one of its ancestors carries one, so the agent's shell and its
+`cat` are refused and the owner's `ssh` is not. The match is plain text:
+`ssh hermes-host` carries `hermes` too and is refused, so pick a piece only
+the agent's command line has (its install path). And the ancestors are
+walked as the kernel sees them: a program the agent detached (`setsid -f`,
+a double fork) hangs off PID 1 and is no longer the agent's. Empty: refused for every
+program but the service. Each refusal is a `denied` alert without a
+destination. Only the folder and its subfolders are marked, never the
+filesystem; a subfolder created later is covered within 30 s. Anything the
+service cannot decide is allowed, and if it stops, the kernel allows whatever
+was waiting. Program starts are not refused: the kernel asks before the new
+program's arguments exist.
 
 ### Updating and uninstalling
 
@@ -1440,7 +1513,9 @@ Three parts, and the third is the one people forget:
 2. **Service** — the app installs it interactively, which does not work
    unattended. For MDM, have a post-install script place
    `/usr/local/bin/deelpe` and `packaging/ch.deelpe.daemon.plist` directly and
-   load it with `launchctl bootstrap system …`.
+   load it with `launchctl bootstrap system …`. Remove the quarantine flag
+   first (`xattr -d com.apple.quarantine` on both files): since macOS 27
+   launchd refuses a quarantined plist.
 3. **Full Disk Access** — this **cannot** be granted by script. It needs a
    **PPPC profile** (Privacy Preferences Policy Control) from the MDM,
    granting `SystemPolicyAllFiles` to `/usr/local/bin/deelpe` with its code

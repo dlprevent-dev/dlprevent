@@ -100,10 +100,15 @@ pub fn parse_line(line: &str) -> Option<Event> {
         // program's identity is in `target`. PID and PPID are the same.
         let target = e.get("target").and_then(process_ref).or_else(|| process_ref(process))?;
         let path = target.path.clone();
-        return Some(Event::File(FileEvent { at, process: target, path, action: FileAction::Exec, target: None, inode: None, nlink: None }));
+        return Some(Event::File(FileEvent { at, process: target, path, action: FileAction::Exec, target: None, inode: None, nlink: None, argv: None }));
     }
     let process = process_ref(process)?;
     let (path, action, target, file) = if let Some(o) = event.get("open") {
+        // A folder opened is a listing, not content: a file dialog opens
+        // every one it shows.
+        if o.get("file").and_then(|f| f.get("stat")).and_then(|s| s.get("st_mode")).and_then(Value::as_u64).is_some_and(|m| m & 0o170000 == 0o040000) {
+            return None;
+        }
         // fflag in FFLAGS format (sys/fcntl.h): FREAD 1, FWRITE 2.
         let writes = o.get("fflag").and_then(Value::as_u64).map_or(false, |f| f & 2 != 0);
         (str_at(o, &["file", "path"])?, if writes { FileAction::Write } else { FileAction::Open }, None, o.get("file"))
@@ -118,7 +123,7 @@ pub fn parse_line(line: &str) -> Option<Event> {
         return None;
     };
     let (inode, nlink) = file.map(stat_of).unwrap_or((None, None));
-    Some(Event::File(FileEvent { at, process, path: PathBuf::from(path), action, target, inode, nlink }))
+    Some(Event::File(FileEvent { at, process, path: PathBuf::from(path), action, target, inode, nlink, argv: None }))
 }
 
 /// (device, inode) and link count from the `stat` of an es_file_t.
@@ -183,6 +188,16 @@ fn str_at(v: &Value, keys: &[&str]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A file dialog opens every folder it shows: those are names, not
+    /// content, and listed as touched files they buried the one file that
+    /// was picked (LibreWolf and Gemini, 2026-09-16).
+    #[test]
+    fn opening_a_directory_is_no_file_event() {
+        let open = |mode: u32| format!(r#"{{"event":{{"open":{{"fflag":1,"file":{{"path":"/Users/me/Steuern/x","stat":{{"st_mode":{mode},"st_dev":1,"st_ino":2,"st_nlink":1}}}}}}}},"process":{{"audit_token":{{"pid":42}},"ppid":1,"executable":{{"path":"/usr/bin/curl"}},"signing_id":"com.apple.curl","team_id":"","is_platform_binary":true}}}}"#);
+        assert!(parse_line(&open(0o040755)).is_none(), "a directory");
+        assert!(matches!(parse_line(&open(0o100644)), Some(Event::File(_))), "a regular file");
+    }
 
     #[test]
     fn parses_open() {

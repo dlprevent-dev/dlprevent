@@ -153,6 +153,33 @@ same store.
 
 Docker image and packages: [INSTALL.md](INSTALL.md).
 
+**amd64 from Apple Silicon without Rosetta.** `build-agent-deb.sh amd64` runs
+the build in an emulated amd64 container. Docker Desktop and OrbStack emulate
+through Rosetta; Colima's default VM (`vmType: vz`, `rosetta: false`) uses
+QEMU, and there the linker dies with `SIGSEGV` (2026-09-24). Either start
+Colima with `--vz-rosetta`, or cross-compile from a native arm64 container —
+nothing emulated:
+
+```bash
+docker run --rm --platform linux/arm64 -v "$PWD":/src -v deelpe-deb-arm64:/target -v "$PWD/dist":/out \
+  -w /src -e CARGO_TARGET_DIR=/target -e CARGO_INSTALL_ROOT=/target/tools \
+  -e PATH=/target/tools/bin:/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+  -e CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc \
+  -e CC_x86_64_unknown_linux_gnu=x86_64-linux-gnu-gcc -e AR_x86_64_unknown_linux_gnu=x86_64-linux-gnu-ar \
+  -e PKG_CONFIG_ALLOW_CROSS=1 -e PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig \
+  rust:1.90-slim-bookworm bash -euo pipefail -c '
+    dpkg --add-architecture amd64 && apt-get update -qq
+    apt-get install -y -qq dpkg-dev pkg-config gcc-x86-64-linux-gnu libc6-dev-amd64-cross libsqlite3-dev:amd64
+    rustup target add x86_64-unknown-linux-gnu
+    command -v cargo-deb >/dev/null || cargo install cargo-deb --quiet
+    cargo deb -p deelpe --target x86_64-unknown-linux-gnu
+    cp /target/x86_64-unknown-linux-gnu/debian/deelpe_*_amd64.deb /out/'
+```
+
+Colima also shares only your home folder with its VM: a file under `/tmp`
+arrives in a container as an empty directory — pipe a script in over stdin
+instead (`docker run -i … bash -s < script.sh`).
+
 ## Tests
 
 ```bash
@@ -189,8 +216,8 @@ docker volume create dlp-linux-target
 docker run --rm --privileged -v "$PWD":/src -v dlp-linux-target:/target -w /src \
   -e CARGO_TARGET_DIR=/target rust:1.90-slim-bookworm bash -c '
   export PATH=/usr/local/cargo/bin:$PATH
+  apt-get update -qq && apt-get install -y -qq libsqlite3-dev iproute2 netcat-openbsd
   cargo test -p deelpe-sensors && cargo build -p deelpe
-  apt-get update -qq && apt-get install -y -qq iproute2 netcat-openbsd
   ip link add dummy0 type dummy && ip addr add 10.99.0.1/24 dev dummy0 && ip link set dummy0 up
   mkdir -p /srv/GL && head -c 2000000 /dev/urandom | base64 > /srv/GL/zahlen.csv
   /target/debug/deelpe daemon & sleep 3
@@ -218,6 +245,23 @@ orb run -m dlp-cage-test -u root bash -c '
 
 The two ignored tests cage a real shell and cut a real connection; they need
 root and leave nothing behind.
+
+The open guard (`linux/guard.rs`) needs the same real kernel and root; the
+container from above is enough (`CONFIG_FANOTIFY_ACCESS_PERMISSIONS`). With
+the daemon from that recipe running:
+
+```bash
+  apt-get install -y -qq jq procps
+  mkdir -p /root/.ssh/sub && echo k > /root/.ssh/sub/id && echo k > /tmp/free
+  jq '.guarded=[{"path":"/root/.ssh","processes":["hermes"]}]' /etc/deelpe/config.json > /tmp/c && mv /tmp/c /etc/deelpe/config.json
+  pkill -x deelpe; /target/debug/deelpe daemon & sleep 3
+  cat /root/.ssh/sub/id                               # allowed: not an agent
+  # A shell named hermes, and `; true` so it forks cat instead of becoming it:
+  bash -c 'exec -a hermes bash -c "cat /root/.ssh/sub/id; true"'   # Operation not permitted
+  time cat /tmp/free                                   # unmarked: no delay
+  /target/debug/deelpe alerts                          # one denied alert
+  pkill -x deelpe; cat /root/.ssh/sub/id               # nothing hangs after the stop
+```
 
 Bitdefender: add an exception for `/usr/local/bin/deelpe`.
 

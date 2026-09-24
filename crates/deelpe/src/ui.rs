@@ -79,7 +79,7 @@ fn print_alerts(al: &[Alert]) {
             Cell::new(a.at.with_timezone(&chrono::Local).format("%d %b %H:%M:%S")),
             Cell::new(verdict_text(a.verdict)).fg(verdict_color(a.verdict)),
             Cell::new(a.identity.short()).fg(if a.identity.is_trusted_form() { Color::Reset } else { Color::Red }),
-            Cell::new(a.files.last().map(|f| f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()).unwrap_or_default()),
+            Cell::new(a.files.first().map(|f| f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()).unwrap_or_default()),
             Cell::new(target_text(a)),
             Cell::new(match a.target() { Target::Net { bytes, .. } => human_bytes(bytes), _ => "–".to_string() }).fg(Color::Yellow),
         ]);
