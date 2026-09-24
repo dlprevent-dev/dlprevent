@@ -122,15 +122,16 @@ pub enum Event {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GuardEvent {
     pub at: DateTime<Utc>,
-    /// `input` (the user's turn), `tool_result` or `output` (the model's
-    /// answer and the tools it calls).
+    /// `input` (the user's turn), `tool_result`, `tool_definition` (a tool
+    /// the agent offers the model, by its description) or `output` (the
+    /// model's answer and the tools it calls).
     pub direction: String,
     /// `flag`, `block` or `sanitize`, as the guard's engine judged it.
     pub verdict: String,
     /// Did the guard refuse the request? Only in its block mode.
     pub blocked: bool,
     pub model: Option<String>,
-    /// The tool whose result it was, for `tool_result`.
+    /// The tool whose result or definition it was.
     pub origin: Option<String>,
     /// The rules that fired, strongest first as the guard lists them.
     pub rules: Vec<String>,

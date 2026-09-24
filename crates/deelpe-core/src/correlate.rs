@@ -1392,6 +1392,7 @@ impl Correlator {
         a.blocked += u32::from(g.blocked);
         let what = match g.direction.as_str() {
             "tool_result" => format!("prompt injection in the result of tool {}", g.origin.as_deref().unwrap_or("?")),
+            "tool_definition" => format!("prompt injection in the description of tool {}", g.origin.as_deref().unwrap_or("?")),
             "output" => "the model's answer or tool call".to_string(),
             _ => "the user's prompt".to_string(),
         };
@@ -2901,6 +2902,13 @@ mod tests {
         let o3 = c.ingest(&guard("output", &["agent_exfil_service"], false, now)).unwrap();
         assert!(o3.is_new());
         assert_ne!(o3.id, o.id);
+    }
+
+    #[test]
+    fn a_poisoned_tool_description_is_named_as_one() {
+        let mut c = Correlator::new(cfg());
+        let o = c.ingest(&guard("tool_definition", &["retrieved_instruction_override"], true, Utc::now())).unwrap();
+        assert_eq!(o.via.as_deref(), Some("LLM guard: 1 × prompt injection in the description of tool web_extract, rules retrieved_instruction_override, 1 refused, model m"));
     }
 
     // --- Opens refused by the permission listener
