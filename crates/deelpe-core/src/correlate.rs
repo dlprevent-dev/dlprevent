@@ -2786,7 +2786,7 @@ mod tests {
             session_id: "20260525_075516_a58d38a9".into(),
             platform: "telegram".into(),
             model: None,
-            user: Some("anna".into()),
+            user: Some("account anna".into()),
             call_id: "call_00_x".into(),
             tool: tool.into(),
             command: command.map(Into::into),

@@ -75,9 +75,10 @@ const NOTE_CHARS: usize = 120;
 /// The line an alert carries about the call behind it.
 pub fn note(a: &AgentEvent) -> String {
     let mut who = vec![a.platform.clone()];
-    // The account the log lies under, not the person: a gateway serves
-    // many people from one account.
-    who.extend(a.user.as_ref().map(|u| format!("account {u}")));
+    // Labelled by the sensor: "user Michael (4711)" when the agent names
+    // the platform user, "account root" when only the home it runs under
+    // is known — a gateway serves many people from one account.
+    who.extend(a.user.clone());
     who.retain(|s| !s.is_empty());
     let what = a
         .command
@@ -138,7 +139,7 @@ mod tests {
             session_id: "20260525_075516_a58d38a9".into(),
             platform: "telegram".into(),
             model: None,
-            user: Some("anna".into()),
+            user: Some("account anna".into()),
             call_id: "call_00_x".into(),
             tool: "terminal".into(),
             command: Some("x".repeat(200)),

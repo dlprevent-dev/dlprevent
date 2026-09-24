@@ -189,8 +189,8 @@ docker volume create dlp-linux-target
 docker run --rm --privileged -v "$PWD":/src -v dlp-linux-target:/target -w /src \
   -e CARGO_TARGET_DIR=/target rust:1.90-slim-bookworm bash -c '
   export PATH=/usr/local/cargo/bin:$PATH
+  apt-get update -qq && apt-get install -y -qq libsqlite3-dev iproute2 netcat-openbsd
   cargo test -p deelpe-sensors && cargo build -p deelpe
-  apt-get update -qq && apt-get install -y -qq iproute2 netcat-openbsd
   ip link add dummy0 type dummy && ip addr add 10.99.0.1/24 dev dummy0 && ip link set dummy0 up
   mkdir -p /srv/GL && head -c 2000000 /dev/urandom | base64 > /srv/GL/zahlen.csv
   /target/debug/deelpe daemon & sleep 3

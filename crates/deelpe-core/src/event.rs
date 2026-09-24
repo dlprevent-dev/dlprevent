@@ -152,9 +152,10 @@ pub struct AgentEvent {
     /// `telegram`, `cli`, … — empty if the log does not say.
     pub platform: String,
     pub model: Option<String>,
-    /// The account whose home the session log lives in. The log itself
-    /// names no user, and a gateway serving many people runs under one
-    /// account: this is not the person.
+    /// Who asked, labelled: `user <name> (<id>)` when the agent names the
+    /// platform user (Hermes's database does), `account <name>` when only
+    /// the home the log lies in is known — and a gateway serving many
+    /// people runs under one account, so that is not the person.
     pub user: Option<String>,
     pub call_id: String,
     /// `function.name` of the call.
