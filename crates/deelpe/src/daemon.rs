@@ -216,6 +216,13 @@ pub async fn run() -> Result<()> {
     let cages_ev = cages.clone();
     tokio::spawn(async move {
         while let Some(ev) = rx.recv().await {
+            // Every tool call of an AI agent into the log, which the
+            // dashboard shows per agent: what the agent did, not only what
+            // became an alert. The same metadata line an alert carries —
+            // never a prompt or an answer.
+            if let Event::Agent(a) = &ev {
+                tracing::info!("{}", deelpe_core::agent::note(a));
+            }
             let (outcome, touches) = {
                 let mut s = st.lock().await;
                 if matches!(ev, Event::File(_) | Event::Exit(_)) {
