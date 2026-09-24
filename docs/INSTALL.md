@@ -1049,17 +1049,24 @@ The table is removed when the service stops, crashes included
 
 ### AI agents (Hermes)
 
+The whole setup — the agent, the LLM guard, guarded folders and hardening
+Hermes itself — is in [HERMES.md](HERMES.md). In short:
+
 If an account on the machine runs the Hermes agent, the service reads its
-session logs (`/root/.hermes/sessions/`, `/home/*/.hermes/sessions/`) every
-two seconds: tool name, shell command, path or search query — never prompts,
-answers or tool results. It joins each call to the program start or file
-access it caused, and an alert about that process or its children then names
-the call: ``agent session 20260525_075516_a58d38a9 (telegram, account anna), tool
-terminal `cat … | curl …`, call call_00_…``. The account is the one whose home
-the log lies in — the log names no person, and a gateway serving several
-people runs under one account. The join is by command line and time (up to 2 s before and
-30 s after the call); a gateway that runs the same command for two users in
-the same seconds gets the first call.
+sessions every two seconds — from `~/.hermes/state.db` (current Hermes) or
+the older `~/.hermes/sessions/*.jsonl`, under `/root` and `/home/*`: tool
+name, shell command, path or search query, never prompts, answers or tool
+results. Every call becomes a line in the agent's log on the dashboard. It
+is also joined to the program start or file access it caused, and an alert
+about that process or its children then names the call:
+``agent session 20260924_112608_edaedc (telegram, user Jane Doe (123456789)), tool
+terminal `cat … | curl …`, call call_00_…``. The database names the platform
+user; the older session files do not, and then the line names the account
+whose home the log lies in (`account root`). The join is by command line and
+time (up to 2 s before and 30 s after the call); a gateway that runs the same
+command for two users in the same seconds gets the first call. The database
+is opened for each read and closed again — Hermes refuses to start its
+session store while another process holds it.
 
 ### LLM guard (prompt injection)
 
@@ -1085,8 +1092,10 @@ people work in. Local only for now, in `/etc/deelpe/config.json`, then restart
 the service:
 
 ```json
-"guarded": [{ "path": "/root/.ssh", "processes": ["hermes"] }]
+"guarded": [{ "path": "/root/.ssh", "processes": ["/usr/local/lib/hermes-agent/"] }]
 ```
+
+Which folders are worth it on an agent host: [HERMES.md](HERMES.md#guarded-folders).
 
 `processes` are pieces of a command line; the open is refused when the
 process or one of its ancestors carries one, so the agent's shell and its
