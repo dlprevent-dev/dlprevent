@@ -93,7 +93,23 @@ docker compose up -d
 docker compose logs guard | grep 'key set by the guard'
 ```
 
-The key now lives in two places; change both when you rotate it.
+Then take the key away from Hermes: it no longer needs it, and as long as
+it has it, every path around the guard works — a built-in provider, an alias,
+a session stored from before (the Telegram chat in the lab kept going
+straight to DeepSeek for exactly that reason). Keep a backup until the
+checks below pass:
+
+```bash
+cp /root/.hermes/.env /root/.hermes/.env.before-guard && chmod 600 /root/.hermes/.env.before-guard
+sed -i 's/^\(export \)\{0,1\}DEEPSEEK_API_KEY=.*/DEEPSEEK_API_KEY=via-dlprevent-guard/' /root/.hermes/.env
+systemctl restart hermes-gateway
+# The key Hermes has left must not work anywhere:
+curl -s https://api.deepseek.com/v1/models -H "Authorization: Bearer $(sed -n 's/^DEEPSEEK_API_KEY=//p' /root/.hermes/.env)" | head -c 120
+```
+
+The last command must answer `Authentication Fails`. Rotate the key in the
+guard's `.env` only; delete the backup once everything works — it holds the
+real key.
 
 **4. Point Hermes at the guard.** In `/root/.hermes/config.yaml`, the provider
 entry's `base_url` becomes the guard; the key line stays:
@@ -125,6 +141,62 @@ pgrep -af 'hermes_cli.main gateway'      # exactly one line
 
 Never start `hermes gateway run` by hand next to the service: two gateways
 fight over the same Telegram bot.
+
+**6. Start new sessions.** Hermes stores the provider with each session. A
+chat that began before the switch keeps its old one — check with:
+
+```bash
+python3 -c "import sqlite3;c=sqlite3.connect('file:/root/.hermes/state.db?mode=ro',uri=True);[print(r) for r in c.execute(\"select id, source, billing_provider, billing_base_url from sessions order by coalesce(last_activity_at, started_at) desc limit 5\")]"
+```
+
+Every row should show `http://127.0.0.1:8787/…`. In Telegram, `/new` starts a
+fresh session; its banner names the endpoint. To change the model inside a
+chat, give the plain name (`/model deepseek-v4-pro`): `/model
+custom:deepseek:…` is read as a model name in current Hermes, and the
+provider is left alone.
+
+## Every provider through the guard
+
+Hermes rarely uses one provider. Subagents (`delegation:`) and helper tasks
+(`auxiliary:`) in `config.yaml` often name their own — in the lab,
+OpenRouter — and further `custom_providers` are one `/model` away. Whatever
+does not go through the guard is not scanned. One guard serves them all
+(`GUARD_UPSTREAMS`, from `e0275e4`); each is reached under its own name, with
+its own key held by the guard.
+
+In the guard's `.env` — the base URL of each provider, without `/v1`:
+
+```bash
+GUARD_UPSTREAMS=deepseek=https://api.deepseek.com,openrouter=https://openrouter.ai/api,infomaniak=https://api.infomaniak.com/2/ai/<product-id>/openai
+GUARD_KEY_DEEPSEEK=…
+GUARD_KEY_OPENROUTER=…
+GUARD_KEY_INFOMANIAK=…
+```
+
+`docker compose up -d`, and the start of `docker compose logs guard` lists
+every route with `key set by the guard`. The existing `GUARD_UPSTREAM` line
+can stay: `/v1/…` keeps going to it.
+
+In `/root/.hermes/config.yaml`, every place that names a provider gets the
+guard's address for it:
+
+| Where | Before | After |
+|---|---|---|
+| `custom_providers:` entry `deepseek` | `base_url: https://api.deepseek.com/v1` | `base_url: http://127.0.0.1:8787/deepseek/v1` |
+| `custom_providers:` entry `infomaniak` | `base_url: https://api.infomaniak.com/2/ai/<product-id>/openai/v1` | `base_url: http://127.0.0.1:8787/infomaniak/v1` |
+| `delegation:` (subagents) | `provider: openrouter`, `base_url: ''` | `base_url: http://127.0.0.1:8787/openrouter/v1`, `api_key: via-dlprevent-guard` |
+| `auxiliary:` tasks with `provider: openrouter` | `base_url: ''` | `base_url: http://127.0.0.1:8787/openrouter/v1`, `api_key: via-dlprevent-guard` |
+
+When `base_url` is set, Hermes calls it instead of the provider it names. Tasks
+with `provider: auto` follow the main model. Then, as for DeepSeek, replace
+each key in `/root/.hermes/.env` (`OPENROUTER_API_KEY`, `INFOMANIAK_API_KEY`,
+…) with `via-dlprevent-guard`, restart, and check that the guard log shows
+requests on every route (`POST /openrouter/v1/chat/completions -> 200`) — a
+subagent task in Telegram exercises `delegation`.
+
+Keep a backup of both files for this one. A Hermes feature that talks to a
+provider some other way than through `config.yaml` breaks when its key is
+gone; the guard log and Hermes's own errors then say which.
 
 ## Guarded folders
 
@@ -262,6 +334,9 @@ then `GUARD_MODE=block` in its `.env`.
 | `FATAL: a live process holds a deleted state.db-wal` | a process kept an old copy of Hermes's database open (an early 0.1.6 build of the agent held a connection) | install the current agent; find others with `grep -l 'state.db-.*(deleted)' /proc/*/maps`; never delete the WAL by hand |
 | Agent log empty although Hermes works | Hermes saved nothing (see the line above), or the call was not a tool call | `journalctl -u hermes-gateway | grep FATAL`; ask for something that needs a tool |
 | Many guard alerts on ordinary tool output | guard older than `a9faa21` scanned tool results with prompt heuristics | `git pull && docker compose up -d --build` |
+| A guard alert "data-drop service" when Hermes only *warned* about an attack | guard older than `e0275e4` checked the prose of the answer, not just its tool calls | `git pull && docker compose up -d --build` |
+| Telegram works but the guard log shows no `POST` from it | the chat is a session from before the switch, still on the old provider | `/new`, step 6 |
+| `Operation not permitted` in your own shell on a guarded folder | your shell descends from a Hermes process (a tmux server Hermes started) | work in a direct SSH session; or `systemctl stop deelpe`, change, `systemctl start deelpe` |
 | `docker compose`: `no configuration file provided` / `GUARD_UPSTREAM is missing` | run outside `guard/`, or `.env` not in `guard/` | `cd dlprevent-guard/guard` |
 
 ## Limits
@@ -273,7 +348,8 @@ then `GUARD_MODE=block` in its `.env`.
   `/root/.cache`, file ownership).
 - **Only what goes through the guard is scanned.** Subagents and auxiliary
   tasks configured with their own provider (`delegation`, `auxiliary` in
-  `config.yaml`, often OpenRouter) go around it.
+  `config.yaml`, often OpenRouter) go around it until they are routed through
+  it too ([Every provider through the guard](#every-provider-through-the-guard)).
 - **Attribution is by text and time.** A tool call is joined to the program
   it started by its command line within 2 s before to 30 s after the call.
   Two users running the same command in the same seconds get the first
