@@ -14,7 +14,6 @@ and then sends data outward.
 [![Postgres](https://img.shields.io/badge/Postgres-18%2B-336791?logo=postgresql&logoColor=white)](docs/SERVER.md)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ed?logo=docker&logoColor=white)](docs/INSTALL.md)
 [![Platforms](https://img.shields.io/badge/Agents-macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-555)](docs/INSTALL.md)
-[![Status](https://img.shields.io/badge/Status-Z2%20observe%20%26%20report%20%C2%B7%20Z3%20open-e07a3f)](#status)
 
 </div>
 
@@ -299,36 +298,8 @@ of a strict folder stay open.
 
 What does stop an upload works before the first byte and needs no driver: the
 browser connector refuses and knows the target URL, and the network cage takes
-the network from a program that has read from a strict folder.
-
-## Status
-
-Milestone 1 (macOS, warn), the learning phase (M2) and the Linux agent (M3)
-are in, and the central server is at stage Z2: both Windows roles observe and
-report. The first intervention is the strict folder — on the Mac, on the
-**Windows workstation**, whose sensors have run on real hardware (Windows 11
-Enterprise, 2026-09-07), and on **Linux**. That also catches what a file
-server fundamentally cannot see: dragging a file from the share into a
-browser or an AI service.
-Stopping such an upload before it moves needs the browser to ask. The
-connector speaks Google's Content Analysis protocol, which **Firefox** (137
-and newer) and Chrome both speak — but only Firefox's policy is written for
-you at installation, so anything else is reported after the fact, see
-[SERVER.md](docs/SERVER.md).
-
-The **Windows file server agent** (Z2) reads the security log (4663/5145) and
-the share table, and was validated against the lab domain controller on
-2026-09-06. The **Linux agent** (M3) reports as of 2026-09-12: fanotify for
-file access, `ss` for the bytes sent, same binary and same dashboard as the
-Mac, as a `.deb` for Debian and Ubuntu — and the network cage runs there too,
-through nftables and a cgroup per process.
-
-Still open is **Z3**: locking down at the file server — lockdown by
-permission, blocking on mass access, emergency stop. The rule fields are in
-the dashboard; no agent acts on them yet. Blocking at the endpoint on macOS
-needs a Developer ID build, because the network filter is a system extension;
-on Windows the file-level layer reports and deletes the copy, while the
-upload itself is stopped by the browser connector and the network cage.
+the network from a program that has read from a strict folder. In **Firefox**
+(137 and newer) the upload is blocked; its policy is written at installation.
 
 ## Roadmap
 
