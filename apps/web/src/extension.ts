@@ -6,3 +6,7 @@ import type { Component } from 'svelte';
 export type ExtraPage = { path: string; label: string; icon: string; admin: boolean; component: Component };
 
 export const pages: ExtraPage[] = [];
+
+/** A notice above every page, for administrators (e.g. a license running
+ *  out). None here. */
+export const banner: Component | null = null;
