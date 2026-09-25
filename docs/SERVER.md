@@ -812,7 +812,8 @@ collecting. A mass upload of two hundred files still costs one email, because
 the worker only looks once a minute. Every email goes out
 as text and as HTML, so a client without HTML shows the same thing.
 
-**Time zone** is an IANA name such as `Europe/Zurich`; the default is `UTC`.
+**Time zone** (Settings → General) is an IANA name such as `Europe/Zurich`;
+the default is `UTC`.
 It governs the emails **and** every time the dashboard shows. Until
 2026-09-09 the dashboard quietly used the zone of the browser looking at it —
 right as long as that machine's clock is right, and unprovable the moment two

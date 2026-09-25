@@ -367,6 +367,17 @@ mod tests {
         assert_eq!(external("admin"), false);
     }
 
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_account_from_an_identity_provider_gets_no_password(pool: sqlx::PgPool) {
+        let anna: Uuid = sqlx::query_scalar("INSERT INTO users (name, pw_hash, role, external) VALUES ('anna', '', 'viewer', true) RETURNING id").fetch_one(&pool).await.unwrap();
+        let admin = test_session(&pool, "admin").await;
+        let app = router(test_app(pool.clone()), Router::new());
+        let r = send(&app, "POST", &format!("/api/users/{anna}/password"), (header::COOKIE.as_str(), &admin), json!({ "password": "neues-langes-passwort" })).await;
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST, "it could never be used to sign in");
+        let (hash,): (String,) = sqlx::query_as("SELECT pw_hash FROM users WHERE id = $1").bind(anna).fetch_one(&pool).await.unwrap();
+        assert_eq!(hash, "");
+    }
+
     async fn get(app: &Router, path: &str, cookie: &str) -> Response {
         app.clone().oneshot(Request::builder().uri(path).header(header::COOKIE, cookie).body(axum::body::Body::empty()).unwrap()).await.unwrap()
     }

@@ -18,6 +18,7 @@
    *  growing, and whoever wants the save button should not have to hunt for
    *  it — it sits in the same place under every tab. */
   const TABS = [
+    { id: 'general', label: 'General', icon: 'settings' },
     { id: 'detection', label: 'Detection', icon: 'shield' },
     { id: 'retention', label: 'Retention', icon: 'chart' },
     { id: 'interfaces', label: 'Interfaces', icon: 'key' },
@@ -192,7 +193,15 @@
 
   <div class="pane">
     <form class="card pad" onsubmit={save}>
-      {#if tab === 'detection'}
+      {#if tab === 'general'}
+        <fieldset class="fset">
+          <legend>General</legend>
+            <div class="field" style="margin-bottom:0"><label for="ntz">Time zone</label>
+              <input id="ntz" type="text" bind:value={s.report_timezone} disabled={!admin} autocomplete="off" spellcheck="false" placeholder="Europe/Zurich" />
+              <div class="hint">IANA name, for the emails <em>and</em> every time shown here. One zone for everybody, so the same alert reads the same to two people at different desks. Summer and winter time follow from the name. Reload the page after saving.</div></div>
+        </fieldset>
+
+      {:else if tab === 'detection'}
         <fieldset class="fset">
           <legend>Detection</legend>
           <div class="field"><label for="ld">Learning phase (days)</label><input id="ld" type="number" min="0" max="90" bind:value={s.learn_days} disabled={!admin} />
@@ -482,9 +491,6 @@
             <div class="field" style="margin-bottom:0"><label for="ndm">An agent counts as down after (minutes)</label>
               <input id="ndm" type="number" min="1" max="1440" bind:value={s.notify_agent_down_mins} disabled={!admin} />
               <div class="hint">Only for the email. The agent list still colours after three missed reports — a colour wakes nobody, an email does. Raise this if a laptop going to sleep keeps sending you down and up again.</div></div>
-            <div class="field" style="margin-bottom:0"><label for="ntz">Time zone</label>
-              <input id="ntz" type="text" bind:value={s.report_timezone} disabled={!admin} autocomplete="off" spellcheck="false" placeholder="Europe/Zurich" />
-              <div class="hint">IANA name, for the emails <em>and</em> every time shown here. One zone for everybody, so the same alert reads the same to two people at different desks. Summer and winter time follow from the name. Reload the page after saving.</div></div>
           </div>
         </fieldset>
 

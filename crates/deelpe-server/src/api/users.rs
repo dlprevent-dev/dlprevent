@@ -92,6 +92,12 @@ pub(super) async fn set_password(State(st): State<Shared>, user: User, Path(id):
     if id != user.id && !user.is_admin() {
         return Err(ApiError(StatusCode::FORBIDDEN, "only your own password".into()));
     }
+    // It signs in at the identity provider only (`session::open_session`):
+    // a password here could never be used.
+    let external: Option<bool> = sqlx::query_scalar("SELECT external FROM users WHERE id = $1").bind(id).fetch_optional(&st.pool).await?;
+    if external.ok_or_else(not_found)? {
+        return Err(bad("this account signs in through single sign-on and has no password here"));
+    }
     if id == user.id {
         auth::verify_current_password(&st.pool, id, b.old_password.as_deref().unwrap_or("")).await?;
     }
