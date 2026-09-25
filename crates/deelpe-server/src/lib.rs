@@ -14,7 +14,7 @@ mod assist;
 pub mod auth;
 mod binaries;
 pub mod db;
-mod mail;
+pub mod mail;
 mod pki;
 mod release;
 mod retention;
