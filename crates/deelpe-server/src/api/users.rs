@@ -10,6 +10,8 @@ pub(super) struct UserRow {
     name: String,
     role: String,
     disabled: bool,
+    /// Signs in through an identity provider (single sign-on), not locally.
+    external: bool,
     created_at: DateTime<Utc>,
     last_login: Option<DateTime<Utc>>,
     /// Second factor, only whether and how many — never the secret.
@@ -17,7 +19,7 @@ pub(super) struct UserRow {
     passkeys: i64,
 }
 
-pub(super) const USER_COLS: &str = "id, name, role, disabled, created_at, last_login, totp_secret IS NOT NULL AS totp_enabled, (SELECT count(*) FROM passkeys p WHERE p.user_id = users.id) AS passkeys";
+pub(super) const USER_COLS: &str = "id, name, role, disabled, external, created_at, last_login, totp_secret IS NOT NULL AS totp_enabled, (SELECT count(*) FROM passkeys p WHERE p.user_id = users.id) AS passkeys";
 
 pub(super) async fn users(State(st): State<Shared>, _u: Admin) -> R<Vec<UserRow>> {
     let sql = format!("SELECT {USER_COLS} FROM users ORDER BY name");

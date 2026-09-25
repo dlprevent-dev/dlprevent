@@ -22,15 +22,16 @@
   let error = $state('');
   const sort = createSort('name');
   const roleLabel = (r: string) => (r === 'admin' ? 'Administrator' : 'Read only');
+  const originLabel = (u: UserRow) => (u.external ? 'Single sign-on' : 'Local');
 
   const res = resource(() => api<UserRow[]>('/api/users'));
   const load = res.reload;
   const users = $derived(res.data ?? []);
 
   const view = $derived(sortRows(
-    users.filter((u) => matches(`${u.name} ${roleLabel(u.role)}`, q)),
+    users.filter((u) => matches(`${u.name} ${roleLabel(u.role)} ${originLabel(u)}`, q)),
     sort,
-    (u, k) => ({ name: u.name, role: roleLabel(u.role), created: u.created_at, login: u.last_login }[k]),
+    (u, k) => ({ name: u.name, role: roleLabel(u.role), origin: originLabel(u), created: u.created_at, login: u.last_login }[k]),
   ));
 
   async function create(e: Event) {
@@ -66,7 +67,7 @@
 </PageHead>
 
 <div class="toolbar">
-  <SearchBox bind:value={q} placeholder="Search name or role…" />
+  <SearchBox bind:value={q} placeholder="Search name, role or sign-in…" />
   <span class="spacer"></span>
   <span class="muted small">{view.length} of {users.length}</span>
 </div>
@@ -84,6 +85,7 @@
       <thead><tr>
         <SortHeader {sort} key="name" label="Name" />
         <SortHeader {sort} key="role" label="Role" />
+        <SortHeader {sort} key="origin" label="Sign-in" />
         <SortHeader {sort} key="created" label="Created" />
         <SortHeader {sort} key="login" label="Last sign-in" />
         <th><span class="th">2FA</span></th>
@@ -94,6 +96,7 @@
           <tr>
             <td><strong>{u.name}</strong>{#if u.id === session.user?.id}<span class="muted">&nbsp;(you)</span>{/if}{#if u.disabled}<div class="cell-2">disabled</div>{/if}</td>
             <td><span class="badge {u.role === 'admin' ? 'accent' : ''}">{roleLabel(u.role)}</span></td>
+            <td class="nowrap"><span class={u.external ? 'badge' : 'muted'} title={u.external ? 'Signs in through the identity provider only' : undefined}>{originLabel(u)}</span></td>
             <td class="nowrap muted">{fmtTime(u.created_at)}</td>
             <td class="nowrap">{fmtTime(u.last_login)}</td>
             <td class="nowrap">
