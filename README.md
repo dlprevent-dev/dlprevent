@@ -315,9 +315,10 @@ the network from a program that has read from a strict folder. In **Firefox**
   or read only, for the whole server ([SERVER.md](docs/SERVER.md#roles)).
   Planned: an operator role between the two, and a scope per agent or agent
   group instead of all-or-nothing.
-- **Enterprise single sign-on (SSO).** SAML 2.0 and LDAP, so an account comes
-  from your own identity provider (Microsoft Entra ID, Okta, on-premises
-  Active Directory) instead of being created in the dashboard.
+- **Enterprise single sign-on (SSO)**, in the enterprise edition. OIDC,
+  SAML 2.0 and LDAP, so an account comes from your own identity provider
+  (Microsoft Entra ID, Okta, on-premises Active Directory) instead of being
+  created in the dashboard.
 
 ## License
 

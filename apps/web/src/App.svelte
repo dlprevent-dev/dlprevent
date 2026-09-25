@@ -17,6 +17,7 @@
   import Settings from './pages/Settings.svelte';
   import Audit from './pages/Audit.svelte';
   import Account from './pages/Account.svelte';
+  import { pages as extraPages } from '$extension';
 
   let openAlerts = $state(0);
 
@@ -38,7 +39,9 @@
     { title: 'Monitoring', items: [['/', 'Overview', 'overview', false], ['/alerts', 'Alerts', 'alert', false]] },
     { title: 'Setup', items: [['/rules', 'Rules', 'rules', true], ['/agents', 'Agents', 'agents', true], ['/sources', 'Sources', 'sources', true]] },
     { title: 'System', items: [['/users', 'Users', 'users', true], ['/settings', 'Settings', 'settings', true], ['/audit', 'Audit log', 'audit', true], ['/account', 'Account', 'key', false]] },
+    ...(extraPages.length ? [{ title: 'Enterprise', items: extraPages.map((p) => [p.path, p.label, p.icon, p.admin] as const) }] : []),
   ] as const;
+  const extra = $derived(extraPages.find((p) => p.path === route.path));
 
   const admin = $derived(isAdmin());
   /// The role demands a second factor, the account has none: the server only
@@ -104,6 +107,7 @@
       {:else if route.path === '/users'}<Users />
       {:else if route.path === '/settings'}<Settings />
       {:else if route.path === '/audit'}<Audit />
+      {:else if extra}<extra.component />
       {:else}<div class="card pad empty"><b>Page not found</b><a href="/" onclick={(e) => nav_click(e, '/')}>Back to overview</a></div>{/if}
     </main>
   </div>
