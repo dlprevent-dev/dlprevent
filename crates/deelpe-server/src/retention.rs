@@ -18,14 +18,13 @@ pub async fn run(state: Shared, stop: CancellationToken) -> Result<()> {
             _ = tokio::time::sleep(std::time::Duration::from_secs(wait)) => {}
             _ = stop.cancelled() => return Ok(()),
         }
-        if let Err(e) = sweep(&state).await {
+        if let Err(e) = sweep(&state.pool).await {
             warn!("cleanup: {e:#}");
         }
     }
 }
 
-async fn sweep(state: &Shared) -> Result<()> {
-    let p = &state.pool;
+async fn sweep(p: &sqlx::PgPool) -> Result<()> {
     let alert_days = db::setting_i64(p, "alert_retain_days", 730).await?;
     let count_days = db::setting_i64(p, "count_retain_days", 30).await?;
     // The agents' log is there for troubleshooting, not as evidence: two
@@ -44,7 +43,8 @@ async fn sweep(state: &Shared) -> Result<()> {
         .execute(p)
         .await?
         .rows_affected();
-    let alerts = sqlx::query("DELETE FROM alerts WHERE COALESCE(last_at, at) < now() - ($1::bigint * interval '1 day')").bind(alert_days).execute(p).await?.rows_affected();
+    // Under legal hold: kept, however old.
+    let alerts = sqlx::query("DELETE FROM alerts WHERE NOT legal_hold AND COALESCE(last_at, at) < now() - ($1::bigint * interval '1 day')").bind(alert_days).execute(p).await?.rows_affected();
     let counts = sqlx::query("DELETE FROM access_counts WHERE bucket < now() - ($1::bigint * interval '1 day')").bind(count_days).execute(p).await?.rows_affected();
     let log = sqlx::query("DELETE FROM agent_log WHERE at < now() - ($1::bigint * interval '1 day')").bind(log_days).execute(p).await?.rows_affected();
     // IP reputation: an address that still turns up in alerts is fetched
@@ -60,4 +60,24 @@ async fn sweep(state: &Shared) -> Result<()> {
         info!(sessions, tokens, alerts, counts, log, reputations, "cleaned up");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn alerts_under_legal_hold_outlive_the_retention(pool: sqlx::PgPool) {
+        let old = |hold: bool| {
+            sqlx::query_scalar::<_, i64>(
+                "INSERT INTO alerts (kind, origin_name, external_id, at, verdict, detail, legal_hold) VALUES ('endpoint', 'mac-1', gen_random_uuid()::text, now() - interval '1000 days', 'deviation', '{}', $1) RETURNING id",
+            )
+            .bind(hold)
+        };
+        let held = old(true).fetch_one(&pool).await.unwrap();
+        old(false).fetch_one(&pool).await.unwrap();
+        sweep(&pool).await.unwrap();
+        let left: Vec<i64> = sqlx::query_scalar("SELECT id FROM alerts").fetch_all(&pool).await.unwrap();
+        assert_eq!(left, vec![held], "past the default 730 days, only the held alert stays");
+    }
 }
