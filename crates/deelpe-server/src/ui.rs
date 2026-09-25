@@ -5,22 +5,27 @@ use axum::body::Body;
 use axum::http::{header, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::Router;
-use rust_embed::Embed;
+use rust_embed::{Embed, RustEmbed};
 
 #[derive(Embed)]
 #[folder = "ui-dist/"]
 struct Assets;
 
 pub fn router() -> Router {
-    Router::new().fallback(serve)
+    embedded::<Assets>()
 }
 
-async fn serve(uri: Uri) -> Response {
+/// Serves another build of the dashboard, with the same headers.
+pub fn embedded<E: RustEmbed + Send + Sync + 'static>() -> Router {
+    Router::new().fallback(serve::<E>)
+}
+
+async fn serve<E: RustEmbed>(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
     let path = if path.is_empty() { "index.html" } else { path };
-    match Assets::get(path) {
+    match E::get(path) {
         Some(f) => file(path, f.data.into_owned(), path != "index.html" && path.starts_with("assets/")),
-        None => match Assets::get("index.html") {
+        None => match E::get("index.html") {
             Some(f) => file("index.html", f.data.into_owned(), false),
             None => (StatusCode::NOT_FOUND, "user interface not embedded (ui-dist missing)").into_response(),
         },

@@ -39,7 +39,9 @@ mod users;
 
 type R<T> = Result<Json<T>, ApiError>;
 
-pub fn router(state: Shared) -> Router {
+/// `extra`: routes of an [`crate::Extension`], merged in before the origin
+/// check so that it covers them too.
+pub fn router(state: Shared, extra: Router<Shared>) -> Router {
     Router::new()
         .route("/api/login", post(session::login))
         .route("/api/login/totp", post(session::login_totp))
@@ -96,6 +98,7 @@ pub fn router(state: Shared) -> Router {
         // Agent programs for download; its own router because of the larger
         // upper bound for uploads.
         .merge(crate::binaries::router())
+        .merge(extra)
         .layer(middleware::from_fn_with_state(state.clone(), same_origin))
         .with_state(state)
 }
@@ -361,7 +364,7 @@ mod tests {
     async fn viewer_can_monitor_but_cannot_read_administration(pool: sqlx::PgPool) {
         let viewer = test_session(&pool, "viewer").await;
         let admin = test_session(&pool, "admin").await;
-        let app = router(test_app(pool));
+        let app = router(test_app(pool), Router::new());
         for path in ["/api/me", "/api/overview", "/api/alerts?open=true", "/api/counts"] {
             assert_eq!(get(&app, path, &viewer).await.status(), StatusCode::OK, "viewer {path}");
             assert_eq!(get(&app, path, "").await.status(), StatusCode::UNAUTHORIZED, "anonymous {path}");
@@ -411,7 +414,7 @@ mod tests {
         let (n,): (i64,) = sqlx::query_as("SELECT count(*) FROM agent_log WHERE agent_id = $1").bind(agent).fetch_one(&pool).await.unwrap();
         assert_eq!(n, 4, "dieselben Zeilen zweimal duerfen nicht doppelt dastehen");
 
-        let app = router(test_app(pool));
+        let app = router(test_app(pool), Router::new());
         let all = response_json(get(&app, &format!("/api/agents/{agent}/log"), &admin).await).await;
         assert_eq!(all.as_array().unwrap().len(), 4);
         let warn = response_json(get(&app, &format!("/api/agents/{agent}/log?level=warn"), &admin).await).await;
@@ -439,7 +442,7 @@ mod tests {
                 VALUES ($1, 'endpoint', $2, $1::text, now(), 'hard_limit', '{}')")
                 .bind(id as i64).bind(origin).execute(&pool).await.unwrap();
         }
-        let app = router(test_app(pool));
+        let app = router(test_app(pool), Router::new());
         let rows = response_json(get(&app, "/api/alerts?origin=DESKTOP-EXAMPLE", &admin).await).await;
         assert_eq!(rows.as_array().unwrap().iter().map(|a| a["id"].as_i64().unwrap()).collect::<Vec<_>>(), vec![2, 1]);
         // And the same „all" for the bulk acknowledge: NAS01 stays open.
@@ -468,7 +471,7 @@ mod tests {
                 VALUES ($1, 'access', 'srv01', $1::text, now(), $2, '{}', CASE WHEN $3 THEN now() END)")
                 .bind(id).bind(verdict).bind(done).execute(&pool).await.unwrap();
         }
-        let app = router(test_app(pool));
+        let app = router(test_app(pool), Router::new());
         let ids = |v: serde_json::Value| v.as_array().unwrap().iter().map(|a| a["id"].as_i64().unwrap()).collect::<Vec<_>>();
         for (query, expected) in [("id=1", vec![1]), ("id=2", vec![2]), ("id=17", vec![17]), ("id=99", vec![])] {
             let rows = response_json(get(&app, &format!("/api/alerts?{query}"), &viewer).await).await;
@@ -516,7 +519,7 @@ mod tests {
             sqlx::query("INSERT INTO ip_reputations (ip, score, is_whitelisted) VALUES ($1, $2, $3)")
                 .bind(ip).bind(score).bind(white).execute(&pool).await.unwrap();
         }
-        let app = router(test_app(pool));
+        let app = router(test_app(pool), Router::new());
         let ids = |v: serde_json::Value| v.as_array().unwrap().iter().map(|a| a["id"].as_i64().unwrap()).collect::<Vec<_>>();
         let list = |query: &str| {
             let (app, admin) = (app.clone(), admin.clone());
@@ -556,7 +559,7 @@ mod tests {
                 VALUES ($1, $2, 'test', $1::text, now() - ($4::int * interval '1 day'), $3, '{}', CASE WHEN $5 THEN now() END)")
                 .bind(id as i64).bind(kind).bind(verdict).bind(days).bind(done).execute(&pool).await.unwrap();
         }
-        let app = router(test_app(pool));
+        let app = router(test_app(pool), Router::new());
         let overview = response_json(get(&app, "/api/overview", &viewer).await).await;
         assert_eq!(overview["alerts_open"], 3, "new/flagged/no_profile/known are notices, not alarms");
         assert_eq!(overview["alerts_24h"], 3, "24h includes closed alarms but not old alarms or notices");
@@ -613,7 +616,7 @@ mod tests {
     /// That is exactly what this test catches.
     async fn every_setting_that_goes_in_comes_back_out(pool: sqlx::PgPool) {
         let admin = test_session(&pool, "admin").await;
-        let app = router(test_app(pool.clone()));
+        let app = router(test_app(pool.clone()), Router::new());
 
         let mut set = response_json(get(&app, "/api/settings", &admin).await).await;
         // Away from the defaults, every field to a value of its own. The
@@ -680,7 +683,7 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn the_smtp_password_goes_in_and_never_comes_back_out(pool: sqlx::PgPool) {
         let admin = test_session(&pool, "admin").await;
-        let app = router(test_app(pool.clone()));
+        let app = router(test_app(pool.clone()), Router::new());
         let put = |body: serde_json::Value| send(&app, "PUT", "/api/settings", (header::COOKIE.as_str(), &admin), body);
 
         let mut set = response_json(get(&app, "/api/settings", &admin).await).await;
@@ -746,7 +749,7 @@ mod tests {
     async fn a_rollout_token_lasts_weeks_and_serves_many_devices(pool: sqlx::PgPool) {
         let admin = test_session(&pool, "admin").await;
         let st = test_app(pool.clone());
-        let app = router(st.clone());
+        let app = router(st.clone(), Router::new());
         let cookie = (header::COOKIE.as_str(), admin.as_str());
         let created = response_json(send(&app, "POST", "/api/tokens", cookie, json!({ "label": "rollout", "hours": 24 * 7 * 8 })).await).await;
         let expires: chrono::DateTime<chrono::Utc> = created["expires_at"].as_str().unwrap().parse().unwrap();
@@ -774,7 +777,7 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn api_key_reads_only_and_only_while_switched_on(pool: sqlx::PgPool) {
         let admin = test_session(&pool, "admin").await;
-        let app = router(test_app(pool.clone()));
+        let app = router(test_app(pool.clone()), Router::new());
         let created = response_json(send(&app, "POST", "/api/keys", (header::COOKIE.as_str(), &admin), json!({ "label": "siem", "days": 30 })).await).await;
         let key = created["key"].as_str().unwrap().to_string();
         let id = created["id"].as_str().unwrap().to_string();
@@ -846,7 +849,7 @@ mod tests {
         let uid: Uuid = sqlx::query_scalar("INSERT INTO users (name, pw_hash, role) VALUES ('hans', $1, 'viewer') RETURNING id")
             .bind(auth::hash_password("korrekt-und-lang-genug").unwrap()).fetch_one(&pool).await.unwrap();
         let st = test_app(pool.clone());
-        let app = with_peer(router(st.clone()));
+        let app = with_peer(router(st.clone(), Router::new()));
         let login = |pw: &'static str| send(&app, "POST", "/api/login", ("x-test", "1"), json!({ "name": "hans", "password": pw }));
 
         // Without a second factor: the password alone opens the session.
@@ -964,7 +967,7 @@ mod tests {
         let fileserver = agent("srv01", "windows_server", "review", false, false).await;
         let already = agent("pc-eva", "windows_client", "learning", false, true).await;
         let revoked = agent("pc-alt", "mac", "active", true, false).await;
-        let app = router(test_app(pool.clone()));
+        let app = router(test_app(pool.clone()), Router::new());
         let ids = json!([learner, fileserver, already, revoked]);
 
         // Administration, not monitoring: a viewer cannot revoke a fleet.
@@ -1050,7 +1053,7 @@ mod tests {
         // A Mac cannot replace itself at all (`self_replacing_platform`).
         let mac = agent("mac-eva", "mac", "0123456789ab".into(), false).await;
 
-        let app = router(test_app_in(pool.clone(), data_dir.clone()));
+        let app = router(test_app_in(pool.clone(), data_dir.clone()), Router::new());
         let ids = json!([outdated, current, stuck, mac]);
         let r = response_json(send(&app, "POST", "/api/agents/bulk", (header::COOKIE.as_str(), &admin), json!({ "action": "update", "ids": ids })).await).await;
         assert_eq!(r["changed"], 1, "nur das veraltete Geraet: {r}");
@@ -1078,7 +1081,7 @@ mod tests {
     async fn passkeys_are_bound_to_the_host_name_and_do_not_reveal_accounts(pool: sqlx::PgPool) {
         let uid: Uuid = sqlx::query_scalar("INSERT INTO users (name, pw_hash, role) VALUES ('hans', $1, 'viewer') RETURNING id")
             .bind(auth::hash_password("korrekt-und-lang-genug").unwrap()).fetch_one(&pool).await.unwrap();
-        let app = with_peer(router(test_app(pool.clone())));
+        let app = with_peer(router(test_app(pool.clone()), Router::new()));
         let r = send(&app, "POST", "/api/login", ("x-test", "1"), json!({ "name": "hans", "password": "korrekt-und-lang-genug" })).await;
         let cookie = cookie_of(&r);
         let (app_ref, cookie_ref) = (&app, cookie.as_str());
