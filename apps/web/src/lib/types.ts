@@ -37,7 +37,7 @@ export interface LogRow { id: number; at: string; level: string; target: string;
 export interface Source { id: string; name: string; kind: string; address: string; first_seen: string; last_seen: string | null; lines: number; unparsed: number }
 export interface Token { id: string; label: string; created_at: string; expires_at: string; used_at: string | null; used_by: string | null; max_uses: number | null; uses: number }
 export interface TokenCreated { id: string; token: string; expires_at: string; agent_url: string; ca_sha256: string; command: string; enroll_command: string | null }
-export interface UserRow { id: string; name: string; role: Role; disabled: boolean; created_at: string; last_login: string | null; totp_enabled: boolean; passkeys: number }
+export interface UserRow { id: string; name: string; role: Role; disabled: boolean; external: boolean; created_at: string; last_login: string | null; totp_enabled: boolean; passkeys: number }
 /** `abuseipdb_key` and `smtp_pass` only go in, never out: the server never
  *  sends them along. Empty means "unchanged", a single dash means "delete".
  *  Whether one is set is told by `abuseipdb_key_set` and

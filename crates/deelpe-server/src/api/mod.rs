@@ -356,6 +356,17 @@ mod tests {
         assert!(r.headers().get(header::SET_COOKIE).is_none());
     }
 
+    #[sqlx::test(migrations = "./migrations")]
+    async fn the_user_list_tells_an_account_from_an_identity_provider_apart(pool: sqlx::PgPool) {
+        sqlx::query("INSERT INTO users (name, pw_hash, role, external) VALUES ('anna', '', 'viewer', true)").execute(&pool).await.unwrap();
+        let admin = test_session(&pool, "admin").await;
+        let app = router(test_app(pool.clone()), Router::new());
+        let users = response_json(get(&app, "/api/users", &admin).await).await;
+        let external = |name: &str| users.as_array().unwrap().iter().find(|u| u["name"] == name).unwrap()["external"].clone();
+        assert_eq!(external("anna"), true);
+        assert_eq!(external("admin"), false);
+    }
+
     async fn get(app: &Router, path: &str, cookie: &str) -> Response {
         app.clone().oneshot(Request::builder().uri(path).header(header::COOKIE, cookie).body(axum::body::Body::empty()).unwrap()).await.unwrap()
     }
