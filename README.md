@@ -87,6 +87,10 @@ And one add-on, for a Linux host that runs an **AI agent** (Hermes):
   both on the dashboard once the guard runs next to it. See
   [docs/HERMES.md](docs/HERMES.md).
 
+For larger organisations, an **[enterprise edition](#enterprise-edition)**
+adds single sign-on, four-eyes approval, legal hold, a tamper-evident audit
+chain, SIEM and ticket connectors, and compliance reports.
+
 **Language:** English throughout — app, dashboard, command line, protocol,
 this documentation and the comments in the source.
 
@@ -301,6 +305,45 @@ browser connector refuses and knows the target URL, and the network cage takes
 the network from a program that has read from a strict folder. In **Firefox**
 (137 and newer) the upload is blocked; its policy is written at installation.
 
+## Enterprise edition
+
+The free edition fully protects one company: detection, blocking, the
+network cage, agents on all platforms, self-update, 2FA and passkeys, the
+audit log, email, API keys, AI Explain and every security fix stay free, and
+nothing that is in this repository moves behind a license. The enterprise
+edition adds what only larger organisations need: identity, compliance,
+control and integration.
+
+| Module | What you get |
+|---|---|
+| **Single sign-on** | Sign-in through Microsoft Entra ID, Okta, Keycloak or any OpenID Connect provider. Groups at the provider decide who is administrator and who reads only; the provider's MFA replaces the local second factor. |
+| **Four-eyes approval** | Rule changes, revoking or deleting agents, user management, installing a license and changing single sign-on wait until a second administrator approves. Nobody approves their own change. |
+| **Legal hold** | Alerts under investigation, with a reason such as the case number, are never deleted by retention — not even after the license ends. |
+| **Audit integrity** | Every audit entry is sealed in a hash chain; one click names every entry that was changed, deleted or slipped in afterwards, and each sealed entry goes to your SIEM. |
+| **Connectors** | Alarms pushed to Splunk, Elastic, Microsoft Sentinel, syslog (Wazuh, QRadar, Graylog), a Jira issue, a ServiceNow or TOPdesk incident, or a signed webhook — queued with the alert, retried until delivered. |
+| **Compliance reports** | Per period: alarms with how fast and by whom they were closed, access to protected folders, administrative changes and the audit chain — evidence for ISO 27001 (A.8.12, A.8.15, A.5.24ff), nDSG/DSV and FINMA Circular 2023/1. Printable as PDF, as CSV, and monthly by e-mail. |
+
+**Single sign-on, day to day.** Users are added at the identity provider,
+not in the dashboard: whoever is in the administrator or the allowed group
+gets an account on their first sign-in, with the role their group gives.
+Moving someone to the other group changes the role at their next sign-in;
+removing them at the provider ends their access, since these accounts cannot
+sign in with a local password or passkey. A local account is never taken
+over by a sign-in of the same name.
+
+**How it is licensed.** The enterprise server is a drop-in for the
+open-source image: same database, same ports, same agents. The license is a
+signed key you paste into the dashboard; it is checked offline, nothing
+calls home, and air-gapped networks are fine. It is priced per active agent.
+Above the number the dashboard warns, it never blocks. An expired license
+keeps the modules running for 30 days; after that only the enterprise pages
+stop — **detection and blocking on the agents never depend on a license.**
+
+The edition also covers what is not code: support with an agreed response
+time, a continuity clause (if the project stops, you get the source of the
+version you run), and help with the rollout. Contact info@dlprevent.ch;
+customers reach support at support@dlprevent.ch.
+
 ## Roadmap
 
 - **Windows kernel driver for customers.** A minifilter is the only way to
@@ -315,10 +358,8 @@ the network from a program that has read from a strict folder. In **Firefox**
   or read only, for the whole server ([SERVER.md](docs/SERVER.md#roles)).
   Planned: an operator role between the two, and a scope per agent or agent
   group instead of all-or-nothing.
-- **Enterprise single sign-on (SSO)**, in the enterprise edition. OIDC,
-  SAML 2.0 and LDAP, so an account comes from your own identity provider
-  (Microsoft Entra ID, Okta, on-premises Active Directory) instead of being
-  created in the dashboard.
+- **SAML 2.0 and LDAP** for single sign-on against on-premises Active
+  Directory, next to OpenID Connect (enterprise edition).
 
 ## License
 

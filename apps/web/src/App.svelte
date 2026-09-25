@@ -17,7 +17,7 @@
   import Settings from './pages/Settings.svelte';
   import Audit from './pages/Audit.svelte';
   import Account from './pages/Account.svelte';
-  import { pages as extraPages } from '$extension';
+  import { pages as extraPages, banner as Banner } from '$extension';
 
   let openAlerts = $state(0);
 
@@ -96,6 +96,7 @@
       </div>
     </aside>
     <main class="main">
+      {#if Banner && admin && !mustEnrol}<Banner />{/if}
       {#if mustEnrol || route.path === '/account'}<Account />
       {:else if adminPage && !admin}
         <div class="card pad empty"><Icon name="lock" size={22} /><b>Administrators only</b><span>Your account can view monitoring, not administration.</span></div>

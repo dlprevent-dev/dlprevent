@@ -38,16 +38,17 @@ async fn refuse(st: &Shared, ip: IpAddr, name: &str, step: &str, msg: &str) -> A
 }
 
 /// Create the session, set the cookie, return the account.
+///
+/// Not for an account from an identity provider (`external`): it signs in
+/// there only. Otherwise a password an administrator set, or a passkey,
+/// would skip the provider's MFA and outlive its offboarding.
 async fn open_session(st: &Shared, id: Uuid, name: String, role: String, ip: IpAddr, how: &str) -> Result<Response, ApiError> {
+    let external: bool = sqlx::query_scalar("SELECT external FROM users WHERE id = $1").bind(id).fetch_one(&st.pool).await?;
+    if external {
+        return Err(refuse(st, ip, &name, how, "this account signs in through single sign-on").await);
+    }
     st.login_ok(ip);
-    let sid = auth::random_token();
-    sqlx::query("INSERT INTO sessions (id, user_id, expires_at) VALUES ($1, $2, $3)")
-        .bind(auth::sha256_hex(&sid))
-        .bind(id)
-        .bind(Utc::now() + Duration::hours(auth::SESSION_HOURS))
-        .execute(&st.pool)
-        .await?;
-    sqlx::query("UPDATE users SET last_login = now() WHERE id = $1").bind(id).execute(&st.pool).await?;
+    let sid = auth::new_session(&st.pool, id).await?;
     let user = User { id, name, role, refreshed_cookie: None, second_factor_required: auth::second_factor_required(&st.pool, id).await? };
     db::audit(&st.pool, (&user).into(), "login", json!({ "ip": ip.to_string(), "method": how })).await;
     let mut resp = Json(user).into_response();

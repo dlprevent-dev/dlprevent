@@ -14,7 +14,7 @@ mod assist;
 pub mod auth;
 mod binaries;
 pub mod db;
-mod mail;
+pub mod mail;
 mod pki;
 mod release;
 mod retention;
@@ -39,6 +39,9 @@ use tracing::{error, info, warn};
 /// A background task: its name for the shutdown log, and its handle.
 pub type Task = (&'static str, JoinHandle<Result<()>>);
 
+/// Wraps the whole dashboard (API and pages) — it sees every request first.
+pub type Wrap = Box<dyn FnOnce(state::Shared, Router) -> Router + Send>;
+
 /// Runs once the database is migrated, before anything is served.
 pub type StartHook = Box<dyn FnOnce(state::Shared, CancellationToken) -> Pin<Box<dyn Future<Output = Result<Vec<Task>>> + Send>> + Send>;
 
@@ -54,6 +57,9 @@ pub struct Extension {
     /// Its own migrations, then its background tasks; these stop with the
     /// server's.
     pub start: Option<StartHook>,
+    /// Around the dashboard, e.g. to hold a change for a second person's
+    /// approval.
+    pub wrap: Option<Wrap>,
 }
 
 #[derive(Parser, Debug)]
@@ -126,6 +132,10 @@ pub async fn run(ext: Extension) -> Result<()> {
     };
 
     let ui_router = api::router(state.clone(), ext.routes).merge(ext.ui.unwrap_or_else(ui::router));
+    let ui_router = match ext.wrap {
+        Some(wrap) => wrap(state.clone(), ui_router),
+        None => ui_router,
+    };
     let ui_tls = if args.ui_http { None } else { Some(state.pki.ui_config.clone()) };
     let ui = tokio::spawn(tls::serve(args.ui_addr, ui_tls, ui_router, stop.clone()));
     let agent_router = agent::router(state.clone());
