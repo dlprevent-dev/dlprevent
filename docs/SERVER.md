@@ -29,8 +29,8 @@ intervene — with the strict folder as the first exception. Decisions:
 ## Roles
 
 **Read only** may read the overview, alerts and access counts. Rules, agents,
-sources, groups, enrollment tokens, users, settings and the audit log are for
-**Admin** only — including through direct API calls.
+sources, groups, enrollment tokens, users and settings are for **Admin**
+only — including through direct API calls.
 
 Read-only may not close warnings and may not send learning instructions.
 Signing in, signing out, changing one's own password and setting up one's
@@ -143,8 +143,11 @@ own once it is on), **Notifications** (SMTP, sends on its own), **Assistant**
 (a language model, only on a click) and, under **Interfaces**, the release
 source it checks for new agent versions. Each has its own section below.
 
-**Audit log** — every change to the central server, with user and time. Never
-deleted.
+**Audit log** — every change to the central server is recorded with user and
+time, in the table `audit_log`, and never deleted. The page that shows and
+searches it belongs to the enterprise edition; on the open-source server read
+it with `psql`: `SELECT at, user_name, action, detail FROM audit_log ORDER BY
+id DESC LIMIT 100;`
 
 ## Docker
 
@@ -881,7 +884,6 @@ are marked *(admin)*. Bodies and responses are JSON.
 | `GET/POST /api/keys`, `DELETE /api/keys/{id}` | API keys *(admin)* |
 | `GET/PUT /api/settings` | settings *(admin)* |
 | `GET /api/notifications`, `POST /api/notifications/test` | state of the email sending; send a test email *(admin)* |
-| `GET /api/audit` | audit log *(admin)* |
 | `GET /api/binaries`, `GET/POST/DELETE /api/binaries/{platform}` | agent installers: list; download, upload, remove *(upload/remove: admin)* |
 
 The agent port (8444) speaks a separate, smaller protocol: `GET /agent/ca`

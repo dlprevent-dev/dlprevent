@@ -19,7 +19,7 @@ test('dashboard restricts administration and presents alarms separately from not
       assert.equal(verdictClass(verdict) === 'bad', alarm, `${verdict}: red badge`);
     }
     session.checked = true;
-    const restricted = ['/rules', '/agents', '/sources', '/users', '/settings', '/audit'];
+    const restricted = ['/rules', '/agents', '/sources', '/users', '/settings'];
     for (const role of ['viewer', 'admin']) {
       session.user = { id: 'test-user', name: 'Test', role, second_factor_required: false };
       for (const path of ['/', '/alerts', '/account', ...restricted]) {

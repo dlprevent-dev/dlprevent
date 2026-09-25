@@ -251,7 +251,8 @@ Ubuntu/Debian package.
   with — one entry, a selection, or everything the filter matches.
 - **Two-factor authentication:** TOTP or a passkey (WebAuthn), and you can
   require a second factor per role.
-- **Audit log:** who changed a rule, revoked an agent, closed an alert.
+- **Audit trail:** every change is recorded — who changed a rule, revoked an
+  agent, closed an alert. The page to read it is in the enterprise edition.
 - **Agents enrol with one command.** An administrator uploads the installer
   once, or lets the server fetch a signed release by itself; the command
   shown in the dashboard downloads it onto the device,
