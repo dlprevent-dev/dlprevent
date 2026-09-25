@@ -322,6 +322,18 @@ mod tests {
         format!("{}={token}", auth::COOKIE)
     }
 
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_account_from_an_identity_provider_brings_its_own_second_factor(pool: sqlx::PgPool) {
+        db::set_setting(&pool, "require_2fa_admin", json!(true)).await.unwrap();
+        let add = |name: &'static str, external: bool| {
+            sqlx::query_scalar::<_, Uuid>("INSERT INTO users (name, pw_hash, role, external) VALUES ($1, '', 'admin', $2) RETURNING id").bind(name).bind(external)
+        };
+        let local = add("local", false).fetch_one(&pool).await.unwrap();
+        let sso = add("sso", true).fetch_one(&pool).await.unwrap();
+        assert!(auth::second_factor_required(&pool, local).await.unwrap(), "the local admin still has to set one up");
+        assert!(!auth::second_factor_required(&pool, sso).await.unwrap(), "the identity provider did the second factor");
+    }
+
     async fn get(app: &Router, path: &str, cookie: &str) -> Response {
         app.clone().oneshot(Request::builder().uri(path).header(header::COOKIE, cookie).body(axum::body::Body::empty()).unwrap()).await.unwrap()
     }

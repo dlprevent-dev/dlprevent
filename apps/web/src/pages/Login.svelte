@@ -3,6 +3,7 @@
   import { session } from '../lib/session.svelte';
   import type { User } from '../lib/types';
   import Brand from '../lib/Brand.svelte';
+  import { login as LoginExtra } from '$extension';
   let { onlogin }: { onlogin: () => void } = $props();
   let name = $state('');
   let password = $state('');
@@ -74,6 +75,7 @@
       {#if passkeysSupported}
         <button class="btn" type="button" onclick={withPasskey} disabled={busy || !name.trim()} style="width:100%;justify-content:center;margin-top:8px" title={name.trim() ? '' : 'Enter your user name first'}>Sign in with a passkey</button>
       {/if}
+      {#if LoginExtra}<LoginExtra />{/if}
     </form>
   {/if}
 </div>

@@ -154,8 +154,9 @@ pub struct User {
 /// extractor builds it into its session query (one query per request stays
 /// one), the sign-in and the settings ask the same thing.
 pub const HAS_SECOND_FACTOR: &str = "(u.totp_secret IS NOT NULL OR EXISTS (SELECT 1 FROM passkeys p WHERE p.user_id = u.id))";
-/// The setting is called `require_2fa_<rolle>`.
-pub const SECOND_FACTOR_DEMANDED: &str = "COALESCE((SELECT value = 'true'::jsonb FROM settings WHERE key = 'require_2fa_' || u.role), false)";
+/// The setting is called `require_2fa_<rolle>`. Accounts from an identity
+/// provider (`external`) bring their second factor from there.
+pub const SECOND_FACTOR_DEMANDED: &str = "(NOT u.external AND COALESCE((SELECT value = 'true'::jsonb FROM settings WHERE key = 'require_2fa_' || u.role), false))";
 
 /// Mandatory for the role, but nothing set up.
 pub fn second_factor_missing_sql() -> String {
@@ -164,6 +165,21 @@ pub fn second_factor_missing_sql() -> String {
 
 pub async fn second_factor_required(pool: &sqlx::PgPool, id: Uuid) -> sqlx::Result<bool> {
     sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT {} FROM users u WHERE u.id = $1", second_factor_missing_sql()))).bind(id).fetch_one(pool).await
+}
+
+/// A new session for an account; back comes the value for the cookie
+/// ([`session_cookie`]). Every way in ends here — password, code, passkey,
+/// and whatever another build adds.
+pub async fn new_session(pool: &sqlx::PgPool, id: Uuid) -> sqlx::Result<String> {
+    let sid = random_token();
+    sqlx::query("INSERT INTO sessions (id, user_id, expires_at) VALUES ($1, $2, $3)")
+        .bind(sha256_hex(&sid))
+        .bind(id)
+        .bind(chrono::Utc::now() + chrono::Duration::hours(SESSION_HOURS))
+        .execute(pool)
+        .await?;
+    sqlx::query("UPDATE users SET last_login = now() WHERE id = $1").bind(id).execute(pool).await?;
+    Ok(sid)
 }
 
 /// One's own password once more — above all for what would let a foreign
