@@ -17,15 +17,6 @@ use sqlx::query::{Query, QueryAs};
 use sqlx::Postgres;
 use uuid::Uuid;
 
-/// Search terms: words, LIKE metacharacters defused, at most eight.
-pub fn search_terms(q: Option<&str>) -> Vec<String> {
-    q.unwrap_or("")
-        .split_whitespace()
-        .map(|w| format!("%{}%", w.to_lowercase().replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")))
-        .take(8)
-        .collect()
-}
-
 /// A value in binding order. Deliberately a small, closed list: what the
 /// API binds are filters and limits, nothing exotic.
 #[derive(Debug, Clone, PartialEq)]
@@ -204,15 +195,6 @@ impl ListQuery {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn terms_are_split_and_escaped() {
-        assert!(search_terms(None).is_empty());
-        assert!(search_terms(Some("   ")).is_empty());
-        assert_eq!(search_terms(Some("Hans GL")), vec!["%hans%", "%gl%"]);
-        assert_eq!(search_terms(Some("100%_x")), vec!["%100\\%\\_x%"]);
-        assert_eq!(search_terms(Some("a b c d e f g h i j")).len(), 8);
-    }
 
     const ALLOW: &[(&str, &str)] = &[("at", "coalesce(last_at, at)"), ("who", "lower(user_display)")];
 

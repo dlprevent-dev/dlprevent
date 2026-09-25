@@ -549,8 +549,7 @@ report → update). Instructions: `docs/SERVER.md`.
 - The interface `apps/web`: Svelte 5, Vite 8, TypeScript, no UI framework,
   built into `crates/deelpe-server/ui-dist` (rust-embed; read from disk in a
   debug build, `build.rs` puts a placeholder there). Pages: Overview, Alerts,
-  Rules, Agents (with tokens), Sources, Users, Settings (the audit log page
-  moved to the enterprise edition on 2026-09-25). Lockdown
+  Rules, Agents (with tokens), Sources, Users, Settings, Audit log. Lockdown
   and the AD lock can be set on a rule, but are marked "from Z3" and have no
   effect.
 - Packaging: `packaging/docker/Dockerfile` (node:24 → rust:1-trixie →

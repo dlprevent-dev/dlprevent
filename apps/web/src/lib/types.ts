@@ -89,6 +89,7 @@ export interface TotpSetup { secret: string; otpauth: string; qr_svg: string }
 export interface ApiKey { id: string; label: string; created_at: string; expires_at: string | null; last_used_at: string | null }
 /** Only the response to creation carries the plaintext — never again after. */
 export interface ApiKeyCreated extends ApiKey { key: string }
+export interface AuditRow { id: number; at: string; user_name: string; action: string; detail: unknown }
 export interface Overview {
   agents: number; agents_online: number; sources: number; rules: number; alerts_open: number; alerts_24h: number;
   recent: Alert[]; ca_fingerprint: string; server_started: string; api_version: number;

@@ -7,7 +7,7 @@
 use crate::auth::{self, bad, not_found, Admin, ApiError, User};
 use anyhow::anyhow;
 use crate::db::{self, AgentRow, AlertRow, RuleRow, SourceRow, AGENT_COLS, ALERT_COLS, RULE_COLS, SOURCE_COLS};
-use crate::sql::{order_by, search_terms, Binder, ListQuery};
+use crate::sql::{order_by, Binder, ListQuery};
 use crate::state::{PeerAddr, Shared};
 use axum::extract::{Path, Query, State};
 use axum::extract::Request;
@@ -27,6 +27,7 @@ mod agents;
 mod release;
 mod alerts;
 mod assist;
+mod audit;
 mod keys;
 mod notify;
 mod reputation;
@@ -93,6 +94,7 @@ pub fn router(state: Shared, extra: Router<Shared>) -> Router {
         .route("/api/settings", get(settings::settings).put(settings::update_settings))
         .route("/api/notifications", get(notify::notifications))
         .route("/api/notifications/test", post(notify::test))
+        .route("/api/audit", get(audit::audit))
         // Agent programs for download; its own router because of the larger
         // upper bound for uploads.
         .merge(crate::binaries::router())
@@ -123,6 +125,15 @@ async fn same_origin(State(st): State<Shared>, req: Request, next: Next) -> Resp
 /// rules and settings both need it.
 fn dtrue() -> bool {
     true
+}
+
+/// Search terms: words, LIKE metacharacters defused, at most eight.
+fn search_terms(q: Option<&str>) -> Vec<String> {
+    q.unwrap_or("")
+        .split_whitespace()
+        .map(|w| format!("%{}%", w.to_lowercase().replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")))
+        .take(8)
+        .collect()
 }
 
 #[cfg(test)]
@@ -204,6 +215,7 @@ mod tests {
             ("Passkey", account::PASSKEY_COLS, &[]),
             ("Token", agents::TOKEN_COLS, &[]),
             ("ApiKey", keys::KEY_COLS, &[]),
+            ("AuditRow", audit::AUDIT_COLS, &[]),
             ("Insight", crate::assist::INSIGHT_COLS, &[]),
         ];
         for (iface, cols, extra) in checks {
@@ -370,7 +382,7 @@ mod tests {
             assert_eq!(get(&app, path, "").await.status(), StatusCode::UNAUTHORIZED, "anonymous {path}");
         }
         let mut exposed = Vec::new();
-        for path in ["/api/settings", "/api/notifications", "/api/tokens", "/api/keys", "/api/users", "/api/assist", "/api/alerts/1/explain", "/api/rules", "/api/agents", "/api/sources", "/api/groups"] {
+        for path in ["/api/audit", "/api/settings", "/api/notifications", "/api/tokens", "/api/keys", "/api/users", "/api/assist", "/api/alerts/1/explain", "/api/rules", "/api/agents", "/api/sources", "/api/groups"] {
             let status = get(&app, path, &viewer).await.status();
             if status != StatusCode::FORBIDDEN {
                 exposed.push(format!("{path}: expected 403, got {status}"));
@@ -711,8 +723,8 @@ mod tests {
         assert_eq!(response_json(put(set.clone()).await).await["smtp_pass_set"], json!(true));
 
         // And it stands nowhere in the audit log.
-        let audit: Vec<String> = sqlx::query_scalar("SELECT detail::text FROM audit_log").fetch_all(&pool).await.unwrap();
-        assert!(!audit.concat().contains("geheim"), "das Passwort steht im Protokoll: {audit:?}");
+        let audit = response_json(get(&app, "/api/audit", &admin).await).await;
+        assert!(!audit.to_string().contains("geheim"), "das Passwort steht im Protokoll: {audit}");
 
         // A hyphen deletes.
         set["smtp_pass"] = json!("-");
@@ -800,7 +812,7 @@ mod tests {
         // themselves. `/api/binaries` only demands `User`, not `Admin`:
         // without the path list a key would have downloaded the agent program
         // with it, even though UI and manual promise „read alarms only".
-        for path in ["/api/users", "/api/settings", "/api/keys", "/api/binaries", "/api/binaries/windows"] {
+        for path in ["/api/users", "/api/settings", "/api/keys", "/api/audit", "/api/binaries", "/api/binaries/windows"] {
             assert_eq!(with_key(path).await.status(), StatusCode::FORBIDDEN, "{path}");
         }
         assert_eq!(
@@ -1153,5 +1165,14 @@ mod tests {
             }
         }
         assert!(seen >= 12, "Routen nicht gefunden, Test greift ins Leere ({seen})");
+    }
+
+    #[test]
+    fn terms_are_split_and_escaped() {
+        assert!(search_terms(None).is_empty());
+        assert!(search_terms(Some("   ")).is_empty());
+        assert_eq!(search_terms(Some("Hans GL")), vec!["%hans%", "%gl%"]);
+        assert_eq!(search_terms(Some("100%_x")), vec!["%100\\%\\_x%"]);
+        assert_eq!(search_terms(Some("a b c d e f g h i j")).len(), 8);
     }
 }

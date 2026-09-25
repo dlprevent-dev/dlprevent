@@ -18,7 +18,7 @@ mod mail;
 mod pki;
 mod release;
 mod retention;
-pub mod sql;
+mod sql;
 pub mod state;
 mod syslog;
 mod tls;

@@ -15,6 +15,7 @@
   import Sources from './pages/Sources.svelte';
   import Users from './pages/Users.svelte';
   import Settings from './pages/Settings.svelte';
+  import Audit from './pages/Audit.svelte';
   import Account from './pages/Account.svelte';
   import { pages as extraPages, banner as Banner } from '$extension';
 
@@ -37,7 +38,7 @@
   const groups = [
     { title: 'Monitoring', items: [['/', 'Overview', 'overview', false], ['/alerts', 'Alerts', 'alert', false]] },
     { title: 'Setup', items: [['/rules', 'Rules', 'rules', true], ['/agents', 'Agents', 'agents', true], ['/sources', 'Sources', 'sources', true]] },
-    { title: 'System', items: [['/users', 'Users', 'users', true], ['/settings', 'Settings', 'settings', true], ['/account', 'Account', 'key', false]] },
+    { title: 'System', items: [['/users', 'Users', 'users', true], ['/settings', 'Settings', 'settings', true], ['/audit', 'Audit log', 'audit', true], ['/account', 'Account', 'key', false]] },
     ...(extraPages.length ? [{ title: 'Enterprise', items: extraPages.map((p) => [p.path, p.label, p.icon, p.admin] as const) }] : []),
   ] as const;
   const extra = $derived(extraPages.find((p) => p.path === route.path));
@@ -106,6 +107,7 @@
       {:else if route.path === '/sources'}<Sources />
       {:else if route.path === '/users'}<Users />
       {:else if route.path === '/settings'}<Settings />
+      {:else if route.path === '/audit'}<Audit />
       {:else if extra}<extra.component />
       {:else}<div class="card pad empty"><b>Page not found</b><a href="/" onclick={(e) => nav_click(e, '/')}>Back to overview</a></div>{/if}
     </main>
