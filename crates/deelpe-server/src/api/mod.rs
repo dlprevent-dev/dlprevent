@@ -346,6 +346,16 @@ mod tests {
         assert!(!auth::second_factor_required(&pool, sso).await.unwrap(), "the identity provider did the second factor");
     }
 
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_account_from_an_identity_provider_does_not_sign_in_with_a_password(pool: sqlx::PgPool) {
+        sqlx::query("INSERT INTO users (name, pw_hash, role, external) VALUES ('anna', $1, 'admin', true)")
+            .bind(auth::hash_password("korrekt-und-lang-genug").unwrap()).execute(&pool).await.unwrap();
+        let app = with_peer(router(test_app(pool.clone()), Router::new()));
+        let r = send(&app, "POST", "/api/login", ("x-test", "1"), json!({ "name": "anna", "password": "korrekt-und-lang-genug" })).await;
+        assert_eq!(r.status(), StatusCode::UNAUTHORIZED, "a password set locally must not skip the provider");
+        assert!(r.headers().get(header::SET_COOKIE).is_none());
+    }
+
     async fn get(app: &Router, path: &str, cookie: &str) -> Response {
         app.clone().oneshot(Request::builder().uri(path).header(header::COOKIE, cookie).body(axum::body::Body::empty()).unwrap()).await.unwrap()
     }
