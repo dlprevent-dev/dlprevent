@@ -105,7 +105,7 @@
               {#if !u.totp_enabled && u.passkeys === 0}<span class="muted">–</span>{/if}
             </td>
             <td class="nowrap">
-              <button class="btn sm ghost" onclick={() => openPw(u)}><Icon name="key" size={14} /> Password</button>
+              {#if !u.external}<button class="btn sm ghost" onclick={() => openPw(u)}><Icon name="key" size={14} /> Password</button>{/if}
               {#if u.totp_enabled || u.passkeys > 0}<button class="btn sm ghost" onclick={() => resetSecond(u)} title="Reset second factor"><Icon name="refresh" size={14} /> Reset 2FA</button>{/if}
               {#if u.id !== session.user?.id}<button class="btn sm ghost danger" onclick={() => remove(u)} title="Delete" aria-label="Delete"><Icon name="trash" size={14} /></button>{/if}
             </td>
