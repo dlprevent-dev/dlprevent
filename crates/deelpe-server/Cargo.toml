@@ -51,10 +51,13 @@ qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 # Passkeys (WebAuthn). Pulls OpenSSL in dynamically: runtime image and .deb
 # need libssl3.
 webauthn-rs = "0.5"
-# AbuseIPDB queries. `rustls-no-provider`: the provider is already in place
-# (ring, installed in main.rs) — with the full package reqwest would drag
+# AbuseIPDB queries and the identity provider. `rustls-no-provider`: the
+# provider is already in place (ring, installed in main.rs) — with the full package reqwest would drag
 # aws-lc-rs in and the build image would need cmake.
-reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "json"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "json", "form"] }
+# Single sign-on: ID token payload and PKCE. Already in the tree by way of
+# webauthn-rs.
+base64 = "0.22"
 lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "builder", "tokio1", "tokio1-rustls-tls", "hostname"] }
 chrono-tz = { version = "0.10.4", default-features = false, features = ["std"] }
 

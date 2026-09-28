@@ -88,7 +88,7 @@ And one add-on, for a Linux host that runs an **AI agent** (Hermes):
   [docs/HERMES.md](docs/HERMES.md).
 
 For larger organisations, an **[enterprise edition](#enterprise-edition)**
-adds single sign-on, four-eyes approval, legal hold, a tamper-evident audit
+adds four-eyes approval, legal hold, a tamper-evident audit
 chain, SIEM and ticket connectors, and compliance reports.
 
 **Language:** English throughout — app, dashboard, command line, protocol,
@@ -255,6 +255,11 @@ Ubuntu/Debian package.
   with — one entry, a selection, or everything the filter matches.
 - **Two-factor authentication:** TOTP or a passkey (WebAuthn), and you can
   require a second factor per role.
+- **Single sign-on:** Microsoft Entra ID, Okta, Keycloak or any OpenID
+  Connect provider. Groups at the provider decide who is administrator and
+  who reads only; the provider's MFA replaces the local second factor.
+  Users are added and removed at the provider, and a local account is never
+  taken over by a sign-in of the same name.
 - **Audit log:** who changed a rule, revoked an agent, closed an alert.
 - **Agents enrol with one command.** An administrator uploads the installer
   once, or lets the server fetch a signed release by itself; the command
@@ -308,28 +313,19 @@ the network from a program that has read from a strict folder. In **Firefox**
 ## Enterprise edition
 
 The free edition fully protects one company: detection, blocking, the
-network cage, agents on all platforms, self-update, 2FA and passkeys, the
-audit log, email, API keys, AI Explain and every security fix stay free, and
-nothing that is in this repository moves behind a license. The enterprise
-edition adds what only larger organisations need: identity, compliance,
+network cage, agents on all platforms, self-update, 2FA and passkeys, single
+sign-on, the audit log, email, API keys, AI Explain and every security fix
+stay free, and nothing that is in this repository moves behind a license.
+The enterprise edition adds what only larger organisations need: compliance,
 control and integration.
 
 | Module | What you get |
 |---|---|
-| **Single sign-on** | Sign-in through Microsoft Entra ID, Okta, Keycloak or any OpenID Connect provider. Groups at the provider decide who is administrator and who reads only; the provider's MFA replaces the local second factor. |
 | **Four-eyes approval** | Rule changes, revoking or deleting agents, user management, installing a license and changing single sign-on wait until a second administrator approves. Nobody approves their own change. |
 | **Legal hold** | Alerts under investigation, with a reason such as the case number, are never deleted by retention — not even after the license ends. |
 | **Audit integrity** | Every audit entry is sealed in a hash chain; one click names every entry that was changed, deleted or slipped in afterwards, and each sealed entry goes to your SIEM. |
 | **Connectors** | Alarms pushed to Splunk, Elastic, Microsoft Sentinel, syslog (Wazuh, QRadar, Graylog), a Jira issue, a ServiceNow or TOPdesk incident, or a signed webhook — queued with the alert, retried until delivered. |
 | **Compliance reports** | Per period: alarms with how fast and by whom they were closed, access to protected folders, administrative changes and the audit chain — evidence for ISO 27001 (A.8.12, A.8.15, A.5.24ff), nDSG/DSV and FINMA Circular 2023/1. Printable as PDF, as CSV, and monthly by e-mail. |
-
-**Single sign-on, day to day.** Users are added at the identity provider,
-not in the dashboard: whoever is in the administrator or the allowed group
-gets an account on their first sign-in, with the role their group gives.
-Moving someone to the other group changes the role at their next sign-in;
-removing them at the provider ends their access, since these accounts cannot
-sign in with a local password or passkey. A local account is never taken
-over by a sign-in of the same name.
 
 **How it is licensed.** The enterprise server is a drop-in for the
 open-source image: same database, same ports, same agents. The license is a
@@ -359,7 +355,8 @@ customers reach support at support@dlprevent.ch.
   Planned: an operator role between the two, and a scope per agent or agent
   group instead of all-or-nothing.
 - **SAML 2.0 and LDAP** for single sign-on against on-premises Active
-  Directory, next to OpenID Connect (enterprise edition).
+  Directory (enterprise edition), next to the OpenID Connect that every
+  edition has.
 
 ## License
 

@@ -76,6 +76,41 @@ are in the audit log (`second_factor_reset`, `password_change`).
 Failed codes and refused passkeys count towards the same lockout as wrong
 passwords: ten failures from one address, one minute pause.
 
+### Single sign-on
+
+Under **System → Single sign-on** an administrator connects an OpenID
+Connect provider: Microsoft Entra ID, Okta, Keycloak, Authentik, ADFS, or
+anything else with a discovery document. The page shows the redirect URI to
+register there (`https://<dashboard>/api/sso/callback`); issuer, client ID
+and secret come back from the provider. Once it is set up, the sign-in page
+offers "Sign in with single sign-on".
+
+- **Users are added at the provider**, not in the dashboard: whoever is in
+  the administrator group or the allowed group gets an account on their
+  first sign-in, with the role their group gives. An empty allowed group
+  lets in everyone the provider lets through, as read only; an empty
+  administrator group makes nobody an administrator this way.
+- **The role follows the groups on every sign-in.** Moving someone to the
+  other group changes the role at their next sign-in.
+- **These accounts sign in at the provider only.** A password, code or
+  passkey is refused for them, and the provider's MFA replaces the local
+  second factor. Removing someone at the provider ends their access; the
+  Users page shows them as "Single sign-on".
+- **A local account is never taken over** by a provider sign-in of the same
+  name, and an account is bound to the provider's subject (`sub`), not to
+  the name, which can change and be handed on.
+
+Entra ID sends group object IDs, not names: put the IDs in, and add the
+groups claim under Token configuration. For a provider whose certificate
+comes from your own CA (an on-premises Keycloak or ADFS), paste that CA
+under "Provider's CA certificate". A Keycloak to try it against in one
+command: `lab/keycloak/setup.sh <dashboard-url> <keycloak-host>`.
+
+Set up single sign-on in the enterprise edition before 2026-09-28? Its
+configuration and accounts carry over, but the redirect URI moved from
+`/api/enterprise/sso/callback` to `/api/sso/callback`: register the new one
+at the provider, or its sign-ins are refused.
+
 An **API key** is a read-only account without a browser: see
 [API keys](#api-keys-for-a-siem-or-a-script).
 
@@ -142,6 +177,8 @@ one of them is off from the factory: **Reputation** (AbuseIPDB, asks on its
 own once it is on), **Notifications** (SMTP, sends on its own), **Assistant**
 (a language model, only on a click) and, under **Interfaces**, the release
 source it checks for new agent versions. Each has its own section below.
+
+**Single sign-on** — the identity provider (see "Single sign-on").
 
 **Audit log** — every change to the central server, with user and time. Never
 deleted.
@@ -883,6 +920,8 @@ are marked *(admin)*. Bodies and responses are JSON.
 | `GET/PUT /api/settings` | settings *(admin)* |
 | `GET /api/notifications`, `POST /api/notifications/test` | state of the email sending; send a test email *(admin)* |
 | `GET /api/audit` | audit log *(admin)* |
+| `GET/PUT /api/sso`, `POST /api/sso/test` | single sign-on: the provider's configuration (the secret is written, never read back) and a check of its discovery document *(admin)* |
+| `GET /api/sso/available`, `GET /api/sso/start`, `GET /api/sso/callback` | the sign-in through the provider: whether it is set up, off to the provider, back from it (public) |
 | `GET /api/binaries`, `GET/POST/DELETE /api/binaries/{platform}` | agent installers: list; download, upload, remove *(upload/remove: admin)* |
 
 The agent port (8444) speaks a separate, smaller protocol: `GET /agent/ca`

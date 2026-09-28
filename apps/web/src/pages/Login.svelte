@@ -3,7 +3,7 @@
   import { session } from '../lib/session.svelte';
   import type { User } from '../lib/types';
   import Brand from '../lib/Brand.svelte';
-  import { login as LoginExtra } from '$extension';
+  import { onMount } from 'svelte';
   let { onlogin }: { onlogin: () => void } = $props();
   let name = $state('');
   let password = $state('');
@@ -14,6 +14,11 @@
    *  token binds the second step to the first; without a code it is worth
    *  nothing. */
   let totpToken = $state('');
+  /** Offered once an administrator has set it up; the server decides. */
+  let sso = $state(false);
+  onMount(async () => {
+    try { sso = (await api<{ enabled: boolean }>('/api/sso/available')).enabled; } catch { /* no button */ }
+  });
 
   async function submit(e: Event) {
     e.preventDefault();
@@ -75,7 +80,9 @@
       {#if passkeysSupported}
         <button class="btn" type="button" onclick={withPasskey} disabled={busy || !name.trim()} style="width:100%;justify-content:center;margin-top:8px" title={name.trim() ? '' : 'Enter your user name first'}>Sign in with a passkey</button>
       {/if}
-      {#if LoginExtra}<LoginExtra />{/if}
+      {#if sso}
+        <a class="btn" href="/api/sso/start" style="width:100%;justify-content:center;margin-top:8px">Sign in with single sign-on</a>
+      {/if}
     </form>
   {/if}
 </div>
