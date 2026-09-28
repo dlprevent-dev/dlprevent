@@ -354,9 +354,8 @@ customers reach support at support@dlprevent.ch.
   or read only, for the whole server ([SERVER.md](docs/SERVER.md#roles)).
   Planned: an operator role between the two, and a scope per agent or agent
   group instead of all-or-nothing.
-- **SAML 2.0 and LDAP** for single sign-on against on-premises Active
-  Directory (enterprise edition), next to the OpenID Connect that every
-  edition has.
+- **LDAP** for signing in against on-premises Active Directory (enterprise
+  edition), next to the OpenID Connect single sign-on that every edition has.
 
 ## License
 
