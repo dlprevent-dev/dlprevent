@@ -35,6 +35,7 @@ mod rules;
 mod session;
 mod settings;
 mod sources;
+mod sso;
 mod users;
 
 type R<T> = Result<Json<T>, ApiError>;
@@ -95,6 +96,12 @@ pub fn router(state: Shared, extra: Router<Shared>) -> Router {
         .route("/api/notifications", get(notify::notifications))
         .route("/api/notifications/test", post(notify::test))
         .route("/api/audit", get(audit::audit))
+        .route("/api/sso", get(sso::get).put(sso::put))
+        .route("/api/sso/test", post(sso::test))
+        // The sign-in itself: public, like /api/login.
+        .route("/api/sso/available", get(sso::available))
+        .route("/api/sso/start", get(sso::start))
+        .route("/api/sso/callback", get(sso::callback))
         // Agent programs for download; its own router because of the larger
         // upper bound for uploads.
         .merge(crate::binaries::router())
@@ -376,6 +383,26 @@ mod tests {
         assert_eq!(r.status(), StatusCode::BAD_REQUEST, "it could never be used to sign in");
         let (hash,): (String,) = sqlx::query_as("SELECT pw_hash FROM users WHERE id = $1").bind(anna).fetch_one(&pool).await.unwrap();
         assert_eq!(hash, "");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn single_sign_on_is_set_up_by_an_administrator_and_offered_once_it_is(pool: sqlx::PgPool) {
+        let app = router(test_app(pool.clone()), Router::new());
+        let enabled = |app: Router| async move { response_json(get(&app, "/api/sso/available", "").await).await["enabled"].clone() };
+        assert_eq!(enabled(app.clone()).await, false, "no button before it is set up");
+        let viewer = test_session(&pool, "viewer").await;
+        assert_eq!(get(&app, "/api/sso", &viewer).await.status(), StatusCode::FORBIDDEN);
+
+        let admin = test_session(&pool, "admin").await;
+        let cfg = json!({ "issuer": "https://idp.example.ch/realms/x/", "client_id": "dlp", "secret": "s3cret", "admin_group": "dlp-admins" });
+        let r = send_h(&app, "PUT", "/api/sso", &[(header::COOKIE.as_str(), &admin), ("host", "dlp.example.ch")], cfg).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        let v = response_json(r).await;
+        assert_eq!(v["issuer"], "https://idp.example.ch/realms/x", "trailing slash trimmed");
+        assert_eq!(v["secret_set"], true);
+        assert!(v.get("client_secret").is_none(), "the secret never leaves the server");
+        assert_eq!(v["redirect_uri"], "http://dlp.example.ch/api/sso/callback");
+        assert_eq!(enabled(app).await, true);
     }
 
     async fn get(app: &Router, path: &str, cookie: &str) -> Response {
