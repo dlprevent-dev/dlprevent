@@ -267,12 +267,16 @@ Two things, and the first matters more:
 - **The database** — warnings, rules, users, agent list.
 
 Write both **outside the checkout**. A dump holds every warning, rule, user
-and agent; the checkout is a git repository on a shared server, and a stray
-`git add -A` would publish it. `BACKUP` below is any directory that is not
-the repository — `.gitignore` also covers `*.sql.gz`, but do not rely on it.
+and agent — with the users' password hashes and second-factor secrets, and
+employees' names, files and destinations. The checkout is a git repository
+on a shared server and the Docker build context: a stray `git add -A` would
+publish the dump, a build would carry it along. `BACKUP` below is any
+directory that is not the repository — `.gitignore` and `.dockerignore` also
+cover `*.sql.gz`, but do not rely on them.
 
 ```bash
 BACKUP=/var/backups/deelpe   # not the checkout
+umask 077                    # readable by nobody else
 mkdir -p "$BACKUP"
 
 # Docker
