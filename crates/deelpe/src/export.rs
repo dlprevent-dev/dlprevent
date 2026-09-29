@@ -31,12 +31,39 @@ pub fn csv(alerts: &[Alert]) -> String {
 }
 
 /// RFC 4180: fields containing a comma, a quote or a line break get
-/// quoted, and inner quotes get doubled.
+/// quoted, and inner quotes get doubled. A `;` or TAB is quoted too.
+///
+/// Quoting does not stop a spreadsheet from evaluating a cell that starts
+/// with `=`, `+`, `-`, `@`, TAB or CR, and file names are attacker input. Such
+/// a cell gets a leading `'`, which every spreadsheet reads as "text". A BOM,
+/// zero-width character or space in front does not hide the trigger (an
+/// import may trim spaces).
+///
+/// The same holds after every `;`, TAB and line break inside the value: a
+/// spreadsheet set to `;` (the default list separator in a Swiss or German
+/// locale) or TAB splits the row there, and it only honours a quote at the
+/// start of a field, so our quotes around a later cell do not hold it
+/// together. What follows the split is a new cell and gets the same check.
 fn csv_field(s: &str) -> String {
-    if s.contains([',', '"', '\n', '\r']) {
+    let mut out = String::with_capacity(s.len() + 1);
+    let mut mark = Some(0);
+    for c in s.chars() {
+        if let Some(m) = mark.filter(|_| !matches!(c, '\u{feff}' | '\u{200b}' | '\u{200c}' | '\u{200d}' | ' ')) {
+            if matches!(c, '=' | '+' | '-' | '@' | '\t' | '\r') {
+                out.insert(m, '\'');
+            }
+            mark = None;
+        }
+        out.push(c);
+        if matches!(c, ';' | '\t' | '\n' | '\r') {
+            mark = Some(out.len());
+        }
+    }
+    let s = out;
+    if s.contains([',', '"', '\n', '\r', ';', '\t']) {
         format!("\"{}\"", s.replace('"', "\"\""))
     } else {
-        s.to_string()
+        s
     }
 }
 
