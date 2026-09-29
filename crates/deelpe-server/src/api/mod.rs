@@ -693,14 +693,14 @@ mod tests {
         // Away from the defaults, every field to a value of its own. The
         // secrets stay out of it: they deliberately never come back. Likewise
         // what the server merely *reports* and does not accept: `…_set`,
-        // whether a secret is on file, and `…_built_in`, whether a value was
+        // whether a secret is on file, `…_built_in`, whether a value was
         // already fixed at compile time and therefore cannot be stored at
-        // all.
+        // all, and `alert_retain_max_days`, the build's limit.
         let secrets = ["smtp_pass", "abuseipdb_key", "assist_key"];
         let obj = set.as_object_mut().expect("Einstellungen sind ein Objekt");
         let mut n = 0i64;
         for (k, v) in obj.iter_mut() {
-            if secrets.contains(&k.as_str()) || k.ends_with("_set") || k.ends_with("_built_in") || k == "config_generation" {
+            if secrets.contains(&k.as_str()) || k.ends_with("_set") || k.ends_with("_built_in") || k == "config_generation" || k == "alert_retain_max_days" {
                 continue;
             }
             n += 1;
@@ -749,6 +749,47 @@ mod tests {
             assert_eq!(&saved[k], want, "{k} kam aus dem Speichern anders zurueck");
             assert_eq!(&reloaded[k], want, "{k} ueberlebt das erneute Laden nicht");
         }
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    /// Ten years here; a build may allow more. A value above the limit that
+    /// is already stored is the limit: a license that lapsed must not force
+    /// anyone to cut short a record that already runs longer, nor keep them
+    /// from shortening it a little.
+    async fn alert_retention_stops_where_the_build_says(pool: sqlx::PgPool) {
+        let admin = test_session(&pool, "admin").await;
+        let with_max = |max: fn() -> i64| {
+            let mut st = std::sync::Arc::try_unwrap(test_app(pool.clone())).ok().expect("nobody else holds it");
+            st.alert_retain_max_days = max;
+            router(std::sync::Arc::new(st), Router::new())
+        };
+        let put = |app: Router, days: i64| {
+            let admin = admin.clone();
+            async move {
+                let mut set = response_json(get(&app, "/api/settings", &admin).await).await;
+                set["alert_retain_days"] = json!(days);
+                send(&app, "PUT", "/api/settings", (header::COOKIE.as_str(), &admin), set).await.status()
+            }
+        };
+
+        let oss = with_max(|| crate::state::ALERT_RETAIN_MAX_DAYS);
+        let s = response_json(get(&oss, "/api/settings", &admin).await).await;
+        assert_eq!(s["alert_retain_max_days"], json!(3650));
+        assert_eq!(s["alert_retain_days"], json!(730), "two years by default");
+        assert_eq!(put(oss.clone(), 3650).await, StatusCode::OK);
+        assert_eq!(put(oss.clone(), 3651).await, StatusCode::BAD_REQUEST);
+
+        let longer = with_max(|| 36_500);
+        assert_eq!(response_json(get(&longer, "/api/settings", &admin).await).await["alert_retain_max_days"], json!(36_500));
+        assert_eq!(put(longer.clone(), 7300).await, StatusCode::OK);
+        assert_eq!(put(longer, 36_501).await, StatusCode::BAD_REQUEST);
+
+        assert_eq!(response_json(get(&oss, "/api/settings", &admin).await).await["alert_retain_max_days"], json!(7300), "the dashboard lets it be saved");
+        assert_eq!(put(oss.clone(), 7300).await, StatusCode::OK, "unchanged, it stays");
+        assert_eq!(put(oss.clone(), 7301).await, StatusCode::BAD_REQUEST, "but it cannot grow");
+        assert_eq!(put(oss.clone(), 5000).await, StatusCode::OK, "it can shrink");
+        assert_eq!(put(oss.clone(), 7300).await, StatusCode::BAD_REQUEST, "and not grow back");
+        assert_eq!(put(oss, 29).await, StatusCode::BAD_REQUEST);
     }
 
     #[sqlx::test(migrations = "./migrations")]

@@ -67,6 +67,9 @@ years. The other tables clean themselves up long before they matter: the
 agent log (about 0.45 KB per line) after 14 days, the access counts after 30.
 If the estimate comes out uncomfortable, shorten the retention rather than
 buying disk — but check first whether the warnings are needed as evidence.
+The open-source server keeps them for at most ten years (3650 days); the
+enterprise edition allows longer, for a company that has to keep its record
+for ten years or more.
 
 **The build machine is not the server.** Building needs Rust and Node and
 about 25 GB: `target/release` alone is 1.2 GB, the rest is the crate registry

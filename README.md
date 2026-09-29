@@ -50,7 +50,8 @@ and, in the places where it matters most, to make the answer *"nothing did"*.
   pieces to stay under a threshold: all the same shape, all caught.
 - **A record you can hand to a lawyer.** Every alert is kept, with its chain,
   its timestamps and its destination — for as long as you set, two years by
-  default on the central server. The difference between a notification
+  default on the central server and up to ten, longer with the
+  [enterprise edition](#enterprise-edition). The difference between a notification
   obligation you can fulfil and one you can only apologise for is this
   record.
 - **A folder that really is closed.** Declare a folder strict and nothing may
@@ -88,8 +89,9 @@ And one add-on, for a Linux host that runs an **AI agent** (Hermes):
   [docs/HERMES.md](docs/HERMES.md).
 
 For larger organisations, an **[enterprise edition](#enterprise-edition)**
-adds four-eyes approval, legal hold, a tamper-evident audit
-chain, SIEM and ticket connectors, and compliance reports.
+adds four-eyes approval, legal hold, alert retention past ten years, a
+tamper-evident audit chain, SIEM and ticket connectors, and compliance
+reports.
 
 **Language:** English throughout — app, dashboard, command line, protocol,
 this documentation and the comments in the source.
@@ -323,6 +325,7 @@ control and integration.
 | Module | What you get |
 |---|---|
 | **Four-eyes approval** | Rule changes, revoking or deleting agents, user management, installing a license and changing single sign-on wait until a second administrator approves. Nobody approves their own change. |
+| **A record you can hand to a lawyer** | Every alert is kept with its chain, its timestamps and its destination, for as long as you set: two years by default on the central server, and past the free edition's ten years for as long as your company has to keep it. A longer retention stays when the license ends. The difference between a notification obligation you can fulfil and one you can only apologise for is this record. |
 | **Legal hold** | Alerts under investigation, with a reason such as the case number, are never deleted by retention — not even after the license ends. |
 | **Audit integrity** | Every audit entry is sealed in a hash chain; one click names every entry that was changed, deleted or slipped in afterwards, and each sealed entry goes to your SIEM. |
 | **Connectors** | Alarms pushed to Splunk, Elastic, Microsoft Sentinel, syslog (Wazuh, QRadar, Graylog), a Jira issue, a ServiceNow or TOPdesk incident, or a signed webhook — queued with the alert, retried until delivered. |

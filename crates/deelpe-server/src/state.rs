@@ -109,7 +109,14 @@ pub struct AppState {
     /// and `mail`: it describes the running process. Which version was
     /// really fetched stands in `settings`.
     pub release: Mutex<crate::release::Status>,
+    /// The longest alert retention an administrator may set, in days. Asked
+    /// on every save: a license can come and go while the server runs.
+    pub alert_retain_max_days: fn() -> i64,
 }
+
+/// Ten years of alerts. A build that keeps a company's record for longer
+/// raises it through `Extension::alert_retain_max_days`.
+pub const ALERT_RETAIN_MAX_DAYS: i64 = 3650;
 
 impl AppState {
     pub fn new(pool: PgPool, pki: Arc<Pki>, ui_https: bool, agent_port: u16, trust_proxy: bool, data_dir: std::path::PathBuf) -> Self {
@@ -128,6 +135,7 @@ impl AppState {
             agent_settings: Mutex::new(None),
             binary_sha: Mutex::new(HashMap::new()),
             release: Mutex::new(Default::default()),
+            alert_retain_max_days: || ALERT_RETAIN_MAX_DAYS,
         }
     }
 

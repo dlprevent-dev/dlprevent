@@ -60,6 +60,9 @@ pub struct Extension {
     /// Around the dashboard, e.g. to hold a change for a second person's
     /// approval.
     pub wrap: Option<Wrap>,
+    /// The longest alert retention, in days, in place of
+    /// [`state::ALERT_RETAIN_MAX_DAYS`].
+    pub alert_retain_max_days: Option<fn() -> i64>,
 }
 
 #[derive(Parser, Debug)]
@@ -119,7 +122,11 @@ pub async fn run(ext: Extension) -> Result<()> {
         warn!("Change it after signing in (Users -> Password).");
     }
     let stop = CancellationToken::new();
-    let state = Arc::new(state::AppState::new(pool.clone(), Arc::new(pki), !args.ui_http, args.agent_addr.port(), args.trust_proxy, args.data_dir.clone()));
+    let mut state = state::AppState::new(pool.clone(), Arc::new(pki), !args.ui_http, args.agent_addr.port(), args.trust_proxy, args.data_dir.clone());
+    if let Some(max) = ext.alert_retain_max_days {
+        state.alert_retain_max_days = max;
+    }
+    let state = Arc::new(state);
 
     let syslog = tokio::spawn(syslog::run(state.clone(), args.syslog_addr, stop.clone()));
     let retention = tokio::spawn(retention::run(state.clone(), stop.clone()));

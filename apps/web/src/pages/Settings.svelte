@@ -224,10 +224,10 @@
         <fieldset class="fset">
           <legend>Retention</legend>
           <div class="row">
-            <div class="field" style="margin-bottom:0"><label for="ar">Alerts (days)</label><input id="ar" type="number" min="30" max="3650" bind:value={s.alert_retain_days} disabled={!admin} /></div>
+            <div class="field" style="margin-bottom:0"><label for="ar">Alerts (days)</label><input id="ar" type="number" min="30" max={s.alert_retain_max_days} bind:value={s.alert_retain_days} disabled={!admin} /></div>
             <div class="field" style="margin-bottom:0"><label for="cr">Counts (days)</label><input id="cr" type="number" min="1" max="365" bind:value={s.count_retain_days} disabled={!admin} /></div>
           </div>
-          <div class="hint">Alerts are the evidence and are kept for a long time; the hourly counts only feed the overview.</div>
+          <div class="hint">Alerts are the evidence: each is kept with its process chain, its timestamps and its destination, 30 to {s.alert_retain_max_days} days, two years by default. How long your record has to be kept is for your company and its lawyers to say. The hourly counts only feed the overview.</div>
         </fieldset>
 
       {:else if tab === 'interfaces'}
