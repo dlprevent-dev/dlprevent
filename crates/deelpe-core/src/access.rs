@@ -155,7 +155,7 @@ impl AccessMeter {
         let window_files = w.entries.iter().map(|(_, f, _)| f.as_str()).collect::<HashSet<_>>().len() as u32;
         // Sum over the window, not over all time: otherwise it grows
         // without bound per user and the alert names a wrong amount.
-        let window_bytes = w.entries.iter().map(|(_, _, b)| *b).sum();
+        let window_bytes = w.entries.iter().fold(0u64, |s, (_, _, b)| s.saturating_add(*b));
 
         let day = now.date_naive();
         let prof = self.profiles.entry(user_key.to_string()).or_insert_with(|| Profile {
@@ -216,6 +216,12 @@ impl AccessMeter {
 
     pub fn user_count(&self) -> usize {
         self.profiles.len()
+    }
+
+    /// Whether `user` already has state under the rule `rule_id` — so that
+    /// a caller capping `user_count` still admits the users it follows.
+    pub fn tracks(&self, rule_id: &str, user: &UserRef) -> bool {
+        self.profiles.contains_key(&format!("{}|{}", rule_id, user.key()))
     }
 }
 
@@ -309,8 +315,10 @@ impl Aggregator {
             files: 0,
             bytes: 0,
         });
-        entry.files += 1;
-        entry.bytes += bytes;
+        // The byte count can come from an untrusted syslog line: saturate,
+        // an overflow killed the intake (debug) or wrapped (release).
+        entry.files = entry.files.saturating_add(1);
+        entry.bytes = entry.bytes.saturating_add(bytes);
 
         let skey = format!("{}|{}", rule.id, ukey);
         let s = self.samples.entry(skey.clone()).or_default();
@@ -568,6 +576,19 @@ mod tests {
         a.clear_counts();
         a.observe(&mut m, &r, &user("hans"), "/volume1/GL/d.xlsx", 0, None, now);
         assert_eq!((a.counts()[0].files, a.counts()[0].bytes), (1, 0));
+    }
+
+    /// Sizes can come from an untrusted syslog line: the sums saturate.
+    #[test]
+    fn byte_sums_saturate() {
+        let mut a = Aggregator::new();
+        let mut m = AccessMeter::new(t("2026-09-01T00:00:00Z"));
+        let r = rule("r1", 1);
+        let now = t("2026-09-06T10:00:30Z");
+        a.observe(&mut m, &r, &user("hans"), "/volume1/GL/a", u64::MAX, None, now);
+        let alert = a.observe(&mut m, &r, &user("hans"), "/volume1/GL/b", u64::MAX, None, now).unwrap();
+        assert_eq!(alert.bytes, u64::MAX);
+        assert_eq!(a.counts()[0].bytes, u64::MAX);
     }
 
     /// An alert carries sample files and the same `external_id` for as

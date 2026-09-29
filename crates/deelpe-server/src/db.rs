@@ -494,9 +494,12 @@ pub struct SourceRow {
     pub last_seen: Option<DateTime<Utc>>,
     pub lines: i64,
     pub unparsed: i64,
+    /// Lines of an unconfirmed source are counted, nothing more: no access
+    /// counts, no alerts (syslog is unauthenticated).
+    pub confirmed: bool,
 }
 
-pub const SOURCE_COLS: &str = "id, name, kind, address, first_seen, last_seen, lines, unparsed";
+pub const SOURCE_COLS: &str = "id, name, kind, address, first_seen, last_seen, lines, unparsed, confirmed";
 
 #[derive(Debug, Clone, FromRow, Serialize)]
 pub struct AlertRow {
@@ -621,7 +624,7 @@ pub async fn upsert_access_alert(pool: &PgPool, origin: Origin, origin_name: &st
         .bind(Option::<String>::None)
         .bind(serde_json::to_value(&a.sample_files)?)
         .bind(a.files as i32)
-        .bind(a.bytes as i64)
+        .bind(i64::try_from(a.bytes).unwrap_or(i64::MAX))
         .bind(a.client_ip.clone())
         .bind(a.verdict.label())
         .bind(a.reason.clone())
@@ -666,7 +669,8 @@ fn merge_counts(counts: &[CountBucket]) -> Vec<CountRow> {
         // apart (or the other way round).
         let bucket = c.bucket.with_second(0).and_then(|t| t.with_nanosecond(0)).unwrap_or(c.bucket);
         let rule_id = c.rule_id.as_deref().and_then(|s| Uuid::parse_str(s).ok());
-        let (files, bytes) = (c.files as i32, c.bytes as i64);
+        // Clamped, not cast: a saturated u64 became -1 in the table.
+        let (files, bytes) = (i32::try_from(c.files).unwrap_or(i32::MAX), i64::try_from(c.bytes).unwrap_or(i64::MAX));
         match merged.entry((c.path.clone(), c.user.key(), bucket)) {
             std::collections::btree_map::Entry::Occupied(mut e) => {
                 let row = e.get_mut();
@@ -918,6 +922,13 @@ mod tests {
         // truncated.
         assert_eq!(rows[0].rule_id, Some(Uuid::parse_str(id).unwrap()));
         assert_eq!(rows[0].bucket.to_rfc3339(), "2026-09-10T10:00:00+00:00");
+    }
+
+    /// A saturated count stays the largest number, it does not turn negative.
+    #[test]
+    fn a_saturated_count_is_not_stored_negative() {
+        let rows = merge_counts(&[count("GL", "hans", "2026-09-10T10:00:05Z", u32::MAX, u64::MAX, None)]);
+        assert_eq!((rows[0].files, rows[0].bytes), (i32::MAX, i64::MAX));
     }
 
     /// The bundled statement itself: types, a NULL in the id column and a

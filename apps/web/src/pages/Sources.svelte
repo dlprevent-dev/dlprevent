@@ -33,8 +33,12 @@
     if (!editing) return;
     try { await api(`/api/sources/${editing.id}`, { method: 'PUT', body: { name: editing.name, kind: editing.kind } }); notify('Saved'); editing = null; load(); } catch (err) { notify((err as Error).message, true); }
   }
+  async function confirmSource(s: Source) {
+    if (!(await ask({ title: 'Confirm source', body: `Is "${s.name}" at ${s.address} one of your devices?`, detail: 'Syslog is not authenticated. Once confirmed, lines from this address raise alerts.', confirmLabel: 'Confirm' }))) return;
+    try { await api(`/api/sources/${s.id}`, { method: 'PUT', body: { name: s.name, kind: s.kind, confirmed: true } }); notify('Confirmed'); load(); } catch (err) { notify((err as Error).message, true); }
+  }
   async function remove(s: Source) {
-    if (!(await ask({ title: 'Delete source', body: `"${s.name}" disappears from the list.`, detail: 'It comes back by itself with the next syslog packet from that address. Its alerts stay.', confirmLabel: 'Delete', danger: true }))) return;
+    if (!(await ask({ title: 'Delete source', body: `"${s.name}" disappears from the list.`, detail: 'It comes back unconfirmed with the next syslog packet from that address. Its alerts stay.', confirmLabel: 'Delete', danger: true }))) return;
     try { await api(`/api/sources/${s.id}`, { method: 'DELETE' }); load(); } catch (err) { notify((err as Error).message, true); }
   }
 </script>
@@ -56,7 +60,7 @@
     <div class="empty">
       <span class="ico"><Icon name={sources.length ? 'search' : 'sources'} size={26} /></span>
       <b>{sources.length ? 'Nothing found' : 'No source seen yet'}</b>
-      <span>{sources.length ? 'Try other words.' : 'As soon as the first syslog packet arrives, the device shows up here.'}</span>
+      <span>{sources.length ? 'Try other words.' : 'As soon as the first syslog packet arrives, the device shows up here. It raises alerts once you confirm it.'}</span>
     </div>
   {:else}
   <div class="tablewrap">
@@ -74,7 +78,7 @@
       <tbody>
         {#each view as s (s.id)}
           <tr>
-            <td><strong>{s.name}</strong></td>
+            <td><strong>{s.name}</strong>{#if !s.confirmed} <span class="badge warn" title="Raises no alerts until an administrator confirms it">Unconfirmed</span>{/if}</td>
             <td>{kindLabel(s.kind)}</td>
             <td class="mono">{s.address}</td>
             <td class="nowrap">{ago(s.last_seen)}</td>
@@ -84,6 +88,7 @@
             <td class="nowrap">
               <button class="btn sm ghost" onclick={() => showAlertsFor({ source: s.id, name: s.name })} title="Show only alerts from this source">Alerts</button>
               {#if admin}
+                {#if !s.confirmed}<button class="btn sm" onclick={() => confirmSource(s)} title="Let this source raise alerts">Confirm</button>{/if}
                 <button class="btn sm ghost" onclick={() => (editing = { ...s })} title="Edit" aria-label="Edit"><Icon name="edit" size={14} /></button>
                 <button class="btn sm ghost danger" onclick={() => remove(s)} title="Delete" aria-label="Delete"><Icon name="trash" size={14} /></button>
               {/if}

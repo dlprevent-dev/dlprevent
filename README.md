@@ -280,7 +280,8 @@ Ubuntu/Debian package.
   learning phase, order an update, revoke or delete for all of them — a
   thousand devices are not managed one row at a time.
 - **NAS over syslog:** Synology, QNAP, TrueNAS/Samba send their file access
-  log to the server; sources appear with the first packet.
+  log to the server; sources appear with the first packet and raise alerts
+  once an administrator confirms them.
 - **Rules for critical folders:** strict folder with allow list, emergency
   brake on mass access, learned baseline per user.
 - **Email notifications:** SMTP to any server, with a switch each for
