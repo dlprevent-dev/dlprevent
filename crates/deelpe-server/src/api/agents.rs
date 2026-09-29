@@ -306,9 +306,11 @@ pub(super) struct TokenRow {
     used_by: Option<Uuid>,
     max_uses: Option<i32>,
     uses: i32,
+    /// Enrols file servers too, not only workstations (`agent::enroll`).
+    file_server: bool,
 }
 
-pub(super) const TOKEN_COLS: &str = "id, label, created_at, expires_at, used_at, used_by, max_uses, uses";
+pub(super) const TOKEN_COLS: &str = "id, label, created_at, expires_at, used_at, used_by, max_uses, uses, file_server";
 
 /// Usable tokens first: a rollout token lives for weeks, and a hundred
 /// single-device tokens made meanwhile must not push it out of the list —
@@ -331,9 +333,9 @@ pub(super) struct TokenBody {
     /// `windows_server` or `windows_client`. Without a value, the Mac — the
     /// way it was before.
     ///
-    /// It only picks the command that is offered for copying. The token
-    /// itself is bound to no platform: the agent says what it is when it
-    /// enrolls (`EnrollRequest::kind`).
+    /// It picks the command that is offered for copying, and one thing
+    /// more: only a `windows_server` token enrols a file server. Otherwise
+    /// the agent says what it is when it enrolls (`EnrollRequest::kind`).
     #[serde(default)]
     platform: Option<String>,
 }
@@ -435,12 +437,13 @@ pub(super) async fn create_token(State(st): State<Shared>, Admin(user): Admin, h
     let max_uses = b.max_uses.map(|n| n.clamp(1, 100_000));
     let token = auth::random_token();
     let expires_at = Utc::now() + Duration::hours(hours);
-    let (id,): (Uuid,) = sqlx::query_as("INSERT INTO enroll_tokens (token_hash, label, created_by, expires_at, max_uses) VALUES ($1, $2, $3, $4, $5) RETURNING id")
+    let (id,): (Uuid,) = sqlx::query_as("INSERT INTO enroll_tokens (token_hash, label, created_by, expires_at, max_uses, file_server) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id")
         .bind(auth::sha256_hex(&token))
         .bind(&label)
         .bind(user.id)
         .bind(expires_at)
         .bind(max_uses)
+        .bind(b.platform.as_deref() == Some("windows_server"))
         .fetch_one(&st.pool)
         .await?;
     // The name from the address bar: behind a proxy the `Host` would

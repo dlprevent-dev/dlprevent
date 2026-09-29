@@ -845,6 +845,24 @@ mod tests {
         assert_eq!(download.status(), StatusCode::NOT_FOUND, "a token without a count still fetches the installer after a thousand devices");
     }
 
+    /// Only the File server button makes a token that enrols a file server
+    /// (`agent::enroll`); every other platform, and none, makes one that
+    /// does not.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn only_a_token_made_for_a_file_server_enrols_one(pool: sqlx::PgPool) {
+        let admin = test_session(&pool, "admin").await;
+        let app = router(test_app(pool.clone()), Router::new());
+        let cookie = (header::COOKIE.as_str(), admin.as_str());
+        for (label, platform) in [("srv", json!("windows_server")), ("pc", json!("windows_client")), ("none", serde_json::Value::Null)] {
+            send(&app, "POST", "/api/tokens", cookie, json!({ "label": label, "platform": platform })).await;
+        }
+        let listed = response_json(get(&app, "/api/tokens", &admin).await).await;
+        let mut flags: Vec<(String, bool)> =
+            listed.as_array().unwrap().iter().map(|t| (t["label"].as_str().unwrap().to_string(), t["file_server"].as_bool().unwrap_or_default())).collect();
+        flags.sort();
+        assert_eq!(flags, vec![("none".into(), false), ("pc".into(), false), ("srv".into(), true)]);
+    }
+
     #[sqlx::test(migrations = "./migrations")]
     async fn api_key_reads_only_and_only_while_switched_on(pool: sqlx::PgPool) {
         let admin = test_session(&pool, "admin").await;

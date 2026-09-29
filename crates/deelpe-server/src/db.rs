@@ -335,6 +335,62 @@ impl FileServer {
     }
 }
 
+/// What may go into a UNC path the server builds for somebody else.
+///
+/// `FileServer::hosts` and `deelpe_core::rules::endpoint_rule_path` turn the
+/// name, the fqdn and the addresses of a `windows_server` agent into
+/// `\\<host>\<share>` — and all three come out of that agent's own report.
+/// Every `windows_server` in this list is folded into **every** endpoint's
+/// rule set (`rules_for_endpoint`), so an unvalidated host here is an
+/// unvalidated folder name in another agent's policy.
+///
+/// A host component of a UNC path is a NetBIOS name, a fully qualified name
+/// or an IPv4 literal: dot-separated labels of letters, digits, `-` and `_`
+/// (Windows lets a computer name carry one). Anything else — empty,
+/// carrying a path separator, a wildcard or a space, only dots — is dropped
+/// rather than sanitised: a host that cannot be spelled is a host that
+/// cannot be matched, and a rule matching nothing is better than one
+/// matching an attacker's server.
+fn valid_unc_host(h: &str) -> bool {
+    h.len() <= 253
+        && h.split('.').all(|label| {
+            !label.is_empty() && label.len() <= 63 && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        })
+}
+
+/// The share table of a file server, as far as the rule delivery may use it.
+///
+/// The same question one level down: `ShareInfo::path` is matched against a
+/// rule's path to decide *which* share of this server the rule means, and
+/// `ShareInfo::name` becomes the share component of the UNC path. A name
+/// that is not a single path component, or a `path` carrying a UNC prefix of
+/// its own, would let one server claim a folder on a *different* machine. An
+/// entry that fails is dropped and the rest of the table still works: a
+/// server with one odd share is still the right answer for the others.
+fn usable_shares(shares: Vec<ShareInfo>) -> Vec<ShareInfo> {
+    shares
+        .into_iter()
+        .filter(|s| {
+            let name = s.name.trim();
+            let name_ok = !name.is_empty()
+                && name.len() <= 80
+                && !name.chars().all(|c| c == '.')
+                && !name.contains(|c: char| c.is_control() || r#"\/*?"<>|:"#.contains(c));
+            let path_ok = s
+                .path
+                .as_deref()
+                .map(|p| {
+                    let p = p.trim();
+                    // A UNC path of its own (`\\other\share`) would let a
+                    // server claim a folder on a *different* machine.
+                    !p.is_empty() && !p.starts_with("\\\\") && !p.contains('\0')
+                })
+                .unwrap_or(true);
+            name_ok && path_ok
+        })
+        .collect()
+}
+
 pub async fn file_servers(pool: &PgPool) -> Result<Vec<FileServer>> {
     let rows: Vec<(Uuid, String, Option<serde_json::Value>)> =
         sqlx::query_as("SELECT id, name, status FROM agents WHERE kind = 'windows_server' AND revoked_at IS NULL ORDER BY name")
@@ -344,21 +400,30 @@ pub async fn file_servers(pool: &PgPool) -> Result<Vec<FileServer>> {
         .into_iter()
         .map(|(id, name, status)| FileServer {
             id,
-            name,
+            // The name is the host in every `\\<host>\<share>` this server
+            // contributes. An empty or unspellable one yields no rule path
+            // at all rather than a malformed one.
+            name: Some(name.trim()).filter(|n| valid_unc_host(n)).unwrap_or_default().to_string(),
             // A server that has never reported has no table — then there
             // is nothing to translate for its rules, and they stay out
             // instead of pointing at a guessed place.
-            shares: status
+            shares: usable_shares(status
                 .as_ref()
                 .and_then(|v| v.get("shares").cloned())
                 .and_then(|v| serde_json::from_value(v).ok())
-                .unwrap_or_default(),
+                .unwrap_or_default()),
             // IPv4 only: an IPv6 address does not stand in a UNC path as
             // itself but in the literal form
             // (`2001-db8--1.ipv6-literal.net`). Delivering it raw would
             // yield a rule path that no event ever hits — and that is worse
             // than none, because in the dashboard it looks like protection.
-            fqdn: status.as_ref().and_then(|v| v.get("fqdn")).and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+            fqdn: status
+                .as_ref()
+                .and_then(|v| v.get("fqdn"))
+                .and_then(|v| v.as_str())
+                .filter(|f| valid_unc_host(f))
+                .unwrap_or_default()
+                .to_string(),
             addrs: status
                 .as_ref()
                 .and_then(|v| v.get("addrs").cloned())
@@ -925,6 +990,58 @@ mod tests {
         assert_eq!(bump_generation_on_new_build(&pool, "").await.unwrap(), Some(5));
         // Afterwards the value stands where `agent::report` reads it.
         assert_eq!(agent_settings(&pool).await.unwrap().generation, 5);
+    }
+
+    /// What a file server reports about itself becomes the host and share of
+    /// a UNC path in every endpoint's policy. Whatever cannot be spelled
+    /// there is dropped; an honest server comes through whole. Needs
+    /// `DATABASE_URL`, see docs/SERVER.md.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_file_server_names_only_what_a_unc_path_can_hold(pool: PgPool) {
+        let add = |name: &'static str, status: serde_json::Value| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query("INSERT INTO agents (id, name, kind, version, cert_fingerprint, cert_not_after, status) VALUES ($1, $2, 'windows_server', '0.1.0', $3, now(), $4)")
+                    .bind(Uuid::new_v4())
+                    .bind(name)
+                    .bind(Uuid::new_v4().to_string())
+                    .bind(status)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+        };
+        add(
+            "SRV_01",
+            serde_json::json!({ "fqdn": "srv_01.corp.example", "addrs": ["192.0.2.201"], "shares": [{ "name": "GL", "path": "C:\\Freigaben\\GL" }, { "name": "C$" }] }),
+        )
+        .await;
+        add(
+            r"ZZ\C$\Windows",
+            serde_json::json!({
+                "fqdn": "attacker.example\\x",
+                "addrs": ["203.0.113.77", "fe80::1", ".."],
+                "shares": [
+                    { "name": "GL", "path": "C:\\Public" },
+                    { "name": "..", "path": "C:\\x" },
+                    { "name": "a\\b" },
+                    { "name": "UNC", "path": "\\\\other\\share" },
+                    { "name": "" }
+                ]
+            }),
+        )
+        .await;
+        let servers = file_servers(&pool).await.unwrap();
+        let honest = &servers[0];
+        assert_eq!(honest.hosts().collect::<Vec<_>>(), vec!["SRV_01", "srv_01.corp.example", "192.0.2.201"]);
+        assert_eq!(honest.shares.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), vec!["GL", "C$"]);
+        let rogue = &servers[1];
+        // An empty name yields no path at all (`endpoint_rule_path`), not
+        // `\\ZZ\C$\Windows\GL`.
+        assert_eq!(rogue.name, "");
+        assert_eq!(rogue.fqdn, "");
+        assert_eq!(rogue.addrs, vec!["203.0.113.77"]);
+        assert_eq!(rogue.shares.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), vec!["GL"]);
     }
 
     #[test]

@@ -935,9 +935,10 @@ server here:
 sudo deelpe central enroll https://dlp.company.local:8444 <token> --ca-sha256 <fingerprint>
 ```
 
-The platform button only picks which command is offered. The token itself is
-bound to no platform — the agent says what it is when it enrolls — so a
-token created before this button existed works just as well.
+The platform button picks which command is offered. The agent says what it
+is when it enrolls, with one exception: only a token made with **File
+server** enrolls a file server, because a file server's share table turns
+into rule paths on every workstation.
 
 Then the protected folders, unless the dashboard distributes them:
 
@@ -1192,9 +1193,10 @@ Three things to keep in mind:
   ```
 
   Leave out `--endpoint` for a file server.
-- **One token per role is clearer.** The token itself works for every kind of
-  device, but the command decides the role (`--endpoint`), and separate
-  tokens for workstations and file servers keep the count readable.
+- **One token per role.** The command decides the role (`--endpoint`), and
+  only a token made with **File server** enrolls a file server; a
+  workstation token refuses one. Tokens created before this rule enroll no file
+  server.
 
 Do **not** try to bake one enrollment into an image: `central.json` holds the
 device's private key. Clone it and every clone shares one identity — one
