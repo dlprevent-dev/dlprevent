@@ -550,13 +550,19 @@ impl Origin {
 /// business in the list of open ones. When updating, an `acknowledged_at`
 /// that is set stays set — whoever closed an alert does not want to see it
 /// open again at the next report — but a learning alert that came in
-/// silently opens up if it later gets a verdict worth reporting.
+/// silently opens up if it later gets a verdict worth reporting. The one
+/// exception to "stays set": an alert re-judged `denied` opens again even if
+/// someone acknowledged it while it was something milder — a denied alarm is
+/// never silenced.
 const ALERT_UPSERT: &str = "INSERT INTO alerts (kind, agent_id, source_id, origin_name, external_id, at, last_at, user_key, user_display, rule_id, path, process, files, file_count, bytes, remote, verdict, reason, detail, acknowledged_at) \
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, CASE WHEN $20 THEN now() ELSE NULL END) \
      ON CONFLICT (COALESCE(agent_id, source_id), external_id) DO UPDATE SET \
        last_at = EXCLUDED.last_at, files = EXCLUDED.files, file_count = EXCLUDED.file_count, bytes = EXCLUDED.bytes, \
        verdict = EXCLUDED.verdict, reason = EXCLUDED.reason, detail = EXCLUDED.detail, received_at = now(), \
-       acknowledged_at = CASE WHEN alerts.acknowledged_by IS NULL AND NOT $20 THEN NULL ELSE alerts.acknowledged_at END \
+       acknowledged_at = CASE WHEN alerts.acknowledged_by IS NULL AND NOT $20 THEN NULL \
+                              WHEN EXCLUDED.verdict = 'denied' AND alerts.verdict <> 'denied' THEN NULL \
+                              ELSE alerts.acknowledged_at END, \
+       acknowledged_by = CASE WHEN EXCLUDED.verdict = 'denied' AND alerts.verdict <> 'denied' THEN NULL ELSE alerts.acknowledged_by END \
      RETURNING (xmax = 0) AS inserted";
 
 /// Verdicts that are meant for the table only and should not occupy
@@ -935,6 +941,36 @@ mod tests {
     /// hit on a row that already stands. The merging before it is checked by
     /// the test above — here it is about what Postgres makes of it. Needs
     /// `DATABASE_URL`, see docs/SERVER.md.
+    /// A `denied` alarm is never silenced (README). An alert someone
+    /// acknowledged while it was `new` and that the agent later re-judges as
+    /// `denied` under the same id is a new alarm, not an old closed one.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_alert_that_turns_denied_opens_again(pool: PgPool) {
+        let agent: Uuid = sqlx::query_scalar(
+            "INSERT INTO agents (id, name, kind, version, cert_fingerprint, cert_not_after) \
+             VALUES (gen_random_uuid(), 'mac', 'macos', '0.1.0', 'fp', now() + interval '1 day') RETURNING id",
+        )
+        .fetch_one(&pool).await.unwrap();
+        let admin: Uuid = sqlx::query_scalar("INSERT INTO users (name, pw_hash, role) VALUES ('admin', '', 'admin') RETURNING id").fetch_one(&pool).await.unwrap();
+        let upsert = |verdict: &'static str| {
+            sqlx::query(ALERT_UPSERT)
+                .bind("endpoint").bind(agent).bind(Option::<Uuid>::None).bind("mac").bind("a1")
+                .bind(Utc::now()).bind(Utc::now()).bind(Option::<String>::None).bind(Option::<String>::None).bind(Option::<Uuid>::None)
+                .bind("/GL/a.txt").bind("curl").bind(serde_json::json!([])).bind(1).bind(1_i64).bind("1.2.3.4:443")
+                .bind(verdict).bind("").bind(serde_json::json!({})).bind(false)
+                .execute(&pool)
+        };
+        let open = || sqlx::query_scalar::<_, bool>("SELECT acknowledged_at IS NULL FROM alerts WHERE external_id = 'a1'").fetch_one(&pool);
+        upsert("new").await.unwrap();
+        sqlx::query("UPDATE alerts SET acknowledged_at = now(), acknowledged_by = $1").bind(admin).execute(&pool).await.unwrap();
+        upsert("new").await.unwrap();
+        assert!(!open().await.unwrap(), "an acknowledged alert stays acknowledged");
+        upsert("denied").await.unwrap();
+        assert!(open().await.unwrap(), "a denied alarm is never silenced");
+        upsert("denied").await.unwrap();
+        assert!(open().await.unwrap());
+    }
+
     #[sqlx::test(migrations = "./migrations")]
     async fn a_batch_of_counts_lands_and_a_repeat_keeps_the_larger_value(pool: PgPool) {
         let origin = Uuid::from_u128(1);

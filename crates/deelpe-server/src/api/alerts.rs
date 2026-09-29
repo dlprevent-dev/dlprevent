@@ -490,10 +490,24 @@ pub(super) async fn learn_alert(State(st): State<Shared>, Admin(user): Admin, Pa
     db::queue_learn(&st.pool, agent_id, alert_id, action, user.id).await?;
     db::audit(&st.pool, (&user).into(), "alert_learn", json!({ "id": id, "agent": agent_id, "alert_id": alert_id, "action": action })).await;
     // What has been remembered no longer needs to stand in the open list.
-    let acked = sqlx::query("UPDATE alerts SET acknowledged_at = now(), acknowledged_by = $2 WHERE acknowledged_at IS NULL AND agent_id = $3 AND kind = 'endpoint' AND process IS NOT DISTINCT FROM (SELECT process FROM alerts WHERE id = $1) AND remote IS NOT DISTINCT FROM (SELECT remote FROM alerts WHERE id = $1)")
+    //
+    // The same (process, destination) pair, and nothing else — a `denied`
+    // alarm is a forbidden destination out of a strict folder, and those
+    // are never learned and never silenced (README, `learn::Verdict::Denied`).
+    // Without this a click on one `new` row quietly closed the `denied` row
+    // beside it: the two share a process and a destination by construction,
+    // because the same flow that was `new` a moment ago is `denied` the
+    // moment a strict rule covers the folder. `flag` is the same: it means
+    // "keep reporting", so it must not close anything either.
+    let ack_verdicts: &[&str] = match b.action {
+        deelpe_core::central::LearnAction::Remember => &["new", "deviation", "flagged"],
+        deelpe_core::central::LearnAction::Flag => &[],
+    };
+    let acked = sqlx::query("UPDATE alerts SET acknowledged_at = now(), acknowledged_by = $2 WHERE acknowledged_at IS NULL AND agent_id = $3 AND kind = 'endpoint' AND verdict = ANY($4) AND process IS NOT DISTINCT FROM (SELECT process FROM alerts WHERE id = $1) AND remote IS NOT DISTINCT FROM (SELECT remote FROM alerts WHERE id = $1)")
         .bind(id)
         .bind(user.id)
         .bind(agent_id)
+        .bind(ack_verdicts)
         .execute(&st.pool)
         .await?
         .rows_affected();
@@ -697,5 +711,54 @@ mod tests {
         // the server acknowledges under somebody else's name — or not at
         // all, because a UUID ends up as a search term.
         assert_eq!(b1.uuid(Some(Uuid::nil())), b2.uuid(Some(Uuid::nil())), "gleiche Bedingung, gleiche Bindestellen");
+    }
+
+    /// "Remember" closes the open notices of its (process, destination)
+    /// pair — and never the strict-folder `denied` alarm beside them, which
+    /// shares that pair by construction. "Flag" means "keep reporting" and
+    /// closes nothing at all.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn remembering_a_pair_leaves_its_denied_alarm_open(pool: sqlx::PgPool) {
+        use tower::ServiceExt;
+        rustls::crypto::ring::default_provider().install_default().ok();
+        let dir = std::env::temp_dir().join(format!("deelpe-api-test-{}", Uuid::new_v4()));
+        let pki = crate::pki::Pki::load_or_create(&dir, &["localhost".into()]).unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+        let st = std::sync::Arc::new(crate::state::AppState::new(pool.clone(), std::sync::Arc::new(pki), false, 8444, false, std::env::temp_dir().join("deelpe-test")));
+        let app = super::super::router(st, Router::new());
+
+        let admin: Uuid = sqlx::query_scalar("INSERT INTO users (name, pw_hash, role) VALUES ('admin', '', 'admin') RETURNING id").fetch_one(&pool).await.unwrap();
+        let token = crate::auth::random_token();
+        sqlx::query("INSERT INTO sessions (id, user_id, expires_at) VALUES ($1, $2, now() + interval '12 hours')")
+            .bind(crate::auth::sha256_hex(&token)).bind(admin).execute(&pool).await.unwrap();
+        let cookie = format!("{}={token}", crate::auth::COOKIE);
+        db::set_setting(&pool, "learn_push_enabled", json!(true)).await.unwrap();
+        let agent = Uuid::new_v4();
+        sqlx::query("INSERT INTO agents (id, name, kind, version, cert_fingerprint, cert_not_after) VALUES ($1, 'pc01', 'windows_client', '0.1.0', 'fp', now() + interval '1 day')")
+            .bind(agent).execute(&pool).await.unwrap();
+        for (id, verdict) in [(1_i64, "new"), (2, "deviation"), (3, "denied")] {
+            sqlx::query("INSERT INTO alerts (id, kind, agent_id, origin_name, external_id, at, process, remote, verdict, detail) \
+                         VALUES ($1, 'endpoint', $2, 'pc01', $1::text, now(), 'firefox.exe', '203.0.113.9:443', $3, '{}')")
+                .bind(id).bind(agent).bind(verdict).execute(&pool).await.unwrap();
+        }
+        let learn = |action: &'static str| {
+            let app = app.clone();
+            let cookie = cookie.clone();
+            async move {
+                let req = axum::http::Request::builder().method("POST").uri("/api/alerts/1/learn")
+                    .header(header::COOKIE, cookie).header(header::CONTENT_TYPE, "application/json")
+                    .body(axum::body::Body::from(json!({ "action": action }).to_string())).unwrap();
+                let r = app.oneshot(req).await.unwrap();
+                assert_eq!(r.status(), StatusCode::OK, "{action}");
+                let body = axum::body::to_bytes(r.into_body(), 1024).await.unwrap();
+                serde_json::from_slice::<serde_json::Value>(&body).unwrap()["acked"].as_u64().unwrap()
+            }
+        };
+        let open = || sqlx::query_scalar::<_, String>("SELECT verdict FROM alerts WHERE acknowledged_at IS NULL ORDER BY id").fetch_all(&pool);
+
+        assert_eq!(learn("flag").await, 0, "flag keeps reporting and closes nothing");
+        assert_eq!(open().await.unwrap(), ["new", "deviation", "denied"]);
+        assert_eq!(learn("remember").await, 2, "the pair's notices, not its alarm");
+        assert_eq!(open().await.unwrap(), ["denied"], "a strict-folder alarm is never silenced");
     }
 }
