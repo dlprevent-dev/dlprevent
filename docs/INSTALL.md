@@ -1351,8 +1351,10 @@ distributes.
   aborts with `checksum mismatch` — correct, but annoying. A new token costs
   nothing.
 - **Fetch from a release.** Under *Settings → Interfaces* enter the repository
-  (`owner/repo` for GitHub, or the full API address of your own Gitea) and the
-  public signing key. The central server then looks every six hours and says
+  (`owner/repo` for GitHub, or the full `https://` API address of your own
+  Gitea) and the public signing key. The server fetches a release's files
+  only from that same host — enter the Gitea under the name its `ROOT_URL`
+  uses, since that is the host its download links name. The central server then looks every six hours and says
   on the agent page when there is a newer version; *Fetch* downloads it,
   checks the signature and stores it. **Nothing is rolled out by that.**
 
