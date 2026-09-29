@@ -335,6 +335,62 @@ impl FileServer {
     }
 }
 
+/// What may go into a UNC path the server builds for somebody else.
+///
+/// `FileServer::hosts` and `deelpe_core::rules::endpoint_rule_path` turn the
+/// name, the fqdn and the addresses of a `windows_server` agent into
+/// `\\<host>\<share>` — and all three come out of that agent's own report.
+/// Every `windows_server` in this list is folded into **every** endpoint's
+/// rule set (`rules_for_endpoint`), so an unvalidated host here is an
+/// unvalidated folder name in another agent's policy.
+///
+/// A host component of a UNC path is a NetBIOS name, a fully qualified name
+/// or an IPv4 literal: dot-separated labels of letters, digits, `-` and `_`
+/// (Windows lets a computer name carry one). Anything else — empty,
+/// carrying a path separator, a wildcard or a space, only dots — is dropped
+/// rather than sanitised: a host that cannot be spelled is a host that
+/// cannot be matched, and a rule matching nothing is better than one
+/// matching an attacker's server.
+fn valid_unc_host(h: &str) -> bool {
+    h.len() <= 253
+        && h.split('.').all(|label| {
+            !label.is_empty() && label.len() <= 63 && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        })
+}
+
+/// The share table of a file server, as far as the rule delivery may use it.
+///
+/// The same question one level down: `ShareInfo::path` is matched against a
+/// rule's path to decide *which* share of this server the rule means, and
+/// `ShareInfo::name` becomes the share component of the UNC path. A name
+/// that is not a single path component, or a `path` carrying a UNC prefix of
+/// its own, would let one server claim a folder on a *different* machine. An
+/// entry that fails is dropped and the rest of the table still works: a
+/// server with one odd share is still the right answer for the others.
+fn usable_shares(shares: Vec<ShareInfo>) -> Vec<ShareInfo> {
+    shares
+        .into_iter()
+        .filter(|s| {
+            let name = s.name.trim();
+            let name_ok = !name.is_empty()
+                && name.len() <= 80
+                && !name.chars().all(|c| c == '.')
+                && !name.contains(|c: char| c.is_control() || r#"\/*?"<>|:"#.contains(c));
+            let path_ok = s
+                .path
+                .as_deref()
+                .map(|p| {
+                    let p = p.trim();
+                    // A UNC path of its own (`\\other\share`) would let a
+                    // server claim a folder on a *different* machine.
+                    !p.is_empty() && !p.starts_with("\\\\") && !p.contains('\0')
+                })
+                .unwrap_or(true);
+            name_ok && path_ok
+        })
+        .collect()
+}
+
 pub async fn file_servers(pool: &PgPool) -> Result<Vec<FileServer>> {
     let rows: Vec<(Uuid, String, Option<serde_json::Value>)> =
         sqlx::query_as("SELECT id, name, status FROM agents WHERE kind = 'windows_server' AND revoked_at IS NULL ORDER BY name")
@@ -344,21 +400,30 @@ pub async fn file_servers(pool: &PgPool) -> Result<Vec<FileServer>> {
         .into_iter()
         .map(|(id, name, status)| FileServer {
             id,
-            name,
+            // The name is the host in every `\\<host>\<share>` this server
+            // contributes. An empty or unspellable one yields no rule path
+            // at all rather than a malformed one.
+            name: Some(name.trim()).filter(|n| valid_unc_host(n)).unwrap_or_default().to_string(),
             // A server that has never reported has no table — then there
             // is nothing to translate for its rules, and they stay out
             // instead of pointing at a guessed place.
-            shares: status
+            shares: usable_shares(status
                 .as_ref()
                 .and_then(|v| v.get("shares").cloned())
                 .and_then(|v| serde_json::from_value(v).ok())
-                .unwrap_or_default(),
+                .unwrap_or_default()),
             // IPv4 only: an IPv6 address does not stand in a UNC path as
             // itself but in the literal form
             // (`2001-db8--1.ipv6-literal.net`). Delivering it raw would
             // yield a rule path that no event ever hits — and that is worse
             // than none, because in the dashboard it looks like protection.
-            fqdn: status.as_ref().and_then(|v| v.get("fqdn")).and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+            fqdn: status
+                .as_ref()
+                .and_then(|v| v.get("fqdn"))
+                .and_then(|v| v.as_str())
+                .filter(|f| valid_unc_host(f))
+                .unwrap_or_default()
+                .to_string(),
             addrs: status
                 .as_ref()
                 .and_then(|v| v.get("addrs").cloned())
@@ -429,9 +494,12 @@ pub struct SourceRow {
     pub last_seen: Option<DateTime<Utc>>,
     pub lines: i64,
     pub unparsed: i64,
+    /// Lines of an unconfirmed source are counted, nothing more: no access
+    /// counts, no alerts (syslog is unauthenticated).
+    pub confirmed: bool,
 }
 
-pub const SOURCE_COLS: &str = "id, name, kind, address, first_seen, last_seen, lines, unparsed";
+pub const SOURCE_COLS: &str = "id, name, kind, address, first_seen, last_seen, lines, unparsed, confirmed";
 
 #[derive(Debug, Clone, FromRow, Serialize)]
 pub struct AlertRow {
@@ -482,13 +550,19 @@ impl Origin {
 /// business in the list of open ones. When updating, an `acknowledged_at`
 /// that is set stays set — whoever closed an alert does not want to see it
 /// open again at the next report — but a learning alert that came in
-/// silently opens up if it later gets a verdict worth reporting.
+/// silently opens up if it later gets a verdict worth reporting. The one
+/// exception to "stays set": an alert re-judged `denied` opens again even if
+/// someone acknowledged it while it was something milder — a denied alarm is
+/// never silenced.
 const ALERT_UPSERT: &str = "INSERT INTO alerts (kind, agent_id, source_id, origin_name, external_id, at, last_at, user_key, user_display, rule_id, path, process, files, file_count, bytes, remote, verdict, reason, detail, acknowledged_at) \
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, CASE WHEN $20 THEN now() ELSE NULL END) \
      ON CONFLICT (COALESCE(agent_id, source_id), external_id) DO UPDATE SET \
        last_at = EXCLUDED.last_at, files = EXCLUDED.files, file_count = EXCLUDED.file_count, bytes = EXCLUDED.bytes, \
        verdict = EXCLUDED.verdict, reason = EXCLUDED.reason, detail = EXCLUDED.detail, received_at = now(), \
-       acknowledged_at = CASE WHEN alerts.acknowledged_by IS NULL AND NOT $20 THEN NULL ELSE alerts.acknowledged_at END \
+       acknowledged_at = CASE WHEN alerts.acknowledged_by IS NULL AND NOT $20 THEN NULL \
+                              WHEN EXCLUDED.verdict = 'denied' AND alerts.verdict <> 'denied' THEN NULL \
+                              ELSE alerts.acknowledged_at END, \
+       acknowledged_by = CASE WHEN EXCLUDED.verdict = 'denied' AND alerts.verdict <> 'denied' THEN NULL ELSE alerts.acknowledged_by END \
      RETURNING (xmax = 0) AS inserted";
 
 /// Verdicts that are meant for the table only and should not occupy
@@ -556,7 +630,7 @@ pub async fn upsert_access_alert(pool: &PgPool, origin: Origin, origin_name: &st
         .bind(Option::<String>::None)
         .bind(serde_json::to_value(&a.sample_files)?)
         .bind(a.files as i32)
-        .bind(a.bytes as i64)
+        .bind(i64::try_from(a.bytes).unwrap_or(i64::MAX))
         .bind(a.client_ip.clone())
         .bind(a.verdict.label())
         .bind(a.reason.clone())
@@ -601,7 +675,8 @@ fn merge_counts(counts: &[CountBucket]) -> Vec<CountRow> {
         // apart (or the other way round).
         let bucket = c.bucket.with_second(0).and_then(|t| t.with_nanosecond(0)).unwrap_or(c.bucket);
         let rule_id = c.rule_id.as_deref().and_then(|s| Uuid::parse_str(s).ok());
-        let (files, bytes) = (c.files as i32, c.bytes as i64);
+        // Clamped, not cast: a saturated u64 became -1 in the table.
+        let (files, bytes) = (i32::try_from(c.files).unwrap_or(i32::MAX), i64::try_from(c.bytes).unwrap_or(i64::MAX));
         match merged.entry((c.path.clone(), c.user.key(), bucket)) {
             std::collections::btree_map::Entry::Occupied(mut e) => {
                 let row = e.get_mut();
@@ -855,10 +930,47 @@ mod tests {
         assert_eq!(rows[0].bucket.to_rfc3339(), "2026-09-10T10:00:00+00:00");
     }
 
+    /// A saturated count stays the largest number, it does not turn negative.
+    #[test]
+    fn a_saturated_count_is_not_stored_negative() {
+        let rows = merge_counts(&[count("GL", "hans", "2026-09-10T10:00:05Z", u32::MAX, u64::MAX, None)]);
+        assert_eq!((rows[0].files, rows[0].bytes), (i32::MAX, i64::MAX));
+    }
+
     /// The bundled statement itself: types, a NULL in the id column and a
     /// hit on a row that already stands. The merging before it is checked by
     /// the test above — here it is about what Postgres makes of it. Needs
     /// `DATABASE_URL`, see docs/SERVER.md.
+    /// A `denied` alarm is never silenced (README). An alert someone
+    /// acknowledged while it was `new` and that the agent later re-judges as
+    /// `denied` under the same id is a new alarm, not an old closed one.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_alert_that_turns_denied_opens_again(pool: PgPool) {
+        let agent: Uuid = sqlx::query_scalar(
+            "INSERT INTO agents (id, name, kind, version, cert_fingerprint, cert_not_after) \
+             VALUES (gen_random_uuid(), 'mac', 'macos', '0.1.0', 'fp', now() + interval '1 day') RETURNING id",
+        )
+        .fetch_one(&pool).await.unwrap();
+        let admin: Uuid = sqlx::query_scalar("INSERT INTO users (name, pw_hash, role) VALUES ('admin', '', 'admin') RETURNING id").fetch_one(&pool).await.unwrap();
+        let upsert = |verdict: &'static str| {
+            sqlx::query(ALERT_UPSERT)
+                .bind("endpoint").bind(agent).bind(Option::<Uuid>::None).bind("mac").bind("a1")
+                .bind(Utc::now()).bind(Utc::now()).bind(Option::<String>::None).bind(Option::<String>::None).bind(Option::<Uuid>::None)
+                .bind("/GL/a.txt").bind("curl").bind(serde_json::json!([])).bind(1).bind(1_i64).bind("1.2.3.4:443")
+                .bind(verdict).bind("").bind(serde_json::json!({})).bind(false)
+                .execute(&pool)
+        };
+        let open = || sqlx::query_scalar::<_, bool>("SELECT acknowledged_at IS NULL FROM alerts WHERE external_id = 'a1'").fetch_one(&pool);
+        upsert("new").await.unwrap();
+        sqlx::query("UPDATE alerts SET acknowledged_at = now(), acknowledged_by = $1").bind(admin).execute(&pool).await.unwrap();
+        upsert("new").await.unwrap();
+        assert!(!open().await.unwrap(), "an acknowledged alert stays acknowledged");
+        upsert("denied").await.unwrap();
+        assert!(open().await.unwrap(), "a denied alarm is never silenced");
+        upsert("denied").await.unwrap();
+        assert!(open().await.unwrap());
+    }
+
     #[sqlx::test(migrations = "./migrations")]
     async fn a_batch_of_counts_lands_and_a_repeat_keeps_the_larger_value(pool: PgPool) {
         let origin = Uuid::from_u128(1);
@@ -925,6 +1037,58 @@ mod tests {
         assert_eq!(bump_generation_on_new_build(&pool, "").await.unwrap(), Some(5));
         // Afterwards the value stands where `agent::report` reads it.
         assert_eq!(agent_settings(&pool).await.unwrap().generation, 5);
+    }
+
+    /// What a file server reports about itself becomes the host and share of
+    /// a UNC path in every endpoint's policy. Whatever cannot be spelled
+    /// there is dropped; an honest server comes through whole. Needs
+    /// `DATABASE_URL`, see docs/SERVER.md.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_file_server_names_only_what_a_unc_path_can_hold(pool: PgPool) {
+        let add = |name: &'static str, status: serde_json::Value| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query("INSERT INTO agents (id, name, kind, version, cert_fingerprint, cert_not_after, status) VALUES ($1, $2, 'windows_server', '0.1.0', $3, now(), $4)")
+                    .bind(Uuid::new_v4())
+                    .bind(name)
+                    .bind(Uuid::new_v4().to_string())
+                    .bind(status)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+        };
+        add(
+            "SRV_01",
+            serde_json::json!({ "fqdn": "srv_01.corp.example", "addrs": ["192.0.2.201"], "shares": [{ "name": "GL", "path": "C:\\Freigaben\\GL" }, { "name": "C$" }] }),
+        )
+        .await;
+        add(
+            r"ZZ\C$\Windows",
+            serde_json::json!({
+                "fqdn": "attacker.example\\x",
+                "addrs": ["203.0.113.77", "fe80::1", ".."],
+                "shares": [
+                    { "name": "GL", "path": "C:\\Public" },
+                    { "name": "..", "path": "C:\\x" },
+                    { "name": "a\\b" },
+                    { "name": "UNC", "path": "\\\\other\\share" },
+                    { "name": "" }
+                ]
+            }),
+        )
+        .await;
+        let servers = file_servers(&pool).await.unwrap();
+        let honest = &servers[0];
+        assert_eq!(honest.hosts().collect::<Vec<_>>(), vec!["SRV_01", "srv_01.corp.example", "192.0.2.201"]);
+        assert_eq!(honest.shares.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), vec!["GL", "C$"]);
+        let rogue = &servers[1];
+        // An empty name yields no path at all (`endpoint_rule_path`), not
+        // `\\ZZ\C$\Windows\GL`.
+        assert_eq!(rogue.name, "");
+        assert_eq!(rogue.fqdn, "");
+        assert_eq!(rogue.addrs, vec!["203.0.113.77"]);
+        assert_eq!(rogue.shares.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), vec!["GL"]);
     }
 
     #[test]

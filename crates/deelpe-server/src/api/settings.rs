@@ -366,6 +366,13 @@ pub(super) async fn update_settings(State(st): State<Shared>, Admin(user): Admin
     if !(0..=100).contains(&b.notify_abuse_min_score) {
         return Err(bad("AbuseIPDB score: 0 to 100"));
     }
+    // Refused here rather than at the next update check, which would only
+    // say so in a log line.
+    if !b.release_repo.trim().is_empty() {
+        if let Err(e) = crate::release::latest_url(&b.release_repo) {
+            return Err(bad(format!("release repository: {e}")));
+        }
+    }
     let to = mail::recipients(&b.smtp_to);
     if b.smtp_enabled {
         if b.smtp_host.trim().is_empty() {

@@ -7,3 +7,6 @@ apps/macos
 docs
 *.md
 .env
+# Database dumps, wherever they lie (docs/INSTALL.md, Backup). Not `*.sql`:
+# the migrations are SQL and go into the build.
+**/*.sql.gz

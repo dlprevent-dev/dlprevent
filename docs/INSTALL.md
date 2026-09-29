@@ -267,12 +267,16 @@ Two things, and the first matters more:
 - **The database** — warnings, rules, users, agent list.
 
 Write both **outside the checkout**. A dump holds every warning, rule, user
-and agent; the checkout is a git repository on a shared server, and a stray
-`git add -A` would publish it. `BACKUP` below is any directory that is not
-the repository — `.gitignore` also covers `*.sql.gz`, but do not rely on it.
+and agent — with the users' password hashes and second-factor secrets, and
+employees' names, files and destinations. The checkout is a git repository
+on a shared server and the Docker build context: a stray `git add -A` would
+publish the dump, a build would carry it along. `BACKUP` below is any
+directory that is not the repository — `.gitignore` and `.dockerignore` also
+cover `*.sql.gz`, but do not rely on them.
 
 ```bash
 BACKUP=/var/backups/deelpe   # not the checkout
+umask 077                    # readable by nobody else
 mkdir -p "$BACKUP"
 
 # Docker
@@ -935,9 +939,10 @@ server here:
 sudo deelpe central enroll https://dlp.company.local:8444 <token> --ca-sha256 <fingerprint>
 ```
 
-The platform button only picks which command is offered. The token itself is
-bound to no platform — the agent says what it is when it enrolls — so a
-token created before this button existed works just as well.
+The platform button picks which command is offered. The agent says what it
+is when it enrolls, with one exception: only a token made with **File
+server** enrolls a file server, because a file server's share table turns
+into rule paths on every workstation.
 
 Then the protected folders, unless the dashboard distributes them:
 
@@ -1192,9 +1197,10 @@ Three things to keep in mind:
   ```
 
   Leave out `--endpoint` for a file server.
-- **One token per role is clearer.** The token itself works for every kind of
-  device, but the command decides the role (`--endpoint`), and separate
-  tokens for workstations and file servers keep the count readable.
+- **One token per role.** The command decides the role (`--endpoint`), and
+  only a token made with **File server** enrolls a file server; a
+  workstation token refuses one. Tokens created before this rule enroll no file
+  server.
 
 Do **not** try to bake one enrollment into an image: `central.json` holds the
 device's private key. Clone it and every clone shares one identity — one
@@ -1349,8 +1355,10 @@ distributes.
   aborts with `checksum mismatch` — correct, but annoying. A new token costs
   nothing.
 - **Fetch from a release.** Under *Settings → Interfaces* enter the repository
-  (`owner/repo` for GitHub, or the full API address of your own Gitea) and the
-  public signing key. The central server then looks every six hours and says
+  (`owner/repo` for GitHub, or the full `https://` API address of your own
+  Gitea) and the public signing key. The server fetches a release's files
+  only from that same host — enter the Gitea under the name its `ROOT_URL`
+  uses, since that is the host its download links name. The central server then looks every six hours and says
   on the agent page when there is a newer version; *Fetch* downloads it,
   checks the signature and stores it. **Nothing is rolled out by that.**
 

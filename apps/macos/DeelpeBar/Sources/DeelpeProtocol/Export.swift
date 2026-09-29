@@ -34,9 +34,32 @@ public enum AlertExport {
     }
 
     /// RFC 4180: fields containing a comma, a quote or a line break go in
-    /// quotes, inner quotes are doubled.
+    /// quotes, inner quotes are doubled. A `;` or TAB is quoted too.
+    ///
+    /// Quoting does not stop a spreadsheet from evaluating a cell that starts
+    /// with `=`, `+`, `-`, `@`, TAB or CR, and file names are attacker input.
+    /// Such a cell gets a leading `'`, which every spreadsheet reads as
+    /// "text"; a BOM, zero-width character or space in front does not hide
+    /// the trigger. The same after every `;`, TAB and line break inside the
+    /// value: a spreadsheet in a `;` locale splits there and honours a quote
+    /// only at the start of a field. Same rule as `csv_field` in Rust.
+    /// Checked per scalar, since "\r\n" or "=" plus a combining mark is a
+    /// single `Character`.
     static func csvField(_ s: String) -> String {
-        guard s.contains(where: { $0 == "," || $0 == "\"" || $0 == "\n" || $0 == "\r" }) else { return s }
+        var out: [Unicode.Scalar] = []
+        var mark: Int? = 0
+        for c in s.unicodeScalars {
+            if let m = mark, !"\u{FEFF}\u{200B}\u{200C}\u{200D} ".unicodeScalars.contains(c) {
+                if "=+-@\t\r".unicodeScalars.contains(c) { out.insert("'", at: m) }
+                mark = nil
+            }
+            out.append(c)
+            if ";\t\n\r".unicodeScalars.contains(c) { mark = out.count }
+        }
+        var view = String.UnicodeScalarView()
+        view.append(contentsOf: out)
+        let s = String(view)
+        guard s.unicodeScalars.contains(where: { ",\"\n\r;\t".unicodeScalars.contains($0) }) else { return s }
         return "\"" + s.replacingOccurrences(of: "\"", with: "\"\"") + "\""
     }
 

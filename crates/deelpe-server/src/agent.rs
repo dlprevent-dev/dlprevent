@@ -57,10 +57,12 @@ async fn enroll(State(st): State<Shared>, Extension(peer): Extension<PeerAddr>, 
         return Err(bad(format!("expects API version {}", API_VERSION)));
     }
     let hash = crate::auth::sha256_hex(req.token.trim());
-    type TokenRow = (Uuid, String, chrono::DateTime<Utc>, bool);
-    let row: Option<TokenRow> =
-        sqlx::query_as("SELECT id, label, expires_at, COALESCE(uses >= max_uses, false) FROM enroll_tokens WHERE token_hash = $1").bind(&hash).fetch_optional(&st.pool).await?;
-    let Some((token_id, label, expires_at, spent)) = row else {
+    type TokenRow = (Uuid, String, chrono::DateTime<Utc>, bool, bool);
+    let row: Option<TokenRow> = sqlx::query_as("SELECT id, label, expires_at, COALESCE(uses >= max_uses, false), file_server FROM enroll_tokens WHERE token_hash = $1")
+        .bind(&hash)
+        .fetch_optional(&st.pool)
+        .await?;
+    let Some((token_id, label, expires_at, spent, file_server)) = row else {
         warn!(peer = %peer.0, "enrollment with an unknown token");
         return Err(ApiError(StatusCode::UNAUTHORIZED, "unknown token".into()));
     };
@@ -69,6 +71,14 @@ async fn enroll(State(st): State<Shared>, Extension(peer): Extension<PeerAddr>, 
     }
     if expires_at < Utc::now() {
         return Err(ApiError(StatusCode::UNAUTHORIZED, "token expired".into()));
+    }
+    // The kind is the agent's own word, and a file server's word counts for
+    // more: its share table becomes rule paths on every endpoint
+    // (`endpoint_rules`). So only a token the administrator made for a file
+    // server enrols one; a leaked rollout token for laptops does not.
+    if matches!(req.kind, deelpe_core::central::AgentKind::WindowsServer) && !file_server {
+        warn!(peer = %peer.0, token = label, "file server enrollment with a token not made for one");
+        return Err(ApiError(StatusCode::FORBIDDEN, "this token does not enrol file servers".into()));
     }
     let hostname = req.hostname.trim();
     if hostname.is_empty() || hostname.len() > 253 {
@@ -775,13 +785,17 @@ mod report_tests {
     }
 
     async fn enroll_as(st: &Shared, token: &str, host: &str) -> Result<(), String> {
+        enroll_kind(st, token, host, deelpe_core::central::AgentKind::WindowsClient).await
+    }
+
+    async fn enroll_kind(st: &Shared, token: &str, host: &str, kind: deelpe_core::central::AgentKind) -> Result<(), String> {
         let key = rcgen::KeyPair::generate().unwrap();
         let csr_pem = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap().serialize_request(&key).unwrap().pem().unwrap();
         let req = EnrollRequest {
             api_version: API_VERSION,
             token: token.into(),
             hostname: host.into(),
-            kind: deelpe_core::central::AgentKind::WindowsClient,
+            kind,
             version: "0.1.0".into(),
             csr_pem,
         };
@@ -817,5 +831,29 @@ mod report_tests {
         assert_eq!(enroll_as(&st, "rollout", "R-late").await, Err("unknown token".into()), "revoked means revoked");
         let agents: i64 = sqlx::query_scalar("SELECT count(*) FROM agents").fetch_one(&pool).await.unwrap();
         assert_eq!(agents, 7, "revoking the token leaves the enrolled agents alone");
+    }
+
+    /// A file server's share table ends up in every endpoint's rules, so
+    /// only a token the administrator made for a file server may enrol one.
+    /// A rollout token for workstations cannot, and does not burn a use
+    /// trying.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn only_a_file_server_token_enrols_a_file_server(pool: PgPool) {
+        use deelpe_core::central::AgentKind;
+        let st = state(pool.clone());
+        token_with_uses(&pool, "laptops", Some(5)).await;
+        sqlx::query("INSERT INTO enroll_tokens (token_hash, label, expires_at, file_server) VALUES ($1, 'S', now() + interval '1 day', true)")
+            .bind(crate::auth::sha256_hex("servers"))
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        assert_eq!(enroll_kind(&st, "laptops", "ROGUE", AgentKind::WindowsServer).await, Err("this token does not enrol file servers".into()));
+        let uses: i32 = sqlx::query_scalar("SELECT uses FROM enroll_tokens WHERE label = 'T'").fetch_one(&pool).await.unwrap();
+        assert_eq!(uses, 0);
+        assert_eq!(enroll_kind(&st, "laptops", "PC-1", AgentKind::Mac).await, Ok(()));
+        assert_eq!(enroll_kind(&st, "servers", "FS-01", AgentKind::WindowsServer).await, Ok(()));
+        let servers: Vec<String> = sqlx::query_scalar("SELECT name FROM agents WHERE kind = 'windows_server'").fetch_all(&pool).await.unwrap();
+        assert_eq!(servers, vec!["FS-01"]);
     }
 }

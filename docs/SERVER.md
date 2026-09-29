@@ -160,7 +160,8 @@ days (fixed, not a setting); the file on the device is the full record.
 
 **Syslog sources** — NAS devices without an agent send their file-access log
 over syslog (UDP or TCP, port 514). The server condenses on receipt and drops
-the raw line. A source appears by itself with the first packet.
+the raw line. A source appears by itself with the first packet, marked
+"Unconfirmed"; it raises alerts once an administrator clicks "Confirm".
 
 **Users** — administrators may change everything. "Read only" sees the same
 data but creates, changes and closes nothing (see "Roles"). The 2FA column
@@ -738,7 +739,15 @@ rules that applied only to this device, and its access counts.
 
 ## NAS over syslog
 
-Sources appear automatically with the first packet (sender address). What the
+Sources appear automatically with the first packet (sender address), but
+**unconfirmed**: their lines are counted, nothing more — no access counts, no
+alerts — until an administrator clicks **Confirm** on the Sources page (it
+takes effect within 30 seconds). Sources that existed before the update
+(migration 0020) stay confirmed. A new source takes the host name from the
+syslog header, unless another source already carries that name: then it is
+listed under its address. At most 100 sources wait for confirmation at a
+time; beyond that, lines from new addresses are dropped (logged once a
+minute) until you confirm or delete the waiting ones. What the
 parser does not understand counts as "Not understood" (Sources page). Note
 for Docker Desktop (Mac/Windows): there all packets arrive with the address
 of the Docker gateway (e.g. 192.168.65.1), so several NAS boxes fall into one
@@ -746,9 +755,18 @@ source. On Linux with Docker, or as a .deb, the real address is preserved.
 
 **Syslog is unauthenticated.** Sources are recognised by sender address
 alone, and UDP packets can be forged: anyone who reaches the network can
-invent accesses and raise warnings. So make the syslog port reachable only on
-the internal network (firewall, separate VLAN), never from the internet.
-Agents are unaffected: they need a client certificate.
+invent accesses and raise warnings. Confirmation only stops a *new*
+address from raising alerts; a forged packet carrying a confirmed source's
+address still counts. So make the syslog port reachable only on the internal
+network (firewall, separate VLAN), never from the internet. Agents are
+unaffected: they need a client certificate.
+
+Ceilings on the receiver: a line longer than 16 KiB is dropped (over TCP it
+closes the connection), a TCP connection without a line for 15 minutes is
+closed, at most 256 TCP connections are open at once (more are closed right
+away), and one source follows at most 50,000 (user, rule) pairs. A full
+receive queue drops lines and says so in the log. If the receiver ever stops on its
+own, it is started again within five seconds with an error in the log.
 
 If you have no syslog source, switch the receiver off entirely under
 **Settings → Interfaces**: then the port is not bound, not merely silent.

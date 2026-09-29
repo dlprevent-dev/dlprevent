@@ -20,14 +20,58 @@
 //! volume that is, the rule then also covers a folder with a different
 //! spelling — too much protection, not too little.
 
+use unicode_normalization::UnicodeNormalization;
+
 /// Comparison form of a path: lowercased, `\` treated as `/`, without a
-/// trailing separator.
+/// trailing separator, and in one Unicode normalisation form.
+///
+/// The normalisation is not cosmetic. macOS hands out decomposed names
+/// (NFD) for what a person typed composed (NFC), and the two are the same
+/// file; without folding them onto one form the comparison says a strict
+/// folder is somewhere else than where the kernel says it is.
 pub fn norm(p: &str) -> String {
-    let mut s = p.replace('\\', "/").to_lowercase();
+    let mut s = p.replace('\\', "/");
+    // NFC before and after the case fold: two spellings of one name have to
+    // be one string before `to_lowercase` sees them, and lowercasing can
+    // itself decompose (`İ`). Pure ASCII needs neither — that is almost every
+    // path, and the sensor filter runs this on every file event.
+    //
+    // Up, then down: NTFS compares by upper case, and some letters share an
+    // upper case without sharing a lower one — `σ`/`ς`, `ı`/`i`, `ſ`/`s`,
+    // `µ`/`μ`. Lowercasing alone keeps them apart (and turns a final `Σ`
+    // into `ς` but leaves a typed `σ`), so `ΠΕΛΑΤΕσ` would not be the rule
+    // `ΠΕΛΑΤΕΣ` although Windows opens the same folder for both. Where a
+    // file system keeps such a pair apart, the rule covers both: too much
+    // protection, not too little.
+    if s.is_ascii() {
+        s.make_ascii_lowercase();
+    } else {
+        s = s.nfc().collect::<String>().to_uppercase().to_lowercase().nfc().collect();
+    }
+    // One folder, several spellings: Win32 silently drops trailing dots and
+    // spaces from a path component, so `GL.` and `GL ` are the very folder
+    // named `GL`. Compare without them, or the folder the operator declared
+    // is not the folder the agent sees. On macOS and Linux `GL.` is a folder
+    // of its own; a rule then covers it too — as with case above, too much
+    // protection, not too little.
+    if s.split('/').any(|c| strip_win_tail(c).len() != c.len()) {
+        s = s.split('/').map(strip_win_tail).collect::<Vec<_>>().join("/");
+    }
     while s.ends_with('/') && s.len() > 1 {
         s.pop();
     }
     s
+}
+
+/// A path component without the trailing dots and spaces Win32 does not see
+/// (`C:\Freigaben\GL.` is `C:\Freigaben\GL`). A component of nothing but
+/// dots and spaces stays as it is: `.` and `..` are not names, and `..`
+/// shortened to `.` would be a different folder.
+fn strip_win_tail(comp: &str) -> &str {
+    match comp.trim_end_matches(['.', ' ']) {
+        "" => comp,
+        t => t,
+    }
 }
 
 /// Is `file` inside `base` (or is it `base` itself)? Both are normalised.
@@ -125,6 +169,62 @@ mod tests {
         assert!(!under("/srv/gl2/a", "/srv/gl"));
         assert!(!under("/srv/g", "/srv/gl"));
         assert!(!under("/srv/andere/a.txt", "/srv/gl"));
+    }
+
+    /// macOS hands out **decomposed** names (NFD) for what a person typed
+    /// composed (NFC) — the two name the same file. A strict folder declared
+    /// in one form and an event delivered in the other are the same folder,
+    /// and the comparison has to say so; otherwise a strict folder simply
+    /// does not protect.
+    #[test]
+    fn a_name_is_the_same_in_both_normalisation_forms() {
+        let nfc = "/Users/eva/\u{00dc}";        // what an operator types
+        let nfd = "/Users/eva/U\u{0308}";       // what the kernel reports
+        assert!(under(nfc, nfd), "NFC event against an NFD rule");
+        assert!(under(nfd, nfc), "NFD event against an NFC rule");
+        // The other direction matters too, or a rule written in the form the
+        // filesystem happens to use would not match itself.
+        assert!(under(nfd, nfd));
+        // Pure ASCII is untouched by the fold.
+        assert!(under("/srv/GL/a", "/srv/GL"));
+    }
+
+    /// Letters that share an upper case are one letter to a case-blind file
+    /// system, whatever their lower case: NTFS opens `ΠΕΛΑΤΕσ` as the folder
+    /// `ΠΕΛΑΤΕΣ`, and a caller picks the spelling ETW reports.
+    #[test]
+    fn letters_with_one_upper_case_are_one_letter() {
+        assert!(under(r"C:\Freigaben\ΠΕΛΑΤΕσ\a.xlsx", r"C:\Freigaben\ΠΕΛΑΤΕΣ"), "final sigma");
+        assert!(under(r"C:\Freigaben\ΠΕΛΑΤΕΣ\a.xlsx", r"C:\Freigaben\πελατεσ"));
+        assert!(under("C:\\Freigaben\\F\u{131}nance\\a", r"C:\Freigaben\Finance"), "dotless i");
+        assert!(under("/srv/Ka\u{17f}\u{17f}e/a", "/srv/Kasse"), "long s");
+        assert!(under("/srv/\u{b5}C/a", "/srv/\u{3bc}C"), "micro sign");
+        assert!(!under("/srv/GLx/a", "/srv/GL"));
+    }
+
+    /// Win32 drops trailing dots and spaces from a path component before it
+    /// looks at it: `C:\\Freigaben\\GL.` **is** `C:\\Freigaben\\GL`. So the
+    /// component is compared the way the kernel sees it, or the declared
+    /// folder and the opened one are two different strings.
+    #[test]
+    fn trailing_dots_and_spaces_are_not_part_of_a_name() {
+        for spelling in [r"C:\Freigaben\GL.", r"C:\Freigaben\GL ", r"C:\Freigaben\GL . "]
+            .iter()
+            .map(|s| s.replace('\\', "/"))
+        {
+            assert!(under(&spelling, r"C:\Freigaben\GL"), "{spelling}");
+            assert!(under(r"C:\Freigaben\GL\a.txt", &spelling), "rule written with the tail: {spelling}");
+        }
+        // Only the tail of a component goes — a name that merely *starts*
+        // with a dot is a different folder and stays one.
+        assert!(!under("/srv/.hidden/a", "/srv/hidden"));
+        assert!(under("/srv/GL./sub/a", "/srv/GL"));
+        // The current-directory designator keeps its dot: `/` and `C:.` are
+        // not a folder called the empty string, and `..` is not `.`.
+        assert_eq!(norm("/"), "/");
+        assert_eq!(norm("C:\\."), "c:/.", "the designator is not stripped to nothing");
+        assert_eq!(norm("/srv/GL/../HR"), "/srv/gl/../hr");
+        assert_eq!(norm("/a/b/"), "/a/b");
     }
 
     #[test]

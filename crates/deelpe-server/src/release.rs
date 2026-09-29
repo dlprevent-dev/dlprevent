@@ -99,8 +99,17 @@ pub struct Asset {
 /// private repo answers there with 404. The API address of the same asset
 /// delivers the file — with `Accept: application/octet-stream`, see `get`.
 /// Gitea sends no `url`, there the existing path stays.
-fn source_of(asset: &Asset) -> &str {
-    if asset.url.is_empty() { &asset.browser_download_url } else { &asset.url }
+///
+/// Only on the repository's own host (`repo`, scheme, name and port). The
+/// release document is the peer's answer: if it could name any address,
+/// whoever answers `/releases/latest` would pick where this server sends
+/// its next requests — the token in the header included.
+fn source_of<'a>(asset: &'a Asset, repo: &reqwest::Url) -> Result<&'a str> {
+    let src = if asset.url.is_empty() { &asset.browser_download_url } else { &asset.url };
+    if reqwest::Url::parse(src).ok().map(|u| u.origin()) != Some(repo.origin()) {
+        bail!("{src} is not on the repository's host {}", repo.origin().ascii_serialization());
+    }
+    Ok(src)
 }
 
 /// Program and matching signature in a release.
@@ -200,19 +209,45 @@ fn client(timeout: Duration) -> Result<reqwest::Client> {
         .timeout(timeout)
         // Without a name of our own some Git servers do not answer at all.
         .user_agent(concat!("deelpe-server/", env!("CARGO_PKG_VERSION")))
+        // A redirect is the peer's answer too: without this, the https-only
+        // repository and `source_of` are one `302 Location: http://…` away
+        // from any plain-HTTP address (169.254.169.254, an internal admin
+        // page). GitHub sends its assets on to an https host; that stays.
+        .redirect(reqwest::redirect::Policy::custom(|a| {
+            if a.previous().len() >= 10 {
+                a.error("too many redirects")
+            } else if a.url().scheme() != "https" {
+                a.error("redirect away from https")
+            } else {
+                a.follow()
+            }
+        }))
         .build()?)
 }
 
-/// The address of the latest release. `repo` is either `besitzer/name`
+/// The address of the latest release. `repo` is either `owner/name`
 /// (then GitHub) or a full address — that keeps a self-hosted Gitea
 /// reachable, whose API has the same shape.
-pub fn latest_url(repo: &str) -> String {
+///
+/// A full address has to be `https://`: the token and the release travel
+/// over it. Its host is not restricted — a Gitea on the local network is
+/// normal for a server that stands on premises.
+pub fn latest_url(repo: &str) -> Result<reqwest::Url> {
     let r = repo.trim().trim_end_matches('/');
-    if r.starts_with("http://") || r.starts_with("https://") {
+    let name = |s: &str| !s.is_empty() && s != "." && s != ".." && s.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c));
+    let full = if r.contains("://") {
         format!("{r}/releases/latest")
     } else {
-        format!("https://api.github.com/repos/{r}/releases/latest")
+        match r.split_once('/') {
+            Some((owner, repo)) if name(owner) && name(repo) => format!("https://api.github.com/repos/{r}/releases/latest"),
+            _ => bail!("repository {r:?} is neither owner/name nor an https:// address"),
+        }
+    };
+    let url = reqwest::Url::parse(&full).with_context(|| format!("repository {r:?} is not an address"))?;
+    if url.scheme() != "https" || url.host().is_none() || url.query().is_some() || url.fragment().is_some() {
+        bail!("repository {r:?} must be an https:// address — the token and the release travel over it");
     }
+    Ok(url)
 }
 
 /// Look at what is there. Changes nothing except the note in memory.
@@ -221,8 +256,9 @@ pub async fn check(st: &Shared) -> Result<Status> {
     if repo.trim().is_empty() {
         bail!("no repository configured — Settings, Interfaces");
     }
+    let url = latest_url(&repo)?;
     let tok = token(st).await?;
-    let out = match fetch_latest(&repo, tok.as_deref()).await {
+    let out = match fetch_latest(&url, tok.as_deref()).await {
         Ok(r) => Status {
             checked_at: Some(Utc::now()),
             tag: Some(r.tag_name.clone()),
@@ -253,9 +289,8 @@ pub async fn check(st: &Shared) -> Result<Status> {
 /// sends a few kilobytes, a Gitea with many assets more.
 const MAX_METADATA: u64 = 2 * 1024 * 1024;
 
-async fn fetch_latest(repo: &str, token: Option<&str>) -> Result<Release> {
-    let url = latest_url(repo);
-    let resp = auth(client(API_TIMEOUT)?.get(&url), token).send().await.with_context(|| format!("asking {url}"))?;
+async fn fetch_latest(url: &reqwest::Url, token: Option<&str>) -> Result<Release> {
+    let resp = auth(client(API_TIMEOUT)?.get(url.clone()), token).send().await.with_context(|| format!("asking {url}"))?;
     let status = resp.status();
     // The description is read under a cap too, not only the program: it is
     // the same foreign peer, and an endless JSON body fills memory long
@@ -280,8 +315,9 @@ pub async fn fetch(st: &Shared) -> Result<(String, Vec<String>, Vec<String>)> {
     if repo.trim().is_empty() {
         bail!("no repository configured — Settings, Interfaces");
     }
+    let url = latest_url(&repo)?;
     let tok = token(st).await?;
-    let rel = fetch_latest(&repo, tok.as_deref()).await?;
+    let rel = fetch_latest(&url, tok.as_deref()).await?;
     let http = client(DOWNLOAD_TIMEOUT)?;
     let mut done = Vec::new();
     let mut failed: Vec<String> = Vec::new();
@@ -294,7 +330,7 @@ pub async fn fetch(st: &Shared) -> Result<(String, Vec<String>, Vec<String>)> {
         // already in the staging folder by then — and with the master
         // switch on it was distributed as well —, while the answer reported
         // an error and nobody knew what now applied.
-        match one(&http, asset, sig, &key, st, platform, tok.as_deref()).await {
+        match one(&http, asset, sig, &url, &key, st, platform, tok.as_deref()).await {
             Ok(n) => {
                 tracing::info!(platform, tag = %rel.tag_name, bytes = n, "agent program fetched from the release and verified");
                 done.push(platform.to_string());
@@ -338,15 +374,16 @@ pub async fn fetch(st: &Shared) -> Result<(String, Vec<String>, Vec<String>)> {
 /// the server's memory. That is why it is read in chunks and aborted when
 /// it goes over.
 /// One artifact: download, verify, store. Returns its size.
-async fn one(http: &reqwest::Client, asset: &Asset, sig: &Asset, key: &str, st: &Shared, platform: &str, token: Option<&str>) -> Result<usize> {
+#[allow(clippy::too_many_arguments)]
+async fn one(http: &reqwest::Client, asset: &Asset, sig: &Asset, repo: &reqwest::Url, key: &str, st: &Shared, platform: &str, token: Option<&str>) -> Result<usize> {
     // The announced size only saves a futile download.
     if asset.size > MAX_ASSET {
         bail!("announces {} bytes, more than this server accepts", asset.size);
     }
-    let bytes = get(http, source_of(asset), MAX_ASSET, token).await?;
+    let bytes = get(http, source_of(asset, repo)?, MAX_ASSET, token).await?;
     // A signature is 88 characters. A kilobyte is generous and keeps a peer
     // from sending a book here.
-    let sig_text = String::from_utf8(get(http, source_of(sig), 1024, token).await?).context("signature file is not text")?;
+    let sig_text = String::from_utf8(get(http, source_of(sig, repo)?, 1024, token).await?).context("signature file is not text")?;
     // Verify first, then write. A file that makes it into the staging
     // folder and only stands out there is one that could already have been
     // delivered.
@@ -509,20 +546,87 @@ mod tests {
     #[test]
     fn a_private_repository_is_asked_through_the_api_address() {
         let gitea = asset("deelpe-winagent.exe");
-        assert_eq!(source_of(&gitea), "https://example.invalid/deelpe-winagent.exe");
+        let repo = latest_url("https://example.invalid/api/v1/repos/o/r").unwrap();
+        assert_eq!(source_of(&gitea, &repo).unwrap(), "https://example.invalid/deelpe-winagent.exe");
         let github = Asset { url: "https://api.github.com/repos/o/r/releases/assets/7".into(), ..asset("deelpe-winagent.exe") };
-        assert_eq!(source_of(&github), "https://api.github.com/repos/o/r/releases/assets/7");
+        assert_eq!(source_of(&github, &latest_url("o/r").unwrap()).unwrap(), "https://api.github.com/repos/o/r/releases/assets/7");
+    }
+
+    /// The release document names where its files lie — the host is not its
+    /// to choose. Otherwise whoever answers `/releases/latest` picks which
+    /// address this server asks next, with the token in the header. What
+    /// GitHub and Gitea really send (2026-09-29) stays on the repository's
+    /// own host: GitHub `url` on `api.github.com`, Gitea
+    /// `browser_download_url` next to its API.
+    #[test]
+    fn a_release_cannot_send_the_download_to_another_host() {
+        let repo = latest_url("https://git.example.com/api/v1/repos/owner/dlprevent").unwrap();
+        let at = |u: &str| Asset { browser_download_url: u.into(), ..asset("deelpe-winagent.exe") };
+        assert!(source_of(&at("https://git.example.com/owner/dlprevent/releases/download/v1/deelpe-winagent.exe"), &repo).is_ok());
+        for elsewhere in [
+            "http://169.254.169.254/latest/meta-data/iam/security-credentials/role",
+            "http://127.0.0.1:19998/internal-db-dump",
+            "http://git.example.com/owner/dlprevent/releases/download/v1/x",
+            "https://git.example.com:8443/x",
+            "https://git.example.com.evil.example/x",
+            "not a url",
+        ] {
+            assert!(source_of(&at(elsewhere), &repo).is_err(), "{elsewhere}");
+        }
+        // GitHub: the API address of the asset is on the API host; the
+        // redirect from there to its storage host is GitHub's, not the
+        // release document's.
+        let github = Asset { url: "https://api.github.com/repos/o/r/releases/assets/7".into(), ..at("https://github.com/o/r/releases/download/v1/x") };
+        assert!(source_of(&github, &latest_url("o/r").unwrap()).is_ok());
+        let github = Asset { url: "https://evil.example/assets/7".into(), ..github };
+        assert!(source_of(&github, &latest_url("o/r").unwrap()).is_err());
     }
 
     /// A short form means GitHub, a full address stays as it is — so that
     /// a self-hosted Gitea stays reachable.
     #[test]
     fn the_repository_can_be_a_short_name_or_a_full_address() {
-        assert_eq!(latest_url("owner/dlprevent"), "https://api.github.com/repos/owner/dlprevent/releases/latest");
+        assert_eq!(latest_url("owner/dlprevent").unwrap().as_str(), "https://api.github.com/repos/owner/dlprevent/releases/latest");
         assert_eq!(
-            latest_url("https://git.example.com/api/v1/repos/owner/dlprevent/"),
+            latest_url("https://git.example.com/api/v1/repos/owner/dlprevent/").unwrap().as_str(),
             "https://git.example.com/api/v1/repos/owner/dlprevent/releases/latest"
         );
+        // A self-hosted Gitea on the local network is a normal case for a
+        // server that stands on premises — it is not refused for its address.
+        assert!(latest_url("https://192.0.2.5:3000/api/v1/repos/o/r").is_ok());
+    }
+
+    /// The token and the release travel over this address: never in clear
+    /// text, and a short form is `owner/name` and nothing else.
+    #[test]
+    fn the_repository_is_https_or_owner_slash_name() {
+        for bad in ["http://git.example.com/api/v1/repos/o/r", "ftp://x/y", "file:///etc/passwd", "https://", "o", "o/r/x", "../x", "o/..", "o r/x", "o/r?x=1", "o/r#x", ""] {
+            assert!(latest_url(bad).is_err(), "{bad}");
+        }
+        assert!(latest_url("dlprevent-dev/dlprevent").is_ok());
+        assert!(latest_url("some_owner/repo.name-2").is_ok());
+    }
+
+    /// A redirect is not a way around https-only: a hop to `http://` is
+    /// refused, a hop to `https://` is followed (GitHub's asset storage).
+    #[tokio::test]
+    async fn a_redirect_does_not_leave_https() {
+        rustls::crypto::ring::default_provider().install_default().ok();
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let at = format!("http://{}/", l.local_addr().unwrap());
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            while let Ok((mut c, _)) = l.accept().await {
+                let mut buf = [0u8; 1024];
+                let n = c.read(&mut buf).await.unwrap_or(0);
+                let to = if String::from_utf8_lossy(&buf[..n]).starts_with("GET /s ") { "https://127.0.0.1:1/x" } else { "http://127.0.0.1:1/x" };
+                c.write_all(format!("HTTP/1.1 302 Found\r\nLocation: {to}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).await.ok();
+            }
+        });
+        let http = client(Duration::from_secs(5)).unwrap();
+        assert!(http.get(&at).send().await.unwrap_err().is_redirect(), "to http: refused");
+        let e = http.get(format!("{at}s")).send().await.unwrap_err();
+        assert!(!e.is_redirect(), "to https: followed (and then refused by the closed port) — {e}");
     }
 }
 
