@@ -10,6 +10,9 @@ pub(super) struct Settings {
     learn_days: i64,
     report_interval_secs: i64,
     alert_retain_days: i64,
+    /// The most `alert_retain_days` may be; out only.
+    #[serde(default, skip_deserializing)]
+    alert_retain_max_days: i64,
     count_retain_days: i64,
     /// May the central server tell an agent to remember a pair? That is the
     /// only way in which the central server changes a device's behaviour;
@@ -246,6 +249,13 @@ const KEYS: [&str; 40] = [
     "config_generation",
 ];
 
+/// The build's limit, or what is stored if that is longer: a license that
+/// lapsed must not force anyone to cut short a record that already runs
+/// longer. It can still shrink, but not grow back.
+fn alert_retain_max_days(st: &Shared, stored: i64) -> i64 {
+    (st.alert_retain_max_days)().max(stored)
+}
+
 pub(super) async fn settings(State(st): State<Shared>, _u: Admin) -> R<Settings> {
     let m = db::settings_map(&st.pool, &KEYS).await?;
     // The defaults are the same as before, when each was queried on its own.
@@ -256,6 +266,7 @@ pub(super) async fn settings(State(st): State<Shared>, _u: Admin) -> R<Settings>
         learn_days: i64_of("learn_days", 7),
         report_interval_secs: i64_of("report_interval_secs", 30),
         alert_retain_days: i64_of("alert_retain_days", 730),
+        alert_retain_max_days: alert_retain_max_days(&st, i64_of("alert_retain_days", 730)),
         count_retain_days: i64_of("count_retain_days", 30),
         learn_push_enabled: bool_of("learn_push_enabled", false),
         agent_update_enabled: bool_of("agent_update_enabled", false),
@@ -311,8 +322,9 @@ pub(super) async fn update_settings(State(st): State<Shared>, Admin(user): Admin
     if !(10..=3600).contains(&b.report_interval_secs) {
         return Err(bad("report interval: 10 to 3600 seconds"));
     }
-    if !(30..=3650).contains(&b.alert_retain_days) {
-        return Err(bad("alerts: 30 to 3650 days"));
+    let max = alert_retain_max_days(&st, db::setting_i64(&st.pool, "alert_retain_days", 730).await?);
+    if !(30..=max).contains(&b.alert_retain_days) {
+        return Err(bad(format!("alerts: 30 to {max} days")));
     }
     if !(1..=365).contains(&b.count_retain_days) {
         return Err(bad("counts: 1 to 365 days"));
