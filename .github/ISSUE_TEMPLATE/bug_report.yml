@@ -1,0 +1,51 @@
+name: Bug report
+description: Something does not work as described
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Security issues do not belong here. Send them to security@dlprevent.ch, see SECURITY.md.
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options: [macOS agent, Windows agent, Linux agent, Server / dashboard, Other]
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Shown in the dashboard or by `deelpe --version`.
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: macOS 15.3, Windows 11 24H2, Ubuntu 24.04
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Watch folder ...
+        2. Copy a file to ...
+        3. No alert appears
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Agent or server log around the time it happened. Remove file names or user names you do not want public.
+      render: text

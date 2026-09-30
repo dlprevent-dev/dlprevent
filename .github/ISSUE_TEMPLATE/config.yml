@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/dlprevent-dev/dlprevent/blob/main/SECURITY.md
+    about: Report privately to security@dlprevent.ch, not as an issue.
+  - name: Enterprise edition, licensing, hosting
+    url: mailto:info@dlprevent.ch
+    about: Business enquiries go to info@dlprevent.ch.
+  - name: Support for customers
+    url: mailto:support@dlprevent.ch
+    about: Customers with a support agreement write to support@dlprevent.ch.
