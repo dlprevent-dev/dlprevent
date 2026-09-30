@@ -119,7 +119,7 @@ fn short_host(file: &str) -> Option<String> {
     let end = rest.find('/').unwrap_or(rest.len());
     let host = &rest[..end];
     // An address has no short name. Shortening `192.0.2.201` at the first
-    // dot yields `10` — a machine name that does not exist, and with it a
+    // dot yields `192` — a machine name that does not exist, and with it a
     // comparison that at best matches nothing. Anyone who accesses via the
     // address is not caught here: the central server hands out the file
     // server's addresses as rule paths of their own (`deelpe-server`,
@@ -156,9 +156,9 @@ mod tests {
         // Only for UNC: a dot in an ordinary folder shortens nothing.
         assert!(!under("/srv.example/gl/a", "/srv/gl"));
         // An address is not shortened: `192.0.2.201` is not the machine
-        // `10`. Access via the address is covered by a rule path of its
+        // `192`. Access via the address is covered by a rule path of its
         // own, not by this shortening.
-        assert!(!under(r"\\192.0.2.201\GL\a", r"\\10\GL"));
+        assert!(!under(r"\\192.0.2.201\GL\a", r"\\192\GL"));
         assert!(!under(r"\\192.0.2.201\GL\a", r"\\fs-01\GL"));
         assert!(under(r"\\192.0.2.201\GL\a", r"\\192.0.2.201\GL"), "die Adresse als Regel trifft sich selbst");
     }
