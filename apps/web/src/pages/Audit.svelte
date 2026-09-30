@@ -24,6 +24,7 @@
     login: 'Sign in', login_failed: 'Sign-in failed', alert_ack: 'Alert marked done', rule_create: 'Rule created', rule_update: 'Rule changed', rule_delete: 'Rule deleted',
     agent_enroll: 'Agent enrolled', agent_revoke: 'Agent revoked', source_new: 'New source', source_update: 'Source changed', source_delete: 'Source deleted',
     token_create: 'Token created', token_delete: 'Token deleted', user_create: 'User created', user_delete: 'User deleted', password_change: 'Password changed', settings_update: 'Settings changed',
+    binary_upload: 'Agent program uploaded', binary_remove: 'Agent program removed',
   };
   const bad = new Set(['login_failed', 'rule_delete', 'agent_revoke', 'source_delete', 'user_delete']);
 

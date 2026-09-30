@@ -124,7 +124,7 @@
   /// Hence the same confirmation as for fetching from a release, and hence it
   /// says what is currently running: a checksum you recognise is the only
   /// protection against a slip.
-  async function uploadBinary(platform: string, file: File) {
+  async function uploadBinary(platform: string, file: File, sig?: File) {
     const cur = binaries.find((b) => b.platform === platform);
     const running = [...new Set(agents.filter((a) => (platformFor(a.kind) === platform || selfReplacingPlatform(a.kind, a.status?.arch) === platform) && a.status?.build).map((a) => a.status!.build!))];
     if (rel?.rolls_out_at_once) {
@@ -140,7 +140,10 @@
     }
     uploading = platform;
     try {
-      await api(`/api/binaries/${platform}`, { method: 'POST', body: file });
+      // With a signing key configured the server wants the signature too;
+      // without one it ignores it.
+      const q = sig ? `?sig=${encodeURIComponent((await sig.text()).trim())}` : '';
+      await api(`/api/binaries/${platform}${q}`, { method: 'POST', body: file });
       notify(`${file.name} uploaded`);
       await load();
       // The command carries the checksum of the binary — after an upload the
@@ -157,9 +160,15 @@
   function pickFile(platform: string) {
     const input = document.createElement('input');
     input.type = 'file';
-    // Linux: the bare program, which has no extension — so no filter.
-    if (platform === 'windows' || platform === 'mac') input.accept = platform === 'windows' ? '.exe' : '.zip';
-    input.onchange = () => { const f = input.files?.[0]; if (f) uploadBinary(platform, f); };
+    // Linux: the bare program, which has no extension — so no filter. The
+    // program and its `.sig` are picked together.
+    if (platform === 'windows' || platform === 'mac') input.accept = platform === 'windows' ? '.exe,.sig' : '.zip,.sig';
+    input.multiple = true;
+    input.onchange = () => {
+      const files = [...(input.files ?? [])];
+      const f = files.find((x) => !x.name.endsWith('.sig'));
+      if (f) uploadBinary(platform, f, files.find((x) => x.name.endsWith('.sig')));
+    };
     input.click();
   }
   onMount(() => () => clearTimeout(logTimer));

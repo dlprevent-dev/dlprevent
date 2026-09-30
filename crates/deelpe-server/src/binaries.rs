@@ -13,12 +13,12 @@
 use crate::auth::{bad, not_found, Admin, ApiError, User};
 use crate::state::Shared;
 use axum::body::Bytes;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// Platform → file name. Hard-wired: the name never comes from the
@@ -232,28 +232,47 @@ async fn download(_u: User, State(st): State<Shared>, Path(platform): Path<Strin
     Ok(as_download(name, bytes))
 }
 
-async fn upload(Admin(_a): Admin, State(st): State<Shared>, Path(platform): Path<String>, body: Bytes) -> Result<Json<Binary>, ApiError> {
+/// The signature to an upload, base64 as `deelpe-sign` writes it into the
+/// `.sig` file. Only asked for when a release key exists.
+#[derive(Deserialize)]
+struct UploadQuery {
+    sig: Option<String>,
+}
+
+async fn upload(Admin(a): Admin, State(st): State<Shared>, Path(platform): Path<String>, Query(q): Query<UploadQuery>, body: Bytes) -> Result<Json<Binary>, ApiError> {
     if file_name(&platform).is_none() {
         return Err(bad("unknown platform"));
     }
     if body.is_empty() {
         return Err(bad("empty upload"));
     }
+    // With a release key, the key decides what reaches the fleet — through
+    // the release channel **and** through this form. Otherwise the key would
+    // only guard the door nobody has to use: one administrator login could
+    // still hand every endpoint any program.
+    let key = crate::release::pubkey(&st).await.map_err(|e| bad(format!("{e:#}")))?;
+    if let Some(key) = &key {
+        let sig = q.sig.as_deref().filter(|s| !s.trim().is_empty()).ok_or_else(|| bad("a signing key is configured: upload the program together with its .sig file"))?;
+        crate::release::verify(&body, sig, key).map_err(|e| bad(format!("signature: {e:#}")))?;
+    }
     install(&st, &platform, &body).map_err(|e| bad(format!("{e:#}")))?;
+    let sha256 = hex(&Sha256::digest(&body));
     tracing::info!(platform, bytes = body.len(), "agent binary uploaded");
+    crate::db::audit(&st.pool, (&a).into(), "binary_upload", serde_json::json!({ "platform": platform, "size": body.len(), "sha256": sha256, "signed": key.is_some() })).await;
     Ok(Json(Binary {
         platform: KNOWN.iter().find(|(p, _)| *p == platform).map(|(p, _)| *p).unwrap_or("?"),
         file_name: file_name(&platform).unwrap_or("?"),
         present: true,
         size: body.len() as u64,
-        sha256: hex(&Sha256::digest(&body)),
+        sha256,
         uploaded_at: Some(chrono::Utc::now()),
     }))
 }
 
-async fn remove(Admin(_a): Admin, State(st): State<Shared>, Path(platform): Path<String>) -> Result<StatusCode, ApiError> {
+async fn remove(Admin(a): Admin, State(st): State<Shared>, Path(platform): Path<String>) -> Result<StatusCode, ApiError> {
     let path = path_for(&st, &platform).ok_or_else(not_found)?;
     let _ = std::fs::remove_file(path);
+    crate::db::audit(&st.pool, (&a).into(), "binary_remove", serde_json::json!({ "platform": platform })).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -262,8 +281,8 @@ async fn remove(Admin(_a): Admin, State(st): State<Shared>, Path(platform): Path
 ///
 /// First write next to it, then rename: an aborted write must never be a
 /// half file that somebody installs. And **nothing** is checked here —
-/// whoever arrives here already has their check behind them (MZ header on
-/// upload, signature on the release).
+/// whoever arrives here already has their check behind them (the signature on
+/// the release, and on an upload whenever a key exists).
 pub fn install(st: &Shared, platform: &str, bytes: &[u8]) -> anyhow::Result<()> {
     let path = path_for(st, platform).ok_or_else(|| anyhow::anyhow!("unknown platform {platform}"))?;
     check_header(platform, bytes)?;

@@ -1349,8 +1349,12 @@ distributes.
   server — on the build machine itself, or with `DEELPE_SSH=user@host` on the
   server over there. The route for everyone who stays current with `git pull`
   — see [DEVELOPMENT.md](DEVELOPMENT.md).
-- **Upload** under *Agents → agent program*. Always possible, nothing else
-  needed.
+- **Upload** under *Agents → agent program*. Without a signing key nothing
+  else is needed. Once a public signing key is set (*Settings → Interfaces*,
+  or compiled in), pick the program **together with its `.sig`** — the server
+  refuses an upload that key did not sign, so an administrator login alone
+  cannot hand every endpoint a program. Uploads and removals are in the
+  audit log.
 
   **Upload first, then create the enrollment token.** The command carries the
   checksum of the program that was in place when the token was created and

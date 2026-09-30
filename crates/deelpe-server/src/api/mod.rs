@@ -1293,4 +1293,40 @@ mod tests {
         assert_eq!(search_terms(Some("100%_x")), vec!["%100\\%\\_x%"]);
         assert_eq!(search_terms(Some("a b c d e f g h i j")).len(), 8);
     }
+
+    /// With a release key, an upload reaches the fleet only with that key's
+    /// signature — otherwise one administrator login could hand every
+    /// endpoint any program past the key. Upload and removal land in the
+    /// audit log either way.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_uploaded_agent_program_needs_the_release_key_and_is_audited(pool: sqlx::PgPool) {
+        use base64::Engine;
+        use ring::signature::KeyPair;
+        let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+        let pkcs8 = ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new()).unwrap();
+        let kp = ring::signature::Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
+        db::set_setting(&pool, "release_pubkey", json!(b64(kp.public_key().as_ref()))).await.unwrap();
+
+        let data_dir = std::env::temp_dir().join(format!("deelpe-upload-test-{}", Uuid::new_v4()));
+        let app = router(test_app_in(pool.clone(), data_dir.clone()), Router::new());
+        let admin = test_session(&pool, "admin").await;
+        let exe: &[u8] = b"MZ ein Programm";
+        let upload = |q: String| {
+            let req = Request::builder().method("POST").uri(format!("/api/binaries/windows{q}")).header(header::COOKIE, &admin).body(axum::body::Body::from(exe)).unwrap();
+            app.clone().oneshot(req)
+        };
+        let enc = |s: String| s.replace('+', "%2B").replace('/', "%2F").replace('=', "%3D");
+
+        assert_eq!(upload(String::new()).await.unwrap().status(), StatusCode::BAD_REQUEST, "no signature");
+        let other = ring::signature::Ed25519KeyPair::from_pkcs8(ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new()).unwrap().as_ref()).unwrap();
+        assert_eq!(upload(format!("?sig={}", enc(b64(other.sign(exe).as_ref())))).await.unwrap().status(), StatusCode::BAD_REQUEST, "someone else's key");
+        assert!(!data_dir.join("agents/deelpe-winagent.exe").exists(), "nothing staged before a valid signature");
+
+        assert_eq!(upload(format!("?sig={}", enc(b64(kp.sign(exe).as_ref())))).await.unwrap().status(), StatusCode::OK);
+        let r = send(&app, "DELETE", "/api/binaries/windows", (header::COOKIE.as_str(), &admin), serde_json::Value::Null).await;
+        assert_eq!(r.status(), StatusCode::NO_CONTENT);
+        let actions: Vec<String> = sqlx::query_scalar("SELECT action FROM audit_log WHERE action LIKE 'binary_%' ORDER BY id").fetch_all(&pool).await.unwrap();
+        assert_eq!(actions, ["binary_upload", "binary_remove"]);
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
 }
