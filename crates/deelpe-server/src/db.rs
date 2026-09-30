@@ -523,12 +523,16 @@ pub struct AlertRow {
     pub verdict: String,
     pub reason: Option<String>,
     pub detail: serde_json::Value,
+    /// Reason and detail as first reported, once a later report replaced
+    /// them; `None` while nothing was replaced.
+    pub first_reason: Option<String>,
+    pub first_detail: Option<serde_json::Value>,
     pub acknowledged_at: Option<DateTime<Utc>>,
     pub acknowledged_by: Option<Uuid>,
     pub received_at: DateTime<Utc>,
 }
 
-pub const ALERT_COLS: &str = "id, kind, agent_id, source_id, origin_name, external_id, at, last_at, user_key, user_display, rule_id, path, process, files, file_count, bytes, remote, verdict, reason, detail, acknowledged_at, acknowledged_by, received_at";
+pub const ALERT_COLS: &str = "id, kind, agent_id, source_id, origin_name, external_id, at, last_at, user_key, user_display, rule_id, path, process, files, file_count, bytes, remote, verdict, reason, detail, first_reason, first_detail, acknowledged_at, acknowledged_by, received_at";
 
 #[derive(Debug, Clone, Copy)]
 pub enum Origin {
@@ -569,8 +573,11 @@ macro_rules! verdict_rank {
 /// escalates, and reason and detail come along only with a verdict that is
 /// not lower; counts, bytes and `last_at` take the larger value; files are
 /// added to in their order, never replaced.
-// ponytail: at an equal verdict a forged detail/reason still replaces the old
-// one (files and counts are safe); an append-only history if that matters.
+// At an equal verdict a report still brings its own reason and detail (a
+// growing alert shows what it grew into); the first ones are kept in
+// `first_reason`/`first_detail` the moment they are replaced, and never again.
+// ponytail: first and latest, not every step between; a history table if the
+// steps matter.
 const ALERT_UPSERT: &str = concat!(
     "INSERT INTO alerts (kind, agent_id, source_id, origin_name, external_id, at, last_at, user_key, user_display, rule_id, path, process, files, file_count, bytes, remote, verdict, reason, detail, acknowledged_at) \
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, CASE WHEN $20 THEN now() ELSE NULL END) \
@@ -581,6 +588,12 @@ const ALERT_UPSERT: &str = concat!(
        verdict = CASE WHEN ", verdict_rank!("EXCLUDED.verdict"), " > ", verdict_rank!("alerts.verdict"), " THEN EXCLUDED.verdict ELSE alerts.verdict END, \
        reason = CASE WHEN ", verdict_rank!("EXCLUDED.verdict"), " >= ", verdict_rank!("alerts.verdict"), " THEN EXCLUDED.reason ELSE alerts.reason END, \
        detail = CASE WHEN ", verdict_rank!("EXCLUDED.verdict"), " >= ", verdict_rank!("alerts.verdict"), " THEN EXCLUDED.detail ELSE alerts.detail END, \
+       first_reason = CASE WHEN alerts.first_detail IS NULL AND ", verdict_rank!("EXCLUDED.verdict"), " >= ", verdict_rank!("alerts.verdict"), " \
+                                AND (EXCLUDED.detail IS DISTINCT FROM alerts.detail OR EXCLUDED.reason IS DISTINCT FROM alerts.reason) \
+                           THEN alerts.reason ELSE alerts.first_reason END, \
+       first_detail = CASE WHEN alerts.first_detail IS NULL AND ", verdict_rank!("EXCLUDED.verdict"), " >= ", verdict_rank!("alerts.verdict"), " \
+                                AND (EXCLUDED.detail IS DISTINCT FROM alerts.detail OR EXCLUDED.reason IS DISTINCT FROM alerts.reason) \
+                           THEN alerts.detail ELSE alerts.first_detail END, \
        received_at = now(), \
        acknowledged_at = CASE WHEN alerts.acknowledged_by IS NULL AND NOT $20 THEN NULL \
                               WHEN EXCLUDED.verdict = 'denied' AND alerts.verdict <> 'denied' THEN NULL \
@@ -1045,6 +1058,50 @@ mod tests {
         assert_eq!(f, serde_json::json!(["a.docx", "b.docx", "decoy.txt"]), "files are added to, not replaced");
         assert_eq!(r.as_deref(), Some("101 files"), "a lower verdict does not bring its own reason");
         assert_eq!(last, Some(t0 + chrono::Duration::seconds(20)), "last_at does not go back");
+    }
+
+    /// At an equal verdict a re-report still brings its own reason and
+    /// detail — a growing alert has to show what it has grown into. What it
+    /// first said is kept beside it and never overwritten: a forged report
+    /// can change what the dashboard shows now, not erase the original.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn what_an_alert_first_said_survives_a_rewrite(pool: PgPool) {
+        use deelpe_core::access::AccessVerdict;
+        let agent: Uuid = sqlx::query_scalar(
+            "INSERT INTO agents (id, name, kind, version, cert_fingerprint, cert_not_after) \
+             VALUES (gen_random_uuid(), 'srv', 'windows_server', '0.1.0', 'fp', now() + interval '1 day') RETURNING id",
+        )
+        .fetch_one(&pool).await.unwrap();
+        let t0: DateTime<Utc> = "2026-09-06T10:00:00Z".parse().unwrap();
+        let alert = |reason: &str, client_ip: &str| AccessAlert {
+            external_id: "access:r1:hans:2".into(),
+            at: t0,
+            last_at: None,
+            user: UserRef { source: "srv".into(), name: "hans".into(), domain: None, sid: None },
+            rule_id: None,
+            path: "GL".into(),
+            files: 101,
+            bytes: 2048,
+            sample_files: vec!["a.docx".into()],
+            client_ip: Some(client_ip.into()),
+            verdict: AccessVerdict::HardLimit { files: 101, limit: 100 },
+            reason: Some(reason.into()),
+        };
+        let o = Origin::Agent(agent);
+        let stored = || sqlx::query_as::<_, (Option<String>, serde_json::Value, Option<String>, Option<serde_json::Value>)>(
+            "SELECT reason, detail, first_reason, first_detail FROM alerts WHERE external_id = 'access:r1:hans:2'").fetch_one(&pool);
+
+        upsert_access_alert(&pool, o, "srv", &alert("101 files from 192.0.2.7", "192.0.2.7")).await.unwrap();
+        let (_, _, first_reason, first_detail) = stored().await.unwrap();
+        assert_eq!((first_reason, first_detail), (None, None), "nothing to keep while nothing changed");
+
+        upsert_access_alert(&pool, o, "srv", &alert("routine backup", "192.0.2.99")).await.unwrap();
+        upsert_access_alert(&pool, o, "srv", &alert("still routine", "192.0.2.98")).await.unwrap();
+        let (reason, detail, first_reason, first_detail) = stored().await.unwrap();
+        assert_eq!(reason.as_deref(), Some("still routine"), "the current state is the latest report's");
+        assert_eq!(detail["client_ip"], "192.0.2.98");
+        assert_eq!(first_reason.as_deref(), Some("101 files from 192.0.2.7"), "the first reason stays");
+        assert_eq!(first_detail.unwrap()["client_ip"], "192.0.2.7", "and so does the first detail");
     }
 
     #[sqlx::test(migrations = "./migrations")]
