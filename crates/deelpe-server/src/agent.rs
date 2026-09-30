@@ -243,7 +243,16 @@ async fn binary(
         .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "no agent program for this kind of agent".into()))?;
     let (name, bytes) = crate::binaries::read(&st, platform).ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "no agent program uploaded".into()))?;
     info!(agent = %agent.name, platform, bytes = bytes.len(), "agent fetches its program");
-    Ok(crate::binaries::as_download(name, bytes))
+    let mut resp = crate::binaries::as_download(name, bytes);
+    // The release statement along with it, base64 because it spans lines.
+    // An agent built with the release key swaps only when it holds.
+    if let Some(stmt) = crate::binaries::release_statement(&st, platform) {
+        use base64::Engine;
+        if let Ok(v) = base64::engine::general_purpose::STANDARD.encode(stmt).parse() {
+            resp.headers_mut().insert(deelpe_core::central::RELEASE_HEADER, v);
+        }
+    }
+    Ok(resp)
 }
 
 async fn report(State(st): State<Shared>, peer_cert: Option<Extension<PeerCert>>, Extension(peer): Extension<PeerAddr>, Json(r): Json<Report>) -> Result<Json<ReportResponse>, ApiError> {

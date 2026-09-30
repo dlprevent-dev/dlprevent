@@ -111,7 +111,8 @@ impl Client {
     /// Nothing is checked here: the checksum is in the answer to the
     /// report, and whoever downloads has to hold it against the bytes
     /// before writing them anywhere.
-    pub async fn binary(&self) -> Result<Vec<u8>> {
+    /// The program and the release statement that came with it, if any.
+    pub async fn binary(&self) -> Result<(Vec<u8>, Option<String>)> {
         // Its own timeout: the twenty seconds for a report are enough for
         // four and a half megabytes only on a fast line, and on a slow one
         // the agent would otherwise never get past the download.
@@ -121,7 +122,13 @@ impl Client {
             let body = resp.text().await.unwrap_or_default();
             bail!("central server does not hand out the agent program ({status}): {}", body.chars().take(200).collect::<String>());
         }
-        Ok(resp.bytes().await.context("answer")?.to_vec())
+        let statement = resp
+            .headers()
+            .get(crate::central::RELEASE_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| crate::signing::b64(v).ok())
+            .and_then(|b| String::from_utf8(b).ok());
+        Ok((resp.bytes().await.context("answer")?.to_vec(), statement))
     }
 
     /// New key pair, new CSR, new certificate — over the existing

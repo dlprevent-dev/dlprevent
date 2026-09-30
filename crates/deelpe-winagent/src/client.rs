@@ -629,15 +629,27 @@ impl deelpe_core::pipeline::Enforcer for EndpointEnforcer<'_> {
             // does not. Without it the copy would lie there readable for up
             // to ten seconds while `delete_copy_later` tries in vain.
             Some(path) => {
-                let locked = crate::enforce::lock_copy(path);
-                match crate::enforce::delete_copy(path) {
-                    Ok(_) => "copy deleted".into(),
+                // The spelling is not enough (pentest 8840/0004): through a
+                // junction a path outside can lead into the share. Lock and
+                // delete decide on where the file really lies, see `enforce`.
+                let cfg = self.cfg.clone();
+                let protected: crate::enforce::Protected = std::sync::Arc::new(move |p: &std::path::Path| cfg.is_watched(p));
+                use crate::enforce::Outcome;
+                let locked = match crate::enforce::lock_copy(path, &protected) {
+                    Ok(Outcome::Refused(real)) => return format!("copy NOT deleted: it leads into the protected folder ({})", real.display()),
+                    Ok(Outcome::Gone) => return "copy already gone".into(),
+                    other => other,
+                };
+                match crate::enforce::delete_copy(path, &protected) {
+                    Ok(Outcome::Refused(real)) => format!("copy NOT deleted: it leads into the protected folder ({})", real.display()),
+                    Ok(Outcome::Gone) => "copy already gone".into(),
+                    Ok(Outcome::Done) => "copy deleted".into(),
                     // The copier still holds the file open; keep trying in
                     // the background. Until then nobody gets at it any more.
                     Err(e) => {
-                        crate::enforce::delete_copy_later(path.to_path_buf());
+                        crate::enforce::delete_copy_later(path.to_path_buf(), protected);
                         match locked {
-                            Ok(()) => format!("copy locked, deletion pending ({e})"),
+                            Ok(_) => format!("copy locked, deletion pending ({e})"),
                             Err(le) => format!("copy NOT deleted ({e}) and NOT locked ({le}), retrying"),
                         }
                     }
@@ -667,6 +679,40 @@ mod tests {
 
     const GL_DIR: &str = r"C:\Freigaben\GL";
     const GL_FILE: &str = r"C:\Freigaben\GL\Zahlen.xlsx";
+
+    /// Pentest 8840/0004: `mklink /J %USERPROFILE%\in C:\Share\GL`, then
+    /// a tainted process writes `in\colleague.docx`. The path is spelled
+    /// outside the protected folder, so the check let it through — and the
+    /// service, as SYSTEM, deleted the real file inside the share. A symbolic
+    /// link stands in for the junction here; both are followed the same way.
+    #[cfg(unix)]
+    #[test]
+    fn a_copy_that_leads_into_the_protected_folder_is_not_deleted() {
+        let dir = std::env::temp_dir().join(format!("deelpe-junction-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let share = dir.join("GL");
+        std::fs::create_dir_all(&share).unwrap();
+        let share = std::fs::canonicalize(&share).unwrap();
+        std::fs::write(share.join("colleague.docx"), b"real").unwrap();
+        let link = dir.join("in");
+        std::os::unix::fs::symlink(&share, &link).unwrap();
+
+        let cfg = Config { watched: vec![share.clone()], ..Default::default() };
+        let ev = Event::File(deelpe_core::event::FileEvent {
+            at: Utc::now(),
+            process: deelpe_core::event::ProcessRef { pid: 4242, ppid: None, responsible: None, path: "curl.exe".into(), identity: ProcessIdentity::Unknown { path: "curl.exe".into() } },
+            path: link.join("colleague.docx"),
+            action: deelpe_core::event::FileAction::Write,
+            target: None,
+            inode: None,
+            nlink: None,
+            argv: None,
+        });
+        let said = deelpe_core::pipeline::Enforcer::delete_copy(&EndpointEnforcer { ev: &ev, cfg: &cfg }, &alert(1));
+        assert!(said.contains("NOT deleted"), "{said}");
+        assert!(share.join("colleague.docx").exists(), "the file in the share is still there");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn state() -> State {
         State {

@@ -576,6 +576,10 @@
                 </ol>
               {/if}
               <details class="raw"><summary>Raw data</summary><pre class="detail">{JSON.stringify(a.detail, null, 2)}</pre></details>
+              {#if a.first_detail != null}
+                <!-- A later report replaced reason and detail; what the alert first said is kept. -->
+                <details class="raw"><summary>As first reported{a.first_reason ? `: ${a.first_reason}` : ''}</summary><pre class="detail">{JSON.stringify(a.first_detail, null, 2)}</pre></details>
+              {/if}
             </td></tr>
           {/if}
         {/each}

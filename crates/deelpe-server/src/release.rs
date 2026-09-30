@@ -41,14 +41,7 @@ const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
 /// that runs out of hand must not fill the disk.
 const MAX_ASSET: u64 = 64 * 1024 * 1024;
 
-/// The key that is checked against, when it was already fixed at compile
-/// time.
-///
-/// A compiled-in key cannot be swapped out in the database — that is the
-/// difference to one that merely sits in the settings. Whoever builds their
-/// own agents compiles with their own key; whoever does not stores it in
-/// the settings (see [`pubkey`]).
-pub const BUILT_IN_PUBKEY: Option<&str> = option_env!("DEELPE_UPDATE_PUBKEY");
+pub use deelpe_core::signing::BUILT_IN_PUBKEY;
 
 /// What the last query turned up. Kept in memory like `abuseipdb::Status`:
 /// it describes the running process, not the installation. What concerns
@@ -134,52 +127,9 @@ pub fn platforms_in(assets: &[Asset]) -> Vec<String> {
         .collect()
 }
 
-/// Do these bytes really come from whoever holds the key?
-///
-/// Ed25519 over the whole file, signature and key base64. `ring` is in the
-/// tree anyway by way of rustls — no library is added for this.
-pub fn verify(bytes: &[u8], sig_b64: &str, pubkey_b64: &str) -> Result<()> {
-    let key = check_pubkey(pubkey_b64)?;
-    let sig = b64(sig_b64.trim()).context("signature is not base64")?;
-    if sig.len() != 64 {
-        bail!("signature must be 64 bytes (ed25519), got {}", sig.len());
-    }
-    ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, &key)
-        .verify(bytes, &sig)
-        .map_err(|_| anyhow::anyhow!("signature does not match this key — the file is not the one that was signed"))
-}
-
-/// Does the key even have the shape of an ed25519 key?
-///
-/// Stands on its own because two places need it: the check itself and
-/// storing it in the settings. Whoever checks in only one of them lets a
-/// typo through all the way to the point where the whole program has
-/// already been downloaded.
-pub fn check_pubkey(pubkey_b64: &str) -> Result<Vec<u8>> {
-    let key = b64(pubkey_b64.trim()).context("not base64")?;
-    if key.len() != 32 {
-        bail!("must be 32 bytes (ed25519), got {}", key.len());
-    }
-    Ok(key)
-}
-
-/// Base64 without another library. The alphabet part is a dozen lines, and
-/// the only place that needs base64 is this one.
-fn b64(s: &str) -> Result<Vec<u8>> {
-    const A: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = Vec::with_capacity(s.len() / 4 * 3);
-    let (mut acc, mut bits) = (0u32, 0u32);
-    for c in s.bytes().filter(|c| !c.is_ascii_whitespace() && *c != b'=') {
-        let v = A.iter().position(|a| *a == c).ok_or_else(|| anyhow::anyhow!("not base64: {:?}", c as char))? as u32;
-        acc = (acc << 6) | v;
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            out.push((acc >> bits) as u8);
-        }
-    }
-    Ok(out)
-}
+// The statement format and its check live in `deelpe_core::signing`, shared
+// with the agents, which check the same statement before they swap.
+pub use deelpe_core::signing::{check_pubkey, parse_version, verify_release};
 
 /// The key that is checked against.
 ///
@@ -381,14 +331,14 @@ async fn one(http: &reqwest::Client, asset: &Asset, sig: &Asset, repo: &reqwest:
         bail!("announces {} bytes, more than this server accepts", asset.size);
     }
     let bytes = get(http, source_of(asset, repo)?, MAX_ASSET, token).await?;
-    // A signature is 88 characters. A kilobyte is generous and keeps a peer
-    // from sending a book here.
+    // A signed statement is a few hundred characters. A kilobyte is
+    // generous and keeps a peer from sending a book here.
     let sig_text = String::from_utf8(get(http, source_of(sig, repo)?, 1024, token).await?).context("signature file is not text")?;
     // Verify first, then write. A file that makes it into the staging
     // folder and only stands out there is one that could already have been
     // delivered.
-    verify(&bytes, &sig_text, key).context("does not carry a valid signature from the configured key")?;
-    crate::binaries::install(st, platform, &bytes)?;
+    let version = verify_release(&bytes, &sig_text, key, &asset.name).context("does not carry a valid signature from the configured key")?;
+    crate::binaries::install_signed(st, platform, &bytes, &version, &sig_text).await?;
     Ok(bytes.len())
 }
 
@@ -457,6 +407,7 @@ pub async fn run(state: Shared, stop: tokio_util::sync::CancellationToken) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    use deelpe_core::signing::{statement, verify};
 
     fn asset(name: &str) -> Asset {
         Asset { name: name.into(), browser_download_url: format!("https://example.invalid/{name}"), url: String::new(), size: 10 }
@@ -506,6 +457,30 @@ mod tests {
         // And a foreign key against the genuine signature.
         let (other_pub, _) = keypair();
         assert!(verify(bytes, &sig, &other_pub).is_err());
+    }
+
+    /// The `.sig` file states slot, version and checksum, and the signature
+    /// covers all three: an old build cannot be relabelled as a new one, nor
+    /// the Linux file passed off as the Windows one.
+    #[test]
+    fn a_signature_binds_the_file_to_its_slot_and_version() {
+        let (pubkey, kp) = keypair();
+        let bytes = b"MZ ein Programm";
+        let sha = crate::pki::fingerprint(bytes);
+        let sig_file = |file: &str, version: &str| {
+            let st = statement(file, version, &sha);
+            format!("{st}sig: {}\n", b64_encode(kp.sign(st.as_bytes()).as_ref()))
+        };
+        let good = sig_file("deelpe-winagent.exe", "0.1.8");
+        assert_eq!(verify_release(bytes, &good, &pubkey, "deelpe-winagent.exe").unwrap(), "0.1.8");
+        assert!(verify_release(bytes, &good, &pubkey, "deelpe-linux-amd64").is_err(), "another slot");
+        assert!(verify_release(b"MZ ein Programm!", &good, &pubkey, "deelpe-winagent.exe").is_err(), "another file");
+        let relabelled = good.replace("version: 0.1.8", "version: 0.2.0");
+        assert!(verify_release(bytes, &relabelled, &pubkey, "deelpe-winagent.exe").is_err(), "the version is signed too");
+        assert!(verify_release(bytes, &b64_encode(kp.sign(bytes).as_ref()), &pubkey, "deelpe-winagent.exe").is_err(), "a bare signature says no version");
+        assert!(verify_release(bytes, &sig_file("deelpe-winagent.exe", "latest"), &pubkey, "deelpe-winagent.exe").is_err(), "not a version");
+        assert!(parse_version("v0.1.10") > parse_version("0.1.9"), "numbers, not text");
+        assert_eq!(parse_version("0.1.x"), None);
     }
 
     /// Whatever does not have the right shape is refused before `ring` sees
@@ -638,20 +613,26 @@ mod tests {
 /// until a server at a customer site refuses a release that the publisher
 /// has just signed.
 ///
-/// The numbers below are therefore not made up but the output of
-/// `deelpe-sign keygen` and `deelpe-sign sign` over exactly these six bytes
-/// (2026-09-10).
+/// The values below are therefore not made up but the output of
+/// `deelpe-sign keygen` and `deelpe-sign sign <key> deelpe-winagent.exe 0.1.8`
+/// over a file holding exactly the six bytes `deelpe` (2026-09-30).
 #[cfg(test)]
 mod tool_agreement {
-    const PUBKEY: &str = "W7EX7jHl/i942+wDIe15prLf1d4uCz98EnnhxsdRsQY=";
+    const PUBKEY: &str = "AcwOjMFZHDJepHUujYO8KxgJw1LvQB15VaJBisHY5ys=";
     const MESSAGE: &[u8] = b"deelpe";
-    const SIG: &str = "6LcLKMBjQ16S/z052zUz6Du1eYSOzfUe3hVHyrD7PlXLGi/RAUkgmzbffefGb94/DacBXbfexeS5oHphq3pvCg==";
+    const SIG_FILE: &str = "deelpe-release-v1
+file: deelpe-winagent.exe
+version: 0.1.8
+sha256: c81bfc68acb0520fa25a6c2d62c96cd973aa307c6414dc919974397aff6603d8
+sig: jY4OEbOhCRrF1pbgMVTtI2cayG82obF+YzE+S/KEwwJ4CP0oJFkgDkHeg5V4itUYj0vk/2v8ndmH16UVnjklCQ==
+";
 
     #[test]
     fn a_signature_written_by_the_tool_is_one_this_module_accepts() {
-        super::verify(MESSAGE, SIG, PUBKEY).expect("was das Werkzeug schreibt, muss hier durchkommen");
+        let v = super::verify_release(MESSAGE, SIG_FILE, PUBKEY, "deelpe-winagent.exe").expect("was das Werkzeug schreibt, muss hier durchkommen");
+        assert_eq!(v, "0.1.8");
         // And the counter-check, so that the test does not simply accept
         // everything: one byte different, and it is over.
-        assert!(super::verify(b"deelp3", SIG, PUBKEY).is_err());
+        assert!(super::verify_release(b"deelp3", SIG_FILE, PUBKEY, "deelpe-winagent.exe").is_err());
     }
 }

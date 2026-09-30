@@ -1349,8 +1349,12 @@ distributes.
   server — on the build machine itself, or with `DEELPE_SSH=user@host` on the
   server over there. The route for everyone who stays current with `git pull`
   — see [DEVELOPMENT.md](DEVELOPMENT.md).
-- **Upload** under *Agents → agent program*. Always possible, nothing else
-  needed.
+- **Upload** under *Agents → agent program*. Without a signing key nothing
+  else is needed. Once a public signing key is set (*Settings → Interfaces*,
+  or compiled in), pick the program **together with its `.sig`** — the server
+  refuses an upload that key did not sign, so an administrator login alone
+  cannot hand every endpoint a program. Uploads and removals are in the
+  audit log.
 
   **Upload first, then create the enrollment token.** The command carries the
   checksum of the program that was in place when the token was created and
@@ -1399,9 +1403,32 @@ The signatures come from `deelpe-sign`, which is in this repository
 (`cargo build -p deelpe-server`):
 
 ```bash
-deelpe-sign keygen release.key                      # once; prints the public key
-deelpe-sign sign release.key deelpe-winagent.exe    # writes deelpe-winagent.exe.sig
+deelpe-sign keygen release.key                            # once; prints the public key
+deelpe-sign sign release.key deelpe-winagent.exe 0.1.8    # writes deelpe-winagent.exe.sig
+deelpe-sign pubkey release.key                            # the public key again
 ```
+
+The `.sig` file states the file name, the version and the SHA-256, and the
+signature covers all three. The server takes a program only into the slot it
+was signed for, and **never a version older than the one it already held for
+that slot** — a genuinely signed old build with a known hole is still an old
+build, and deleting the program does not reset that. A bare signature over the
+file, as written before 0.1.8, is no longer accepted: sign again.
+
+The agents check the same statement once more before they replace
+themselves, so the central server alone cannot hand the fleet a program: an
+agent built by the release scripts carries the public key and swaps only to a
+program signed for its slot, at a version not older than its own. Otherwise it
+logs why and keeps running what it has. The server passes the statement along
+with the program; an agent built without the key (your own `cargo build`,
+`scripts/publish-agent.sh`) checks the checksum only, as before — and an agent
+that has the key refuses such an unsigned build.
+
+The official image compiles the DLPrevent release key in; a key in
+*Settings → Interfaces* is then ignored, so one administrator login cannot
+swap it. If you sign your own agents, build the image with
+`--build-arg DEELPE_UPDATE_PUBKEY=<your public key>`, or with an empty value
+to use the key from the settings.
 
 Both files belong to the release. The **private** key stays with whoever
 publishes — not in the repository, not on the central server; otherwise the

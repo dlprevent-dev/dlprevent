@@ -534,7 +534,7 @@ async fn central_loop(st: Arc<Mutex<State>>, alerted: Arc<tokio::sync::Notify>, 
 /// reports it changed, and the next `apt install` of a package puts the
 /// package's file back — both expected.
 async fn self_update(session: &deelpe_core::session::Session, want: &str, tries: &mut deelpe_core::update::Updater) -> Result<bool> {
-    use deelpe_core::update::{can_replace, is_sha256, short, swap, verify};
+    use deelpe_core::update::{can_replace, check_release, is_sha256, short, swap, verify};
     if !cfg!(target_os = "linux") {
         return Ok(false);
     }
@@ -548,8 +548,10 @@ async fn self_update(session: &deelpe_core::session::Session, want: &str, tries:
     let exe = std::env::current_exe().context("own path")?;
     can_replace(&exe)?;
     tracing::info!(want = short(want), "central holds a different agent program, fetching it");
-    let bytes = session.binary().await.context("downloading the agent program")?;
+    let (bytes, statement) = session.binary().await.context("downloading the agent program")?;
     verify(&bytes, want)?;
+    let slot = format!("deelpe-linux-{}", deelpe_core::central::arch());
+    check_release(&bytes, statement.as_deref(), deelpe_core::signing::BUILT_IN_PUBKEY, &slot, env!("CARGO_PKG_VERSION"))?;
     // The permissions of the file it replaces: `fs::write` creates 0644.
     swap(&exe, &bytes)?;
     std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).context("making the new program executable")?;

@@ -14,6 +14,15 @@ dist/
 # Database dumps (INSTALL.md: pg_dump ... > deelpe-<date>.sql.gz)
 *.sql.gz
 
+# Local tool output and downloads: pentest runs and scanner results carry
+# real hashes and host names, a model download and a built app bundle are
+# not source.
+/strix_runs/
+/.source-aware/
+/baron-q6k/
+/dlprevent-architecture.jpeg
+apps/macos/DeelpeBar/*.app/
+
 # Agent working rules: stay local, do not belong in the published repo
 /CLAUDE.md
 /context.md

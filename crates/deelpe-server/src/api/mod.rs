@@ -963,6 +963,28 @@ mod tests {
         app.layer(Extension(PeerAddr("127.0.0.1:4711".parse().unwrap())))
     }
 
+    /// The lockout counted a failure only after the password check, so a
+    /// burst of parallel attempts had all passed the gate before the first
+    /// one counted: forty guesses where ten were promised.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_burst_of_parallel_logins_gets_no_more_guesses_than_the_lockout_allows(pool: sqlx::PgPool) {
+        sqlx::query("INSERT INTO users (name, pw_hash, role) VALUES ('hans', $1, 'viewer')")
+            .bind(auth::hash_password("korrekt-und-lang-genug").unwrap()).execute(&pool).await.unwrap();
+        let app = with_peer(router(test_app(pool.clone()), Router::new()));
+        let mut burst = tokio::task::JoinSet::new();
+        for i in 0..40 {
+            let app = app.clone();
+            burst.spawn(async move { send(&app, "POST", "/api/login", ("x-test", "1"), json!({ "name": "hans", "password": format!("falsch-{i}") })).await.status() });
+        }
+        let statuses = burst.join_all().await;
+        let checked = statuses.iter().filter(|s| **s == StatusCode::UNAUTHORIZED).count();
+        assert!(checked <= crate::state::LOGIN_MAX_FAILS as usize, "{checked} guesses reached the password check");
+        assert_eq!(statuses.iter().filter(|s| **s == StatusCode::TOO_MANY_REQUESTS).count(), 40 - checked);
+        // Locked means locked: the right password does not get in either.
+        let r = send(&app, "POST", "/api/login", ("x-test", "1"), json!({ "name": "hans", "password": "korrekt-und-lang-genug" })).await;
+        assert_eq!(r.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
     /// The cookie from a sign-in answer, as the browser sends it back.
     fn cookie_of(r: &Response) -> String {
         r.headers().get(header::SET_COOKIE).expect("Set-Cookie").to_str().unwrap().split(';').next().unwrap().to_string()
@@ -1292,5 +1314,86 @@ mod tests {
         assert_eq!(search_terms(Some("Hans GL")), vec!["%hans%", "%gl%"]);
         assert_eq!(search_terms(Some("100%_x")), vec!["%100\\%\\_x%"]);
         assert_eq!(search_terms(Some("a b c d e f g h i j")).len(), 8);
+    }
+
+    /// With a release key, an upload reaches the fleet only with that key's
+    /// signature — otherwise one administrator login could hand every
+    /// endpoint any program past the key. Upload and removal land in the
+    /// audit log either way.
+    /// Review 2026-09-30: a server without a key of its own (built with an
+    /// empty DEELPE_UPDATE_PUBKEY, nothing in the settings) threw away the
+    /// .sig uploaded with the official program, and every agent that
+    /// carries the key refused the update for want of a statement. The
+    /// server cannot check it; the agents can, so it is passed on as it is.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn without_a_key_the_uploaded_statement_is_passed_on_unchecked(pool: sqlx::PgPool) {
+        let data_dir = std::env::temp_dir().join(format!("deelpe-upload-test-{}", Uuid::new_v4()));
+        let st = test_app_in(pool.clone(), data_dir.clone());
+        let app = router(st.clone(), Router::new());
+        let admin = test_session(&pool, "admin").await;
+        let upload = |q: &'static str| {
+            let req = Request::builder().method("POST").uri(format!("/api/binaries/windows{q}")).header(header::COOKIE, &admin).body(axum::body::Body::from(&b"MZ ein Programm"[..])).unwrap();
+            app.clone().oneshot(req)
+        };
+        assert_eq!(upload("?sig=deelpe-release-v1%0Afile%3A%20deelpe-winagent.exe%0A").await.unwrap().status(), StatusCode::OK);
+        assert_eq!(crate::binaries::release_statement(&st, "windows").as_deref(), Some("deelpe-release-v1\nfile: deelpe-winagent.exe\n"));
+        // Without a .sig there is nothing to pass on, and nothing stale stays.
+        assert_eq!(upload("").await.unwrap().status(), StatusCode::OK);
+        assert_eq!(crate::binaries::release_statement(&st, "windows"), None);
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_uploaded_agent_program_needs_the_release_key_and_is_audited(pool: sqlx::PgPool) {
+        use base64::Engine;
+        use ring::signature::KeyPair;
+        let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+        let pkcs8 = ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new()).unwrap();
+        let kp = ring::signature::Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
+        db::set_setting(&pool, "release_pubkey", json!(b64(kp.public_key().as_ref()))).await.unwrap();
+
+        let data_dir = std::env::temp_dir().join(format!("deelpe-upload-test-{}", Uuid::new_v4()));
+        let st = test_app_in(pool.clone(), data_dir.clone());
+        let app = router(st.clone(), Router::new());
+        let admin = test_session(&pool, "admin").await;
+        let exe: &[u8] = b"MZ ein Programm";
+        let upload = |q: String| {
+            let req = Request::builder().method("POST").uri(format!("/api/binaries/windows{q}")).header(header::COOKIE, &admin).body(axum::body::Body::from(exe)).unwrap();
+            app.clone().oneshot(req)
+        };
+        let enc = |s: &str| s.replace('%', "%25").replace('+', "%2B").replace('/', "%2F").replace('=', "%3D").replace('\n', "%0A").replace(' ', "%20").replace(':', "%3A");
+        // What `deelpe-sign sign <key> <file> <version>` writes: the statement
+        // (file, version, checksum) and the signature over it.
+        let signed = |kp: &ring::signature::Ed25519KeyPair, file: &str, version: &str, bytes: &[u8]| {
+            let st = deelpe_core::signing::statement(file, version, &crate::pki::fingerprint(bytes));
+            format!("{st}sig: {}\n", b64(kp.sign(st.as_bytes()).as_ref()))
+        };
+
+        assert_eq!(upload(String::new()).await.unwrap().status(), StatusCode::BAD_REQUEST, "no signature");
+        let other = ring::signature::Ed25519KeyPair::from_pkcs8(ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new()).unwrap().as_ref()).unwrap();
+        assert_eq!(upload(format!("?sig={}", enc(&signed(&other, "deelpe-winagent.exe", "0.1.8", exe)))).await.unwrap().status(), StatusCode::BAD_REQUEST, "someone else's key");
+        // The old form, a bare signature over the file, said nothing about
+        // the version: an old build signed back then passed as any version.
+        assert_eq!(upload(format!("?sig={}", enc(&b64(kp.sign(exe).as_ref())))).await.unwrap().status(), StatusCode::BAD_REQUEST, "a bare signature no longer counts");
+        assert_eq!(upload(format!("?sig={}", enc(&signed(&kp, "DLPrevent.zip", "0.1.8", exe)))).await.unwrap().status(), StatusCode::BAD_REQUEST, "signed for another slot");
+        assert!(!data_dir.join("agents/deelpe-winagent.exe").exists(), "nothing staged before a valid signature");
+
+        assert_eq!(upload(format!("?sig={}", enc(&signed(&kp, "deelpe-winagent.exe", "0.1.8", exe)))).await.unwrap().status(), StatusCode::OK);
+        // The statement stays with the program: the agent checks it again
+        // before it swaps, the server alone is not enough to vouch.
+        assert_eq!(crate::binaries::release_statement(&st, "windows").as_deref(), Some(signed(&kp, "deelpe-winagent.exe", "0.1.8", exe).as_str()));
+        // Rollback: an old build, genuinely signed, is still an old build.
+        let r = upload(format!("?sig={}", enc(&signed(&kp, "deelpe-winagent.exe", "0.1.7", exe)))).await.unwrap();
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST, "an older version does not replace a newer one");
+        assert_eq!(upload(format!("?sig={}", enc(&signed(&kp, "deelpe-winagent.exe", "0.1.8", exe)))).await.unwrap().status(), StatusCode::OK, "the same version again is fine");
+        let r = send(&app, "DELETE", "/api/binaries/windows", (header::COOKIE.as_str(), &admin), serde_json::Value::Null).await;
+        assert_eq!(r.status(), StatusCode::NO_CONTENT);
+        let actions: Vec<String> = sqlx::query_scalar("SELECT action FROM audit_log WHERE action LIKE 'binary_%' ORDER BY id").fetch_all(&pool).await.unwrap();
+        assert_eq!(actions, ["binary_upload", "binary_upload", "binary_remove"]);
+        // Deleting the program does not reset the record: delete, then upload
+        // the old build, would otherwise be the same rollback.
+        let r = upload(format!("?sig={}", enc(&signed(&kp, "deelpe-winagent.exe", "0.1.7", exe)))).await.unwrap();
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST, "an emptied slot still remembers its version");
+        let _ = std::fs::remove_dir_all(data_dir);
     }
 }

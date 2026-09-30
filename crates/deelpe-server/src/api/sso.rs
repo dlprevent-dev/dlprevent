@@ -60,8 +60,10 @@ struct Config {
     /// Members become administrators. Empty: nobody does through SSO.
     #[serde(default)]
     pub admin_group: String,
-    /// Only members may sign in (as read-only). Empty: everyone the
-    /// provider lets through.
+    /// Only members may sign in (as read-only). Empty: nobody but the
+    /// administrator group; `*`: everyone the provider lets through. Empty
+    /// used to mean everyone, which quietly let a whole tenant (guests and
+    /// B2B accounts included) read every alert.
     #[serde(default)]
     pub viewer_group: String,
     /// Create the account on its first sign-in.
@@ -162,7 +164,7 @@ fn role_for(groups: &[String], cfg: &Config) -> Option<&'static str> {
     let member = |g: &str| !g.is_empty() && groups.iter().any(|x| x == g);
     if member(&cfg.admin_group) {
         Some("admin")
-    } else if cfg.viewer_group.is_empty() || member(&cfg.viewer_group) {
+    } else if cfg.viewer_group.trim() == "*" || member(&cfg.viewer_group) {
         Some("viewer")
     } else {
         None
@@ -521,9 +523,15 @@ mod tests {
         assert_eq!(role_for(&g(&["dlp-admins"]), &cfg), Some("admin"));
         assert_eq!(role_for(&g(&["dlp-users", "x"]), &cfg), Some("viewer"));
         assert_eq!(role_for(&g(&["x"]), &cfg), None, "not in a group that may sign in");
-        let open = Config { admin_group: "dlp-admins".into(), ..Default::default() };
-        assert_eq!(role_for(&g(&[]), &open), Some("viewer"), "no viewer group: everyone the provider lets through");
-        assert_eq!(role_for(&g(&[""]), &Config::default()), Some("viewer"), "an empty admin group makes nobody admin");
+        // An empty allowed group let the whole tenant in as viewer — guests
+        // and B2B accounts included, every one of them reading all alerts.
+        // Empty now means nobody but the administrators; everyone takes `*`.
+        let blank = Config { admin_group: "dlp-admins".into(), ..Default::default() };
+        assert_eq!(role_for(&g(&[]), &blank), None, "no allowed group: only the administrators");
+        assert_eq!(role_for(&g(&["dlp-admins"]), &blank), Some("admin"));
+        let everyone = Config { viewer_group: "*".into(), ..Default::default() };
+        assert_eq!(role_for(&g(&[]), &everyone), Some("viewer"), "`*` is the explicit everyone");
+        assert_eq!(role_for(&g(&[""]), &everyone), Some("viewer"), "an empty admin group makes nobody admin");
         assert_eq!(groups(&json!({ "roles": "a" }), "roles"), vec!["a"]);
     }
 

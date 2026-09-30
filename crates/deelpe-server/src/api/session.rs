@@ -20,19 +20,27 @@ pub(super) struct Login {
     password: String,
 }
 
-/// The address of whoever is signing in — or 429 if it is locked right now.
+fn address(st: &Shared, peer: PeerAddr, headers: &HeaderMap) -> IpAddr {
+    st.client_ip(peer.0, headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()))
+}
+
+fn locked() -> ApiError {
+    ApiError(StatusCode::TOO_MANY_REQUESTS, "too many failed attempts, wait a minute".into())
+}
+
+/// The address of whoever is signing in, with the attempt already counted
+/// against it — or 429 if it is locked right now.
 fn caller(st: &Shared, peer: PeerAddr, headers: &HeaderMap) -> Result<IpAddr, ApiError> {
-    let ip = st.client_ip(peer.0, headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()));
-    if st.login_locked(ip) {
-        return Err(ApiError(StatusCode::TOO_MANY_REQUESTS, "too many failed attempts, wait a minute".into()));
+    let ip = address(st, peer, headers);
+    if !st.login_begin(ip) {
+        return Err(locked());
     }
     Ok(ip)
 }
 
-/// A failed attempt: counts towards the lockout, goes into the audit log,
-/// and the answer does not give away what it was that went wrong.
+/// A failed attempt (already counted by [`caller`]): goes into the audit
+/// log, and the answer does not give away what it was that went wrong.
 async fn refuse(st: &Shared, ip: IpAddr, name: &str, step: &str, msg: &str) -> ApiError {
-    st.login_failed(ip);
     db::audit(&st.pool, db::Actor::SYSTEM, "login_failed", json!({ "name": name, "ip": ip.to_string(), "step": step })).await;
     ApiError(StatusCode::UNAUTHORIZED, msg.into())
 }
@@ -83,6 +91,11 @@ pub(super) async fn login(State(st): State<Shared>, Extension(peer): Extension<P
         return Err(refuse(&st, ip, &b.name, "password", "wrong user name or password").await);
     }
     let (id, name, role, _, _, totp, passkey_demanded) = row.unwrap();
+    // The password was right and a second step follows, which counts on
+    // its own. Not before `open_session`: that one can still refuse.
+    if totp.is_some() || passkey_demanded {
+        st.login_undo(ip);
+    }
     if totp.is_some() {
         let token = auth::random_token();
         st.pending_put(Pending::login_key(&token), Pending::Totp(id));
@@ -143,7 +156,11 @@ pub(super) struct PasskeyStart {
 /// one entry per account, no matter how often somebody asks without being
 /// signed in.
 pub(super) async fn passkey_login_start(State(st): State<Shared>, Extension(peer): Extension<PeerAddr>, headers: HeaderMap, Json(b): Json<PasskeyStart>) -> Result<Response, ApiError> {
-    caller(&st, peer, &headers)?;
+    // Asking for a challenge is no guess: it is refused while locked, but
+    // not counted. The guess is the finish.
+    if st.login_locked(address(&st, peer, &headers)) {
+        return Err(locked());
+    }
     let wa = auth::webauthn(&st, &headers)?;
     let user: Option<(Uuid, bool)> = sqlx::query_as("SELECT id, disabled FROM users WHERE name = $1").bind(b.name.trim()).fetch_optional(&st.pool).await?;
     if let Some((id, false)) = user {

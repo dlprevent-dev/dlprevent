@@ -13,12 +13,12 @@
 use crate::auth::{bad, not_found, Admin, ApiError, User};
 use crate::state::Shared;
 use axum::body::Bytes;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// Platform → file name. Hard-wired: the name never comes from the
@@ -232,28 +232,58 @@ async fn download(_u: User, State(st): State<Shared>, Path(platform): Path<Strin
     Ok(as_download(name, bytes))
 }
 
-async fn upload(Admin(_a): Admin, State(st): State<Shared>, Path(platform): Path<String>, body: Bytes) -> Result<Json<Binary>, ApiError> {
+/// The signature to an upload, base64 as `deelpe-sign` writes it into the
+/// `.sig` file. Only asked for when a release key exists.
+#[derive(Deserialize)]
+struct UploadQuery {
+    sig: Option<String>,
+}
+
+async fn upload(Admin(a): Admin, State(st): State<Shared>, Path(platform): Path<String>, Query(q): Query<UploadQuery>, body: Bytes) -> Result<Json<Binary>, ApiError> {
     if file_name(&platform).is_none() {
         return Err(bad("unknown platform"));
     }
     if body.is_empty() {
         return Err(bad("empty upload"));
     }
-    install(&st, &platform, &body).map_err(|e| bad(format!("{e:#}")))?;
+    // With a release key, the key decides what reaches the fleet — through
+    // the release channel **and** through this form. Otherwise the key would
+    // only guard the door nobody has to use: one administrator login could
+    // still hand every endpoint any program.
+    let key = crate::release::pubkey(&st).await.map_err(|e| bad(format!("{e:#}")))?;
+    if let Some(key) = &key {
+        let sig = q.sig.as_deref().filter(|s| !s.trim().is_empty()).ok_or_else(|| bad("a signing key is configured: upload the program together with its .sig file"))?;
+        let name = file_name(&platform).unwrap_or_default();
+        let version = crate::release::verify_release(&body, sig, key, name).map_err(|e| bad(format!("signature: {e:#}")))?;
+        install_signed(&st, &platform, &body, &version, sig).await.map_err(|e| bad(format!("{e:#}")))?;
+    } else {
+        install(&st, &platform, &body).map_err(|e| bad(format!("{e:#}")))?;
+        // No key here to check it with — but the agents may carry one. The
+        // statement is passed on as it came; an agent with the key checks
+        // it, and without it an agent carrying the key would never update.
+        if let Some(sig) = q.sig.as_deref().filter(|s| !s.trim().is_empty()) {
+            let path = path_for(&st, &platform).ok_or_else(|| bad("unknown platform"))?;
+            write_atomic(&statement_path(&path), sig.as_bytes()).map_err(|e| bad(format!("{e:#}")))?;
+        }
+    }
+    let sha256 = hex(&Sha256::digest(&body));
     tracing::info!(platform, bytes = body.len(), "agent binary uploaded");
+    crate::db::audit(&st.pool, (&a).into(), "binary_upload", serde_json::json!({ "platform": platform, "size": body.len(), "sha256": sha256, "signed": key.is_some() })).await;
     Ok(Json(Binary {
         platform: KNOWN.iter().find(|(p, _)| *p == platform).map(|(p, _)| *p).unwrap_or("?"),
         file_name: file_name(&platform).unwrap_or("?"),
         present: true,
         size: body.len() as u64,
-        sha256: hex(&Sha256::digest(&body)),
+        sha256,
         uploaded_at: Some(chrono::Utc::now()),
     }))
 }
 
-async fn remove(Admin(_a): Admin, State(st): State<Shared>, Path(platform): Path<String>) -> Result<StatusCode, ApiError> {
+async fn remove(Admin(a): Admin, State(st): State<Shared>, Path(platform): Path<String>) -> Result<StatusCode, ApiError> {
     let path = path_for(&st, &platform).ok_or_else(not_found)?;
+    let _ = std::fs::remove_file(statement_path(&path));
     let _ = std::fs::remove_file(path);
+    crate::db::audit(&st.pool, (&a).into(), "binary_remove", serde_json::json!({ "platform": platform })).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -262,11 +292,20 @@ async fn remove(Admin(_a): Admin, State(st): State<Shared>, Path(platform): Path
 ///
 /// First write next to it, then rename: an aborted write must never be a
 /// half file that somebody installs. And **nothing** is checked here —
-/// whoever arrives here already has their check behind them (MZ header on
-/// upload, signature on the release).
+/// whoever arrives here already has their check behind them (the signature on
+/// the release, and on an upload whenever a key exists).
 pub fn install(st: &Shared, platform: &str, bytes: &[u8]) -> anyhow::Result<()> {
     let path = path_for(st, platform).ok_or_else(|| anyhow::anyhow!("unknown platform {platform}"))?;
     check_header(platform, bytes)?;
+    write_atomic(&path, bytes)?;
+    // An unsigned program carries no statement; one left over from the
+    // previous program would only make the agents refuse this one.
+    let _ = std::fs::remove_file(statement_path(&path));
+    Ok(())
+}
+
+/// First write next to it, then rename.
+fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> anyhow::Result<()> {
     let dir = path.parent().ok_or_else(|| anyhow::anyhow!("bad path"))?;
     std::fs::create_dir_all(dir)?;
     // Its own intermediate name per write. There are two sources — the
@@ -275,11 +314,54 @@ pub fn install(st: &Shared, platform: &str, bytes: &[u8]) -> anyhow::Result<()> 
     // would then publish a mixture whose checksum is right and which the
     // agents install as valid.
     let tmp = path.with_extension(format!("part-{}", uuid::Uuid::new_v4()));
-    let out = std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, &path));
+    let out = std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, path));
     if out.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
     Ok(out?)
+}
+
+/// `<program>.sig`, next to the program.
+fn statement_path(program: &std::path::Path) -> std::path::PathBuf {
+    let mut p = program.as_os_str().to_owned();
+    p.push(".sig");
+    p.into()
+}
+
+/// The signed statement of the program lying ready, as the release or the
+/// upload brought it. The agents get it with the program and check it
+/// themselves (`deelpe_core::update::check_release`).
+pub fn release_statement(st: &Shared, platform: &str) -> Option<String> {
+    std::fs::read_to_string(statement_path(&path_for(st, platform)?)).ok()
+}
+
+/// The version each slot holds, as its signature stated it.
+const VERSIONS: &str = "agent_program_versions";
+
+/// [`install`] for a program whose signature named its version, refusing
+/// one older than what the slot already held. A genuinely signed old build
+/// is still an old build: without this, whoever controlled the release (or
+/// an administrator login) could roll every endpoint back to a version with
+/// a known hole. The record outlives a deleted program for the same reason.
+///
+/// The statement is kept next to the program: the agents check it again.
+/// Written first — should the program then fail to land, the old program
+/// meets a statement that does not fit it, and agents refuse rather than
+/// swap.
+pub async fn install_signed(st: &Shared, platform: &str, bytes: &[u8], version: &str, statement: &str) -> anyhow::Result<()> {
+    use crate::release::parse_version;
+    let mut held = crate::db::settings_map(&st.pool, &[VERSIONS]).await?.remove(VERSIONS).unwrap_or_else(|| serde_json::json!({}));
+    if let Some(have) = held.get(platform).and_then(|v| v.as_str()) {
+        if parse_version(version) < parse_version(have) {
+            anyhow::bail!("version {version} is older than the {have} this server already had for {platform} — a signed old build is still an old build");
+        }
+    }
+    let path = path_for(st, platform).ok_or_else(|| anyhow::anyhow!("unknown platform {platform}"))?;
+    check_header(platform, bytes)?;
+    write_atomic(&statement_path(&path), statement.as_bytes())?;
+    write_atomic(&path, bytes)?;
+    held[platform] = serde_json::json!(version);
+    crate::db::set_setting(&st.pool, VERSIONS, held).await
 }
 
 /// A Windows program starts with "MZ", a zip with "PK", a Linux program with

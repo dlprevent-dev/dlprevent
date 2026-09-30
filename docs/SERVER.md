@@ -88,8 +88,10 @@ offers "Sign in with single sign-on".
 - **Users are added at the provider**, not in the dashboard: whoever is in
   the administrator group or the allowed group gets an account on their
   first sign-in, with the role their group gives. An empty allowed group
-  lets in everyone the provider lets through, as read only; an empty
-  administrator group makes nobody an administrator this way.
+  lets in nobody but the administrator group; `*` lets in everyone the
+  provider lets through, as read only — for Entra ID that is the whole
+  tenant, guests and B2B accounts included. An empty administrator group
+  makes nobody an administrator this way.
 - **The role follows the groups on every sign-in.** Moving someone to the
   other group changes the role at their next sign-in.
 - **These accounts sign in at the provider only.** A password, code or

@@ -44,6 +44,12 @@ OUT="$ROOT/dist/v$VERSION"
 rm -rf "$OUT"
 mkdir -p "$OUT"
 
+# The agents check the release statement themselves before they swap; they
+# need the public key compiled in, the same one the server image carries.
+( cd "$ROOT" && cargo build --release -p deelpe-server --bin deelpe-sign >/dev/null )
+DEELPE_UPDATE_PUBKEY="$("$ROOT/target/release/deelpe-sign" pubkey "$KEY")"
+export DEELPE_UPDATE_PUBKEY
+
 echo "== windows"
 ( cd "$ROOT" && cargo build --release --target x86_64-pc-windows-gnu -p deelpe-winagent >/dev/null )
 cp "$ROOT/target/x86_64-pc-windows-gnu/release/deelpe-winagent.exe" "$OUT/"
@@ -64,9 +70,8 @@ for arch in amd64 arm64; do
 done
 
 echo "== signing"
-( cd "$ROOT" && cargo build --release -p deelpe-server --bin deelpe-sign >/dev/null )
 for f in deelpe-winagent.exe DLPrevent.zip deelpe-linux-amd64 deelpe-linux-arm64; do
-  "$ROOT/target/release/deelpe-sign" sign "$KEY" "$OUT/$f" >/dev/null
+  "$ROOT/target/release/deelpe-sign" sign "$KEY" "$OUT/$f" "$VERSION" >/dev/null
 done
 ( cd "$OUT" && shasum -a 256 deelpe-winagent.exe DLPrevent.zip deelpe-linux-amd64 deelpe-linux-arm64 ./*.deb | sed 's| \./| |' > SHA256SUMS )
 

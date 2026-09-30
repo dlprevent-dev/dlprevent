@@ -87,12 +87,22 @@ const NEVER_CAGE: &[&str] = &[
 /// [`crate::enforce::is_critical`], and for the same reason: the decision
 /// has to be checkable on every platform, not only with real processes on a
 /// real machine.
-pub fn may_cage(pid: u32, name: &str, asks_first: bool) -> Result<()> {
+///
+/// `name_vouched`: whether the name can be believed ([`name_is_vouched_for`]).
+/// The two lists below go by name, and a name is whatever the file is called;
+/// without it a tool renamed `chrome.exe` was never caged.
+pub fn may_cage(pid: u32, name: &str, asks_first: bool, name_vouched: bool) -> Result<()> {
     if asks_first {
         anyhow::bail!("{name} submits its uploads for inspection; the connector decides, not the cage");
     }
     if pid <= 4 || pid == std::process::id() {
         anyhow::bail!("pid {pid} is not a process we may cage");
+    }
+    if name.trim().is_empty() {
+        anyhow::bail!("a process we cannot name is never caged");
+    }
+    if !name_vouched {
+        return Ok(());
     }
     let low = deelpe_core::identity::image_name(name);
     // Whoever we have to leave alive, we also have to leave the network
@@ -104,6 +114,75 @@ pub fn may_cage(pid: u32, name: &str, asks_first: bool) -> Result<()> {
         anyhow::bail!("{name} is part of the shell or a browser and is never caged");
     }
     Ok(())
+}
+
+/// Does a name on the lists above belong to the program it claims?
+///
+/// Deliberately lenient — a wrong "no" takes the network from the shell or
+/// a browser. Yes when the file belongs to SYSTEM, TrustedInstaller or the
+/// administrators: Windows itself and whatever an installer put in place, a
+/// standard user cannot create such a file. Yes for a validly signed file
+/// whose original name is that name ([`signature_vouches_for`]), which covers
+/// every browser installed per user (Chrome, Opera, Vivaldi, Brave). No only
+/// for a file a user owns that merely carries the name — the renamed tool. Only asked when the name is on a list, and only for a process that
+/// has already read a strict folder.
+#[cfg(windows)]
+fn name_is_vouched_for(exe: &str) -> bool {
+    if privileged_owner(exe) {
+        return true;
+    }
+    let id = deelpe_sensors::windows::signature::SignatureCache::default().identity(exe);
+    signature_vouches_for(&id, short(exe))
+}
+
+/// A valid signature whose original file name (from the version resource,
+/// which renaming does not change) is `name`. The publisher is not asked:
+/// the lists are about not crippling the program that really is `opera.exe`,
+/// whoever publishes it — and a signed tool renamed keeps its own name.
+pub fn signature_vouches_for(id: &deelpe_core::identity::ProcessIdentity, name: &str) -> bool {
+    use deelpe_core::identity::{image_name, ProcessIdentity};
+    matches!(id, ProcessIdentity::Signed { signing_id, .. } if image_name(signing_id) == image_name(name))
+}
+
+#[cfg(not(windows))]
+fn name_is_vouched_for(_exe: &str) -> bool {
+    true
+}
+
+/// SYSTEM, the administrators, TrustedInstaller.
+#[cfg(windows)]
+const PRIVILEGED_OWNERS: &[&str] = &["S-1-5-18", "S-1-5-32-544", "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464"];
+
+/// Is the file owned by one of [`PRIVILEGED_OWNERS`]? An owner that cannot
+/// be read counts as no: SYSTEM can read the owner of every file Windows or
+/// an installer put down.
+#[cfg(windows)]
+fn privileged_owner(exe: &str) -> bool {
+    use windows::core::{HSTRING, PCWSTR, PWSTR};
+    use windows::Win32::Foundation::{LocalFree, HLOCAL};
+    use windows::Win32::Security::Authorization::{ConvertSidToStringSidW, GetNamedSecurityInfoW, SE_FILE_OBJECT};
+    use windows::Win32::Security::{OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID};
+    let path = HSTRING::from(exe);
+    let mut owner = PSID::default();
+    let mut sd = PSECURITY_DESCRIPTOR::default();
+    let rc = unsafe { GetNamedSecurityInfoW(PCWSTR(path.as_ptr()), SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION, Some(&mut owner), None, None, None, &mut sd) };
+    if rc.is_err() || owner.is_invalid() {
+        return false;
+    }
+    let mut s = PWSTR::null();
+    let sid = unsafe { ConvertSidToStringSidW(owner, &mut s) }.ok().and_then(|()| unsafe { s.to_string() }.ok());
+    unsafe {
+        let _ = LocalFree(Some(HLOCAL(s.0 as *mut _)));
+        let _ = LocalFree(Some(HLOCAL(sd.0)));
+    }
+    sid.is_some_and(|sid| PRIVILEGED_OWNERS.contains(&sid.as_str()))
+}
+
+/// Would the name alone keep this process out of the cage? Then it has to
+/// be vouched for; otherwise the question does not arise.
+fn exempt_by_name(name: &str) -> bool {
+    let low = deelpe_core::identity::image_name(name);
+    crate::enforce::is_critical(name) || NEVER_CAGE.iter().any(|n| low == *n)
 }
 
 /// Netmask from a prefix length. `/0` is 0, `/32` is everything.
@@ -251,7 +330,11 @@ impl Cages {
         // `firefox.exe` was caged and lost seven connections because the new
         // PID had not announced itself yet.
         let asks = crate::browser::image_asks_before_sending(&exe);
-        if let Err(e) = may_cage(pid, &name, asks) {
+        let vouched = !exempt_by_name(&name) || name_is_vouched_for(&exe);
+        if !vouched {
+            tracing::warn!(pid, exe = %exe, "{name} carries a protected name but belongs to a user and is unsigned; caged like any other program");
+        }
+        if let Err(e) = may_cage(pid, &name, asks, vouched) {
             tracing::debug!(pid, "no network cage: {e}");
             return;
         }
@@ -549,10 +632,46 @@ mod tests {
     /// exactly.
     #[test]
     fn a_windows_resource_name_is_not_caged_either() {
-        assert!(may_cage(4242, "EXPLORER.EXE.MUI", false).is_err());
-        assert!(may_cage(4242, "rdpclip.exe.mui", false).is_err());
-        assert!(may_cage(4242, "FIREFOX.EXE.MUI", false).is_err());
-        assert!(may_cage(4242, "curl.exe.mui", false).is_ok());
+        assert!(may_cage(4242, "EXPLORER.EXE.MUI", false, true).is_err());
+        assert!(may_cage(4242, "rdpclip.exe.mui", false, true).is_err());
+        assert!(may_cage(4242, "FIREFOX.EXE.MUI", false, true).is_err());
+        assert!(may_cage(4242, "curl.exe.mui", false, true).is_ok());
+    }
+
+    /// The exemptions go by name, and a name is whatever the file is called:
+    /// an exfiltration tool renamed to `chrome.exe` or `explorer.exe` was
+    /// never caged — the same effect as pentest 8840/0003. A name counts only
+    /// when something vouches for it (the file belongs to the system or an
+    /// installer, or it carries the browser vendor's signature); otherwise
+    /// the process is caged like any other.
+    #[test]
+    fn a_protected_name_nobody_vouches_for_protects_nothing() {
+        for renamed in ["chrome.exe", "msedge.exe", "explorer.exe", "svchost.exe", "EXPLORER.EXE.MUI"] {
+            assert!(may_cage(1234, renamed, false, false).is_ok(), "{renamed}");
+            assert!(may_cage(1234, renamed, false, true).is_err(), "{renamed}, vouched for");
+        }
+        // What does not rest on the name stays as it was.
+        assert!(may_cage(4, "chrome.exe", false, false).is_err(), "the kernel is never caged");
+        assert!(may_cage(std::process::id(), "x.exe", false, false).is_err(), "nor the agent itself");
+        assert!(may_cage(4242, "", false, false).is_err(), "nor what we cannot name");
+        assert!(may_cage(1234, "chrome.exe", true, false).is_err(), "a browser that asked is judged by the connector");
+    }
+
+    /// Review 2026-09-30: Opera and Vivaldi install per user, and so does
+    /// Brave without elevation — owned by the user, signed by their vendor.
+    /// Checking against the three connector browsers caged them. Any valid
+    /// signature whose original file name is the protected name vouches;
+    /// a renamed tool keeps its own original name, or has none.
+    #[test]
+    fn a_signature_under_the_same_name_vouches_for_it() {
+        use deelpe_core::identity::ProcessIdentity;
+        let signed = |p: &str, n: &str| ProcessIdentity::Signed { team_id: p.into(), signing_id: n.into() };
+        assert!(signature_vouches_for(&signed("Opera Norway AS", "opera.exe"), "opera.exe"));
+        assert!(signature_vouches_for(&signed("Vivaldi Technologies AS", "vivaldi.exe"), "Vivaldi.exe"));
+        assert!(signature_vouches_for(&signed("Brave Software, Inc.", "brave.exe"), "brave.exe"));
+        assert!(signature_vouches_for(&signed("Microsoft Corporation", "EXPLORER.EXE.MUI"), "explorer.exe"));
+        assert!(!signature_vouches_for(&signed("Microsoft Corporation", "curl.exe"), "chrome.exe"), "a signed tool renamed");
+        assert!(!signature_vouches_for(&ProcessIdentity::Unknown { path: "chrome.exe".into() }, "chrome.exe"), "unsigned");
     }
 
     /// Whoever cages the shell takes the machine's operability away without
@@ -560,27 +679,27 @@ mod tests {
     #[test]
     fn the_shell_and_the_browsers_never_go_into_the_cage() {
         for shell in ["StartMenuExperienceHost.exe", "rdpclip.exe", "explorer.exe", "dllhost.exe", "sihost.exe"] {
-            assert!(may_cage(1234, shell, false).is_err(), "{shell}");
+            assert!(may_cage(1234, shell, false, true).is_err(), "{shell}");
         }
         // Browsers belong to the connector -- even if they have never
         // announced themselves here.
         for browser in ["firefox.exe", "chrome.exe", "msedge.exe"] {
-            assert!(may_cage(1234, browser, false).is_err(), "{browser}");
+            assert!(may_cage(1234, browser, false, true).is_err(), "{browser}");
         }
         // Critical services inherit the exception from `is_critical`.
-        assert!(may_cage(1234, "svchost.exe", false).is_err());
-        assert!(may_cage(1234, "sshd.exe", false).is_err());
+        assert!(may_cage(1234, "svchost.exe", false, true).is_err());
+        assert!(may_cage(1234, "sshd.exe", false, true).is_err());
         // 0 and 4 are idle and system, 1..=4 belong to the kernel.
         for pid in [0, 1, 2, 3, 4] {
-            assert!(may_cage(pid, "irgendwas.exe", false).is_err(), "pid {pid}");
+            assert!(may_cage(pid, "irgendwas.exe", false, true).is_err(), "pid {pid}");
         }
-        assert!(may_cage(std::process::id(), "curl.exe", false).is_err(), "sich selbst sperrt der Agent nie ein");
-        assert!(may_cage(4242, "", false).is_err(), "wen wir nicht benennen koennen, sperren wir nicht ein");
+        assert!(may_cage(std::process::id(), "curl.exe", false, true).is_err(), "sich selbst sperrt der Agent nie ein");
+        assert!(may_cage(4242, "", false, true).is_err(), "wen wir nicht benennen koennen, sperren wir nicht ein");
         // And the ones the cage is built for.
-        assert!(may_cage(1234, "powershell.exe", false).is_ok());
-        assert!(may_cage(1234, "curl.exe", false).is_ok());
+        assert!(may_cage(1234, "powershell.exe", false, true).is_ok());
+        assert!(may_cage(1234, "curl.exe", false, true).is_ok());
         // Whoever asks first does not need it.
-        assert!(may_cage(1234, "curl.exe", true).is_err());
+        assert!(may_cage(1234, "curl.exe", true, true).is_err());
     }
 
     #[test]

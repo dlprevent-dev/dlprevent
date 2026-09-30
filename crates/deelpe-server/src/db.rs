@@ -523,12 +523,16 @@ pub struct AlertRow {
     pub verdict: String,
     pub reason: Option<String>,
     pub detail: serde_json::Value,
+    /// Reason and detail as first reported, once a later report replaced
+    /// them; `None` while nothing was replaced.
+    pub first_reason: Option<String>,
+    pub first_detail: Option<serde_json::Value>,
     pub acknowledged_at: Option<DateTime<Utc>>,
     pub acknowledged_by: Option<Uuid>,
     pub received_at: DateTime<Utc>,
 }
 
-pub const ALERT_COLS: &str = "id, kind, agent_id, source_id, origin_name, external_id, at, last_at, user_key, user_display, rule_id, path, process, files, file_count, bytes, remote, verdict, reason, detail, acknowledged_at, acknowledged_by, received_at";
+pub const ALERT_COLS: &str = "id, kind, agent_id, source_id, origin_name, external_id, at, last_at, user_key, user_display, rule_id, path, process, files, file_count, bytes, remote, verdict, reason, detail, first_reason, first_detail, acknowledged_at, acknowledged_by, received_at";
 
 #[derive(Debug, Clone, Copy)]
 pub enum Origin {
@@ -545,6 +549,14 @@ impl Origin {
     }
 }
 
+/// Where a verdict stands, lowest first. A re-report may only move an alert
+/// up this list; unknown verdicts count as the bottom.
+macro_rules! verdict_rank {
+    ($v:literal) => {
+        concat!("COALESCE(array_position(ARRAY['ok','no_profile','learning','inbound','new','flagged','deviation','hard_limit','denied'], ", $v, "), 0)")
+    };
+}
+
 /// `$20` says whether the alert comes in already settled: by design,
 /// learning-phase alerts are stored but not reported, and would have no
 /// business in the list of open ones. When updating, an `acknowledged_at`
@@ -554,16 +566,41 @@ impl Origin {
 /// exception to "stays set": an alert re-judged `denied` opens again even if
 /// someone acknowledged it while it was something milder — a denied alarm is
 /// never silenced.
-const ALERT_UPSERT: &str = "INSERT INTO alerts (kind, agent_id, source_id, origin_name, external_id, at, last_at, user_key, user_display, rule_id, path, process, files, file_count, bytes, remote, verdict, reason, detail, acknowledged_at) \
+///
+/// A stored alert only grows. The id comes from the agent, and whoever holds
+/// its certificate could otherwise resend an old id with `ok` and no files
+/// and erase an exfiltration from the dashboard. So: the verdict only
+/// escalates, and reason and detail come along only with a verdict that is
+/// not lower; counts, bytes and `last_at` take the larger value; files are
+/// added to in their order, never replaced.
+// At an equal verdict a report still brings its own reason and detail (a
+// growing alert shows what it grew into); the first ones are kept in
+// `first_reason`/`first_detail` the moment they are replaced, and never again.
+// ponytail: first and latest, not every step between; a history table if the
+// steps matter.
+const ALERT_UPSERT: &str = concat!(
+    "INSERT INTO alerts (kind, agent_id, source_id, origin_name, external_id, at, last_at, user_key, user_display, rule_id, path, process, files, file_count, bytes, remote, verdict, reason, detail, acknowledged_at) \
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, CASE WHEN $20 THEN now() ELSE NULL END) \
      ON CONFLICT (COALESCE(agent_id, source_id), external_id) DO UPDATE SET \
-       last_at = EXCLUDED.last_at, files = EXCLUDED.files, file_count = EXCLUDED.file_count, bytes = EXCLUDED.bytes, \
-       verdict = EXCLUDED.verdict, reason = EXCLUDED.reason, detail = EXCLUDED.detail, received_at = now(), \
+       last_at = GREATEST(alerts.last_at, EXCLUDED.last_at), \
+       files = alerts.files || COALESCE((SELECT jsonb_agg(f) FROM jsonb_array_elements(EXCLUDED.files) f WHERE NOT alerts.files @> jsonb_build_array(f)), '[]'), \
+       file_count = GREATEST(alerts.file_count, EXCLUDED.file_count), bytes = GREATEST(alerts.bytes, EXCLUDED.bytes), \
+       verdict = CASE WHEN ", verdict_rank!("EXCLUDED.verdict"), " > ", verdict_rank!("alerts.verdict"), " THEN EXCLUDED.verdict ELSE alerts.verdict END, \
+       reason = CASE WHEN ", verdict_rank!("EXCLUDED.verdict"), " >= ", verdict_rank!("alerts.verdict"), " THEN EXCLUDED.reason ELSE alerts.reason END, \
+       detail = CASE WHEN ", verdict_rank!("EXCLUDED.verdict"), " >= ", verdict_rank!("alerts.verdict"), " THEN EXCLUDED.detail ELSE alerts.detail END, \
+       first_reason = CASE WHEN alerts.first_detail IS NULL AND ", verdict_rank!("EXCLUDED.verdict"), " >= ", verdict_rank!("alerts.verdict"), " \
+                                AND (EXCLUDED.detail IS DISTINCT FROM alerts.detail OR EXCLUDED.reason IS DISTINCT FROM alerts.reason) \
+                           THEN alerts.reason ELSE alerts.first_reason END, \
+       first_detail = CASE WHEN alerts.first_detail IS NULL AND ", verdict_rank!("EXCLUDED.verdict"), " >= ", verdict_rank!("alerts.verdict"), " \
+                                AND (EXCLUDED.detail IS DISTINCT FROM alerts.detail OR EXCLUDED.reason IS DISTINCT FROM alerts.reason) \
+                           THEN alerts.detail ELSE alerts.first_detail END, \
+       received_at = now(), \
        acknowledged_at = CASE WHEN alerts.acknowledged_by IS NULL AND NOT $20 THEN NULL \
                               WHEN EXCLUDED.verdict = 'denied' AND alerts.verdict <> 'denied' THEN NULL \
                               ELSE alerts.acknowledged_at END, \
        acknowledged_by = CASE WHEN EXCLUDED.verdict = 'denied' AND alerts.verdict <> 'denied' THEN NULL ELSE alerts.acknowledged_by END \
-     RETURNING (xmax = 0) AS inserted";
+     RETURNING (xmax = 0) AS inserted"
+);
 
 /// Verdicts that are meant for the table only and should not occupy
 /// anybody.
@@ -969,6 +1006,102 @@ mod tests {
         assert!(open().await.unwrap(), "a denied alarm is never silenced");
         upsert("denied").await.unwrap();
         assert!(open().await.unwrap());
+    }
+
+    /// Whoever holds an agent's certificate — local admin, malware as
+    /// SYSTEM, a modified agent — could send an earlier alert's id again and
+    /// overwrite it: `denied` became `ok`, the files and bytes zero, and the
+    /// exfiltration was gone from the dashboard. A stored alert now only
+    /// grows: the verdict escalates, counts take the larger value, files are
+    /// added to, never replaced. Both the agent report and syslog sources go
+    /// through this one upsert.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_second_report_cannot_downgrade_or_wipe_a_stored_alert(pool: PgPool) {
+        use deelpe_core::access::AccessVerdict;
+        let agent: Uuid = sqlx::query_scalar(
+            "INSERT INTO agents (id, name, kind, version, cert_fingerprint, cert_not_after) \
+             VALUES (gen_random_uuid(), 'srv', 'windows_server', '0.1.0', 'fp', now() + interval '1 day') RETURNING id",
+        )
+        .fetch_one(&pool).await.unwrap();
+        let t0: DateTime<Utc> = "2026-09-06T10:00:00Z".parse().unwrap();
+        let alert = |verdict: AccessVerdict, files: u32, bytes: u64, samples: &[&str], last: i64| AccessAlert {
+            external_id: "access:r1:hans:1".into(),
+            at: t0,
+            last_at: Some(t0 + chrono::Duration::seconds(last)),
+            user: UserRef { source: "srv".into(), name: "hans".into(), domain: None, sid: None },
+            rule_id: None,
+            path: "GL".into(),
+            files,
+            bytes,
+            sample_files: samples.iter().map(|s| s.to_string()).collect(),
+            client_ip: None,
+            verdict,
+            reason: Some(format!("{files} files")),
+        };
+        let stored = || sqlx::query_as::<_, (String, i32, i64, serde_json::Value, Option<String>, Option<DateTime<Utc>>)>(
+            "SELECT verdict, file_count, bytes, files, reason, last_at FROM alerts WHERE external_id = 'access:r1:hans:1'").fetch_one(&pool);
+        let o = Origin::Agent(agent);
+
+        // Growing is what re-reporting is for: learning turns into an alarm,
+        // more files, more bytes.
+        upsert_access_alert(&pool, o, "srv", &alert(AccessVerdict::Learning, 50, 500, &["a.docx"], 10)).await.unwrap();
+        upsert_access_alert(&pool, o, "srv", &alert(AccessVerdict::HardLimit { files: 101, limit: 100 }, 101, 2048, &["a.docx", "b.docx"], 20)).await.unwrap();
+        let (v, n, b, f, r, _) = stored().await.unwrap();
+        assert_eq!((v.as_str(), n, b, r.as_deref()), ("hard_limit", 101, 2048, Some("101 files")));
+        assert_eq!(f, serde_json::json!(["a.docx", "b.docx"]));
+
+        // The forged re-report: harmless verdict, nothing read, other files.
+        upsert_access_alert(&pool, o, "srv", &alert(AccessVerdict::Ok, 0, 0, &["decoy.txt"], 5)).await.unwrap();
+        let (v, n, b, f, r, last) = stored().await.unwrap();
+        assert_eq!(v, "hard_limit", "the verdict does not go down");
+        assert_eq!((n, b), (101, 2048), "counts do not go down");
+        assert_eq!(f, serde_json::json!(["a.docx", "b.docx", "decoy.txt"]), "files are added to, not replaced");
+        assert_eq!(r.as_deref(), Some("101 files"), "a lower verdict does not bring its own reason");
+        assert_eq!(last, Some(t0 + chrono::Duration::seconds(20)), "last_at does not go back");
+    }
+
+    /// At an equal verdict a re-report still brings its own reason and
+    /// detail — a growing alert has to show what it has grown into. What it
+    /// first said is kept beside it and never overwritten: a forged report
+    /// can change what the dashboard shows now, not erase the original.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn what_an_alert_first_said_survives_a_rewrite(pool: PgPool) {
+        use deelpe_core::access::AccessVerdict;
+        let agent: Uuid = sqlx::query_scalar(
+            "INSERT INTO agents (id, name, kind, version, cert_fingerprint, cert_not_after) \
+             VALUES (gen_random_uuid(), 'srv', 'windows_server', '0.1.0', 'fp', now() + interval '1 day') RETURNING id",
+        )
+        .fetch_one(&pool).await.unwrap();
+        let t0: DateTime<Utc> = "2026-09-06T10:00:00Z".parse().unwrap();
+        let alert = |reason: &str, client_ip: &str| AccessAlert {
+            external_id: "access:r1:hans:2".into(),
+            at: t0,
+            last_at: None,
+            user: UserRef { source: "srv".into(), name: "hans".into(), domain: None, sid: None },
+            rule_id: None,
+            path: "GL".into(),
+            files: 101,
+            bytes: 2048,
+            sample_files: vec!["a.docx".into()],
+            client_ip: Some(client_ip.into()),
+            verdict: AccessVerdict::HardLimit { files: 101, limit: 100 },
+            reason: Some(reason.into()),
+        };
+        let o = Origin::Agent(agent);
+        let stored = || sqlx::query_as::<_, (Option<String>, serde_json::Value, Option<String>, Option<serde_json::Value>)>(
+            "SELECT reason, detail, first_reason, first_detail FROM alerts WHERE external_id = 'access:r1:hans:2'").fetch_one(&pool);
+
+        upsert_access_alert(&pool, o, "srv", &alert("101 files from 192.0.2.7", "192.0.2.7")).await.unwrap();
+        let (_, _, first_reason, first_detail) = stored().await.unwrap();
+        assert_eq!((first_reason, first_detail), (None, None), "nothing to keep while nothing changed");
+
+        upsert_access_alert(&pool, o, "srv", &alert("routine backup", "192.0.2.99")).await.unwrap();
+        upsert_access_alert(&pool, o, "srv", &alert("still routine", "192.0.2.98")).await.unwrap();
+        let (reason, detail, first_reason, first_detail) = stored().await.unwrap();
+        assert_eq!(reason.as_deref(), Some("still routine"), "the current state is the latest report's");
+        assert_eq!(detail["client_ip"], "192.0.2.98");
+        assert_eq!(first_reason.as_deref(), Some("101 files from 192.0.2.7"), "the first reason stays");
+        assert_eq!(first_detail.unwrap()["client_ip"], "192.0.2.7", "and so does the first detail");
     }
 
     #[sqlx::test(migrations = "./migrations")]

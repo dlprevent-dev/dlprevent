@@ -93,6 +93,27 @@ pub fn verify(bytes: &[u8], want: &str) -> Result<()> {
     Ok(())
 }
 
+/// Did the release key sign these bytes for this slot, at a version not
+/// older than the running one? The checksum from the central server says
+/// only that the download arrived as the server meant it; this says the
+/// release meant it too.
+///
+/// `key` is [`crate::signing::BUILT_IN_PUBKEY`]. An agent built without one
+/// accepts what the checksum admits, as before — nobody gets locked out of
+/// updates by a missing build variable. With one, a missing or wrong
+/// statement refuses the swap and the agent keeps running what it has.
+pub fn check_release(bytes: &[u8], statement: Option<&str>, key: Option<&str>, file_name: &str, running: &str) -> Result<()> {
+    let Some(key) = key.map(str::trim).filter(|k| !k.is_empty()) else {
+        return Ok(());
+    };
+    let statement = statement.ok_or_else(|| anyhow::anyhow!("this agent checks the release signature, and the central server sent none with the program; staying on the running version"))?;
+    let version = crate::signing::verify_release(bytes, statement, key, file_name).context("the release signature does not hold; staying on the running version")?;
+    if crate::signing::parse_version(&version) < crate::signing::parse_version(running) {
+        bail!("the central server holds version {version}, older than the running {running}; staying on the running version");
+    }
+    Ok(())
+}
+
 /// Replace the running program with the new bytes.
 ///
 /// A running file cannot be overwritten under Windows, but it can be
@@ -167,6 +188,40 @@ pub fn short(sha: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
+    /// The agent checks the release statement itself: a central server (or
+    /// its administrator login) could otherwise hand every endpoint any
+    /// program, and only the checksum the server itself announced stood in
+    /// the way.
+    #[test]
+    fn an_agent_with_a_key_swaps_only_to_a_signed_release_not_older_than_itself() {
+        use ring::signature::KeyPair;
+        let pkcs8 = ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new()).unwrap();
+        let kp = ring::signature::Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
+        let enc = |b: &[u8]| {
+            const A: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+            b.chunks(3).flat_map(|c| {
+                let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
+                (0..4).map(move |i| if i <= c.len() { A[((n >> (18 - i * 6)) & 63) as usize] as char } else { '=' })
+            }).collect::<String>()
+        };
+        let key = enc(kp.public_key().as_ref());
+        let exe = b"MZ neu";
+        let sha: String = Sha256::digest(exe).iter().map(|b| format!("{b:02x}")).collect();
+        let signed = |file: &str, version: &str| {
+            let st = crate::signing::statement(file, version, &sha);
+            format!("{st}sig: {}\n", enc(kp.sign(st.as_bytes()).as_ref()))
+        };
+        let good = signed("deelpe-winagent.exe", "0.1.9");
+        assert!(check_release(exe, Some(&good), Some(&key), "deelpe-winagent.exe", "0.1.8").is_ok());
+        assert!(check_release(exe, Some(&good), Some(&key), "deelpe-winagent.exe", "0.1.9").is_ok(), "the same version rebuilt");
+        assert!(check_release(exe, None, Some(&key), "deelpe-winagent.exe", "0.1.8").is_err(), "no statement from the server");
+        assert!(check_release(exe, Some(&good), Some(&key), "deelpe-linux-amd64", "0.1.8").is_err(), "another slot");
+        assert!(check_release(exe, Some(&signed("deelpe-winagent.exe", "0.1.7")), Some(&key), "deelpe-winagent.exe", "0.1.8").is_err(), "older than itself");
+        assert!(check_release(b"MZ anders", Some(&good), Some(&key), "deelpe-winagent.exe", "0.1.8").is_err(), "other bytes");
+        // Built without a key: the checksum alone decides, as before.
+        assert!(check_release(exe, None, None, "deelpe-winagent.exe", "0.1.8").is_ok());
+    }
+
     use super::*;
 
     const SHA_LEER: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";

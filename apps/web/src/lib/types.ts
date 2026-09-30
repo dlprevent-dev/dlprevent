@@ -6,7 +6,7 @@ export interface Alert {
   id: number; kind: 'endpoint' | 'access'; agent_id: string | null; source_id: string | null; origin_name: string;
   external_id: string; at: string; last_at: string | null; user_key: string | null; user_display: string | null;
   rule_id: string | null; path: string | null; process: string | null; files: string[]; file_count: number; bytes: number;
-  remote: string | null; verdict: string; reason: string | null; detail: unknown; acknowledged_at: string | null;
+  remote: string | null; verdict: string; reason: string | null; detail: unknown; first_reason: string | null; first_detail: unknown; acknowledged_at: string | null;
   acknowledged_by: string | null; received_at: string;
 }
 export interface Rule {
