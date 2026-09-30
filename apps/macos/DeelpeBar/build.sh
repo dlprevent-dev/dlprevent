@@ -6,7 +6,11 @@ set -euo pipefail
 cd "$(dirname "$0")"
 ROOT="$(cd ../../.. && pwd)"
 
-(cd "$ROOT" && cargo build --release 2>&1 | grep -E "error|warning: unused|Finished" || true)
+# A public program should not name the machine it was built on: without this
+# the bundled service carried ~470 paths under the builder's home directory.
+# The last prefix that matches wins, so the project root comes last.
+REMAP="--remap-path-prefix=$HOME=/build --remap-path-prefix=$ROOT=/src"
+(cd "$ROOT" && RUSTFLAGS="${RUSTFLAGS:-} $REMAP" cargo build --release 2>&1 | grep -E "error|warning: unused|Finished" || true)
 test -x "$ROOT/target/release/deelpe"
 
 swift build -c release 2>&1 | grep -E "error:|warning:|Build complete" || true
