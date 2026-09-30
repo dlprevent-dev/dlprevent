@@ -106,6 +106,7 @@ impl Config {
     /// the question "do our alerts leave the house?" off a URL.
     pub fn external(&self) -> bool {
         let host = host_of(&self.base_url);
+        let host = host.as_str();
         match abuseipdb::ip_of(host) {
             // An address answers the question by itself: public means
             // outside, everything else is our own network.
@@ -120,21 +121,19 @@ impl Config {
     }
 }
 
-/// The name between `://` and the first `/` or `:`. For the question "local
-/// or outside?" that is enough; an address with a port comes along as
-/// `[::1]:11434` or `10.0.0.5:11434`.
-pub fn host_of(base: &str) -> &str {
-    let rest = base.split_once("://").map(|(_, r)| r).unwrap_or(base);
-    let host = rest.split('/').next().unwrap_or(rest);
-    // IPv6 in brackets: away with the brackets, and with the port behind
-    // them too.
-    if let Some(inner) = host.strip_prefix('[') {
-        return inner.split(']').next().unwrap_or(inner);
-    }
-    match host.rsplit_once(':') {
-        Some((h, p)) if !h.contains(':') && p.chars().all(|c| c.is_ascii_digit()) => h,
-        _ => host,
-    }
+/// The host the client will really connect to, parsed the way `reqwest`
+/// parses it. A hand-rolled split once read `https://[a.example]@b.example`
+/// as `a.example` while the request went to `b.example`. IPv6 comes without
+/// brackets; an address that does not parse has no host (and counts as
+/// outside).
+pub fn host_of(base: &str) -> String {
+    reqwest::Url::parse(base).ok().and_then(|u| u.host_str().map(|h| h.trim_start_matches('[').trim_end_matches(']').to_string())).unwrap_or_default()
+}
+
+/// Would the stored key go to the same place? Scheme, host and port: a key
+/// for `https://x` must not follow a switch to `http://x` either.
+pub fn same_origin(a: &str, b: &str) -> bool {
+    matches!((reqwest::Url::parse(a), reqwest::Url::parse(b)), (Ok(a), Ok(b)) if a.origin() == b.origin())
 }
 
 /// Setup from the settings. `None` means: off, or incomplete — then the
@@ -738,5 +737,18 @@ mod tests {
             assert!(cfg(out).external(), "{out} liegt draussen");
         }
         assert_eq!(cfg("http://localhost:11434/v1").endpoint(), "http://localhost:11434/v1/chat/completions");
+        // What looks local in the user-info part is not where the request goes.
+        assert!(cfg("http://[10.0.0.5]@evil.example/v1").external());
+    }
+
+    /// The stored key follows only to the same scheme, host and port.
+    #[test]
+    fn the_key_stays_only_where_it_was_meant_for() {
+        let home = "https://api.infomaniak.com/2/ai/1/openai/v1";
+        assert!(same_origin(home, "https://API.infomaniak.com/2/ai/2/openai/v1"));
+        assert!(!same_origin(home, "https://[api.infomaniak.com]@evil.example/v1"), "user-info trick");
+        assert!(!same_origin(home, "http://api.infomaniak.com/2/ai/1/openai/v1"), "downgrade to http");
+        assert!(!same_origin(home, "https://api.infomaniak.com:8443/v1"), "other port");
+        assert!(!same_origin(home, "not a url"));
     }
 }

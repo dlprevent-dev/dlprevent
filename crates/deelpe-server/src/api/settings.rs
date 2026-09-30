@@ -342,6 +342,14 @@ pub(super) async fn update_settings(State(st): State<Shared>, Admin(user): Admin
     if !assist_base.is_empty() && !(assist_base.starts_with("https://") || assist_base.starts_with("http://")) {
         return Err(bad("AI base URL: start with https:// or http://"));
     }
+    // A user name in the address would travel as a second Authorization
+    // header, and it hides where the request really goes.
+    if !assist_base.is_empty() {
+        let u = reqwest::Url::parse(assist_base).map_err(|_| bad("AI base URL: not a valid address"))?;
+        if !u.username().is_empty() || u.password().is_some() {
+            return Err(bad("AI base URL: no user name or password in the address"));
+        }
+    }
     if b.assist_enabled && (assist_base.is_empty() || b.assist_model.trim().is_empty()) {
         return Err(bad("AI assistance: enter a base URL and a model name"));
     }
@@ -350,14 +358,15 @@ pub(super) async fn update_settings(State(st): State<Shared>, Admin(user): Admin
     if assist_base.ends_with("/chat/completions") {
         return Err(bad("AI base URL: leave off /chat/completions - the server appends it"));
     }
-    // If the base URL points at a different machine, the stored key is
-    // dropped. Otherwise the Infomaniak token would go to the newly entered
-    // address as `Authorization: Bearer …` at the next explanation — and the
-    // form would still say only „A key is stored". A new key sent along
-    // naturally applies; it is meant for the new machine after all.
+    // If the base URL points at a different origin (scheme, machine or port),
+    // the stored key is dropped. Otherwise the Infomaniak token would go to
+    // the newly entered address as `Authorization: Bearer …` at the next
+    // explanation — and the form would still say only „A key is stored". A
+    // new key sent along naturally applies; it is meant for the new machine
+    // after all.
     let assist_host_changed = {
         let old = db::setting_str(&st.pool, "assist_base_url").await?.unwrap_or_default();
-        !old.is_empty() && !crate::assist::host_of(&old).eq_ignore_ascii_case(crate::assist::host_of(assist_base))
+        !old.is_empty() && !crate::assist::same_origin(&old, assist_base)
     };
     // Mail: only check what is actually used. A half-filled form with the
     // master switch off has to be saveable.
