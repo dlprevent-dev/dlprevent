@@ -50,8 +50,26 @@ const MAX_HASHES: usize = 1_024;
 /// Filesystems that hold no user data. Marking them would work but only
 /// costs events; `/proc` in particular is read by everything all the time.
 const PSEUDO_FS: &[&str] = &[
-    "proc", "sysfs", "devpts", "devtmpfs", "cgroup", "cgroup2", "debugfs", "tracefs", "securityfs", "pstore", "bpf",
-    "configfs", "fusectl", "mqueue", "hugetlbfs", "binfmt_misc", "autofs", "nsfs", "rpc_pipefs", "selinuxfs",
+    "proc",
+    "sysfs",
+    "devpts",
+    "devtmpfs",
+    "cgroup",
+    "cgroup2",
+    "debugfs",
+    "tracefs",
+    "securityfs",
+    "pstore",
+    "bpf",
+    "configfs",
+    "fusectl",
+    "mqueue",
+    "hugetlbfs",
+    "binfmt_misc",
+    "autofs",
+    "nsfs",
+    "rpc_pipefs",
+    "selinuxfs",
 ];
 
 #[derive(Default)]
@@ -69,7 +87,11 @@ impl Sensor for Fanotify {
         if marked.is_empty() {
             bail!("fanotify: the mount table was read, but not one of its filesystems accepted a mark (the service needs root)");
         }
-        tracing::info!("fanotify: {} filesystems marked: {}", marked.len(), marked.join(" "));
+        tracing::info!(
+            "fanotify: {} filesystems marked: {}",
+            marked.len(),
+            marked.join(" ")
+        );
         let afd = AsyncFd::new(fan).context("fanotify descriptor into the reactor")?;
         let mut ctx = Ctx::default();
         let mut buf = vec![0u8; 64 * 1024];
@@ -127,7 +149,11 @@ pub(super) struct Ctx {
 
 impl Default for Ctx {
     fn default() -> Self {
-        Self { tainted: TaintTable::new(), hashes: HashMap::new(), own: std::process::id() }
+        Self {
+            tainted: TaintTable::new(),
+            hashes: HashMap::new(),
+            own: std::process::id(),
+        }
     }
 }
 
@@ -136,7 +162,12 @@ fn init() -> Result<OwnedFd> {
     // permission class would have to answer every open, and a service that
     // hangs stops the machine.
     let flags = libc::FAN_CLASS_NOTIF | libc::FAN_CLOEXEC | libc::FAN_NONBLOCK;
-    let fd = unsafe { libc::fanotify_init(flags, (libc::O_RDONLY | libc::O_LARGEFILE | libc::O_CLOEXEC) as u32) };
+    let fd = unsafe {
+        libc::fanotify_init(
+            flags,
+            (libc::O_RDONLY | libc::O_LARGEFILE | libc::O_CLOEXEC) as u32,
+        )
+    };
     if fd < 0 {
         let e = std::io::Error::last_os_error();
         bail!("fanotify_init: {e} (the service needs root, i.e. CAP_SYS_ADMIN)");
@@ -194,7 +225,9 @@ pub fn mount_points(table: &str) -> Vec<String> {
     let mut out = Vec::new();
     for line in table.lines() {
         let mut f = line.split_whitespace();
-        let (Some(_dev), Some(point), Some(fstype)) = (f.next(), f.next(), f.next()) else { continue };
+        let (Some(_dev), Some(point), Some(fstype)) = (f.next(), f.next(), f.next()) else {
+            continue;
+        };
         if PSEUDO_FS.contains(&fstype) {
             continue;
         }
@@ -219,7 +252,10 @@ fn unescape(s: &str) -> String {
     let mut i = 0;
     while i < b.len() {
         if b[i] == b'\\' && i + 3 < b.len() {
-            if let Some(c) = std::str::from_utf8(&b[i + 1..i + 4]).ok().and_then(|o| u8::from_str_radix(o, 8).ok()) {
+            if let Some(c) = std::str::from_utf8(&b[i + 1..i + 4])
+                .ok()
+                .and_then(|o| u8::from_str_radix(o, 8).ok())
+            {
                 out.push(c);
                 i += 4;
                 continue;
@@ -246,7 +282,9 @@ fn dispatch(ctx: &mut Ctx, buf: &[u8], tx: &mpsc::Sender<Event>) -> Result<bool>
     while off + meta_len <= buf.len() {
         // The buffer comes from the kernel and is aligned; `read_unaligned`
         // costs nothing and saves the argument about it.
-        let meta = unsafe { std::ptr::read_unaligned(buf[off..].as_ptr() as *const libc::fanotify_event_metadata) };
+        let meta = unsafe {
+            std::ptr::read_unaligned(buf[off..].as_ptr() as *const libc::fanotify_event_metadata)
+        };
         // Into an owner before the first check, not after: every event
         // carries an open descriptor, and every path out of the loop below
         // — the error paths included — has to close it. A leak here runs
@@ -278,7 +316,9 @@ fn dispatch(ctx: &mut Ctx, buf: &[u8], tx: &mpsc::Sender<Event>) -> Result<bool>
             continue;
         }
         let Some(fd) = fd else { continue };
-        let Some(ev) = event(ctx, &fd, meta.mask, meta.pid as u32) else { continue };
+        let Some(ev) = event(ctx, &fd, meta.mask, meta.pid as u32) else {
+            continue;
+        };
         match tx.try_send(ev) {
             Ok(()) => {}
             // The engine cannot keep up. Dropping one event beats blocking
@@ -300,7 +340,9 @@ fn dispatch(ctx: &mut Ctx, buf: &[u8], tx: &mpsc::Sender<Event>) -> Result<bool>
 fn close_rest(buf: &[u8], mut off: usize) {
     let meta_len = std::mem::size_of::<libc::fanotify_event_metadata>();
     while off + meta_len <= buf.len() {
-        let meta = unsafe { std::ptr::read_unaligned(buf[off..].as_ptr() as *const libc::fanotify_event_metadata) };
+        let meta = unsafe {
+            std::ptr::read_unaligned(buf[off..].as_ptr() as *const libc::fanotify_event_metadata)
+        };
         let len = meta.event_len as usize;
         if meta.fd >= 0 {
             drop(unsafe { OwnedFd::from_raw_fd(meta.fd) });
@@ -364,8 +406,21 @@ fn event(ctx: &mut Ctx, fd: &OwnedFd, mask: u64, pid: u32) -> Option<Event> {
     };
     let (inode, nlink) = stat_of(fd);
     let process = process_ref(ctx, pid);
-    let argv = if action == FileAction::Exec { cmdline(pid) } else { None };
-    Some(Event::File(FileEvent { at: Utc::now(), process, path: PathBuf::from(path), action, target: None, inode, nlink, argv }))
+    let argv = if action == FileAction::Exec {
+        cmdline(pid)
+    } else {
+        None
+    };
+    Some(Event::File(FileEvent {
+        at: Utc::now(),
+        process,
+        path: PathBuf::from(path),
+        action,
+        target: None,
+        inode,
+        nlink,
+        argv,
+    }))
 }
 
 /// (device, inode) and link count of the object the event points at.
@@ -375,7 +430,10 @@ fn stat_of(fd: &OwnedFd) -> (Option<(u64, u64)>, Option<u32>) {
     if unsafe { libc::fstat(fd.as_raw_fd(), &mut st) } != 0 {
         return (None, None);
     }
-    (Some((st.st_dev as u64, st.st_ino as u64)), Some(st.st_nlink as u32))
+    (
+        Some((st.st_dev as u64, st.st_ino as u64)),
+        Some(st.st_nlink as u32),
+    )
 }
 
 /// Who is this process? Path from `/proc`, identity as the hash of the
@@ -391,9 +449,21 @@ pub(super) fn process_ref(ctx: &mut Ctx, pid: u32) -> ProcessRef {
     let ppid = ppid_of(pid);
     let Some(exe) = readlink(&format!("/proc/{pid}/exe")) else {
         let gone = format!("pid {pid}");
-        return ProcessRef { pid, ppid, responsible: None, path: PathBuf::from(&gone), identity: ProcessIdentity::Unknown { path: gone } };
+        return ProcessRef {
+            pid,
+            ppid,
+            responsible: None,
+            path: PathBuf::from(&gone),
+            identity: ProcessIdentity::Unknown { path: gone },
+        };
     };
-    ProcessRef { pid, ppid, responsible: None, path: PathBuf::from(&exe), identity: identity_of(ctx, exe) }
+    ProcessRef {
+        pid,
+        ppid,
+        responsible: None,
+        path: PathBuf::from(&exe),
+        identity: identity_of(ctx, exe),
+    }
 }
 
 /// The identity of a binary: its hash, or its path alone if it cannot be
@@ -415,7 +485,11 @@ pub(super) fn identity_of(ctx: &mut Ctx, exe: String) -> ProcessIdentity {
 // Exact would be the exec tracepoint (eBPF), not fanotify.
 pub(super) fn cmdline(pid: u32) -> Option<String> {
     let raw = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
-    let args: Vec<String> = raw.split(|b| *b == 0).filter(|s| !s.is_empty()).map(|s| String::from_utf8_lossy(s).into_owned()).collect();
+    let args: Vec<String> = raw
+        .split(|b| *b == 0)
+        .filter(|s| !s.is_empty())
+        .map(|s| String::from_utf8_lossy(s).into_owned())
+        .collect();
     (!args.is_empty()).then(|| args.join(" "))
 }
 
@@ -445,7 +519,10 @@ fn hash_of(ctx: &mut Ctx, path: &PathBuf) -> Option<String> {
             Err(_) => return None,
         }
     }
-    let hex = <sha2::Sha256 as sha2::Digest>::finalize(hasher).iter().map(|b| format!("{b:02x}")).collect::<String>();
+    let hex = <sha2::Sha256 as sha2::Digest>::finalize(hasher)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
     // One entry out, not the whole table: clearing it would send every
     // binary on the machine back through the hashing above at once, which
     // is the one thing this cache exists to prevent.
@@ -468,7 +545,10 @@ pub(super) fn ppid_of(pid: u32) -> Option<u32> {
 
 /// Pure part of [`ppid_of`], so the format gets tested rather than trusted.
 pub fn parse_ppid(status: &str) -> Option<u32> {
-    status.lines().find_map(|l| l.strip_prefix("PPid:")).and_then(|v| v.trim().parse().ok())
+    status
+        .lines()
+        .find_map(|l| l.strip_prefix("PPid:"))
+        .and_then(|v| v.trim().parse().ok())
 }
 
 pub(super) fn readlink(path: &str) -> Option<String> {

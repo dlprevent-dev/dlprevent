@@ -74,7 +74,10 @@ impl Binder {
 
     /// Bind the booked values to a `query_as`, in the same order in which
     /// the placeholders were handed out.
-    pub fn bind_as<'q, O>(self, mut q: QueryAs<'q, Postgres, O, PgArguments>) -> QueryAs<'q, Postgres, O, PgArguments> {
+    pub fn bind_as<'q, O>(
+        self,
+        mut q: QueryAs<'q, Postgres, O, PgArguments>,
+    ) -> QueryAs<'q, Postgres, O, PgArguments> {
         for a in self.0 {
             q = match a {
                 Arg::Bool(v) => q.bind(v),
@@ -88,7 +91,10 @@ impl Binder {
     }
 
     /// The same for a `query` without result rows (UPDATE, DELETE).
-    pub fn bind<'q>(self, mut q: Query<'q, Postgres, PgArguments>) -> Query<'q, Postgres, PgArguments> {
+    pub fn bind<'q>(
+        self,
+        mut q: Query<'q, Postgres, PgArguments>,
+    ) -> Query<'q, Postgres, PgArguments> {
         for a in self.0 {
             q = match a {
                 Arg::Bool(v) => q.bind(v),
@@ -112,7 +118,11 @@ impl Binder {
 /// Until 2026-09-08 this stood written out twice — in `api/alerts.rs` and
 /// `api/audit.rs`, right down to two tests with the same name.
 pub fn order_by(sort: Option<&str>, dir: Option<&str>, allow: &[(&str, &str)]) -> String {
-    let col = allow.iter().find(|(name, _)| *name == sort.unwrap_or("id")).map(|(_, expr)| *expr).unwrap_or("id");
+    let col = allow
+        .iter()
+        .find(|(name, _)| *name == sort.unwrap_or("id"))
+        .map(|(_, expr)| *expr)
+        .unwrap_or("id");
     let d = if dir == Some("asc") { "ASC" } else { "DESC" };
     if col == "id" {
         format!("id {d}")
@@ -137,7 +147,10 @@ pub struct ListQuery {
 
 impl Default for ListQuery {
     fn default() -> Self {
-        Self { b: Binder::new(), cond: "true".into() }
+        Self {
+            b: Binder::new(),
+            cond: "true".into(),
+        }
     }
 }
 
@@ -187,8 +200,11 @@ impl ListQuery {
         let l = self.b.i64(limit);
         let o = self.b.i64(offset);
         let cond = &self.cond;
-        let sql = format!("SELECT {cols} FROM {table} WHERE {cond} ORDER BY {order} LIMIT {l} OFFSET {o}");
-        self.b.bind_as(sqlx::query_as::<_, O>(sqlx::AssertSqlSafe(sql)))
+        let sql = format!(
+            "SELECT {cols} FROM {table} WHERE {cond} ORDER BY {order} LIMIT {l} OFFSET {o}"
+        );
+        self.b
+            .bind_as(sqlx::query_as::<_, O>(sqlx::AssertSqlSafe(sql)))
     }
 }
 
@@ -196,17 +212,29 @@ impl ListQuery {
 mod tests {
     use super::*;
 
-    const ALLOW: &[(&str, &str)] = &[("at", "coalesce(last_at, at)"), ("who", "lower(user_display)")];
+    const ALLOW: &[(&str, &str)] = &[
+        ("at", "coalesce(last_at, at)"),
+        ("who", "lower(user_display)"),
+    ];
 
     /// The name from the request must never land in the SQL.
     #[test]
     fn order_only_from_allowlist() {
-        assert_eq!(order_by(Some("at"), Some("asc"), ALLOW), "coalesce(last_at, at) ASC, id DESC");
-        assert_eq!(order_by(Some("who"), None, ALLOW), "lower(user_display) DESC, id DESC");
+        assert_eq!(
+            order_by(Some("at"), Some("asc"), ALLOW),
+            "coalesce(last_at, at) ASC, id DESC"
+        );
+        assert_eq!(
+            order_by(Some("who"), None, ALLOW),
+            "lower(user_display) DESC, id DESC"
+        );
         // Unknown, empty, and an injection attempt: everything becomes `id`.
         assert_eq!(order_by(Some("bogus"), None, ALLOW), "id DESC");
         assert_eq!(order_by(None, Some("asc"), ALLOW), "id ASC");
-        assert_eq!(order_by(Some("id; DROP TABLE alerts"), None, ALLOW), "id DESC");
+        assert_eq!(
+            order_by(Some("id; DROP TABLE alerts"), None, ALLOW),
+            "id DESC"
+        );
     }
 
     /// The window bounds are bound, not written into the text — and behind
@@ -220,7 +248,10 @@ mod tests {
         q.search("haystack", &["%abc%".to_string()]);
         // $2 is the search term, $3/$4 are limit and offset.
         assert_eq!(q.b.0.len(), 2);
-        let expected = [Arg::Text(Some("gl".into())), Arg::Text(Some("%abc%".into()))];
+        let expected = [
+            Arg::Text(Some("gl".into())),
+            Arg::Text(Some("%abc%".into())),
+        ];
         assert_eq!(q.b.0, expected);
         assert!(q.cond.contains("origin = $1"));
         assert!(q.cond.contains("haystack LIKE $2"));
@@ -243,6 +274,13 @@ mod tests {
         b.text(Some(String::new()));
         b.text(None);
         b.text(Some("gl".into()));
-        assert_eq!(b.0, [Arg::Text(None), Arg::Text(None), Arg::Text(Some("gl".into()))]);
+        assert_eq!(
+            b.0,
+            [
+                Arg::Text(None),
+                Arg::Text(None),
+                Arg::Text(Some("gl".into()))
+            ]
+        );
     }
 }

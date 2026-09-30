@@ -53,10 +53,13 @@ pub const FRESH: Duration = Duration::from_secs(120);
 /// already gone again, a Linux kernel without `statx`) means **no**: a
 /// question that cannot be answered must not produce an alert.
 pub fn just_created(path: &Path, now: SystemTime, max_age: Duration) -> bool {
-    let Ok(created) = std::fs::metadata(path).and_then(|m| m.created()) else { return false };
+    let Ok(created) = std::fs::metadata(path).and_then(|m| m.created()) else {
+        return false;
+    };
     // A creation time in the future comes from a clock that ran backwards,
     // not from an old file.
-    now.duration_since(created).map_or(true, |age| age <= max_age)
+    now.duration_since(created)
+        .map_or(true, |age| age <= max_age)
 }
 
 #[cfg(test)]

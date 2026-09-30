@@ -4,7 +4,8 @@
 use anyhow::Result;
 use deelpe_core::correlate::Alert;
 
-pub const CSV_HEADER: &str = "id,time,process,identity,pid,destination,port,bytes_out,files,via,verdict,reason";
+pub const CSV_HEADER: &str =
+    "id,time,process,identity,pid,destination,port,bytes_out,files,via,verdict,reason";
 
 pub fn csv(alerts: &[Alert]) -> String {
     let mut out = String::from(CSV_HEADER);
@@ -19,12 +20,25 @@ pub fn csv(alerts: &[Alert]) -> String {
             a.remote.map(|r| r.to_string()).unwrap_or_default(),
             a.remote_port.map(|p| p.to_string()).unwrap_or_default(),
             a.bytes_out.to_string(),
-            a.files.iter().map(|f| f.display().to_string()).collect::<Vec<_>>().join("; "),
+            a.files
+                .iter()
+                .map(|f| f.display().to_string())
+                .collect::<Vec<_>>()
+                .join("; "),
             a.via.clone().unwrap_or_default(),
-            serde_json::to_value(a.verdict).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(),
+            serde_json::to_value(a.verdict)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_default(),
             a.reason.clone().unwrap_or_default(),
         ];
-        out.push_str(&fields.iter().map(|f| csv_field(f)).collect::<Vec<_>>().join(","));
+        out.push_str(
+            &fields
+                .iter()
+                .map(|f| csv_field(f))
+                .collect::<Vec<_>>()
+                .join(","),
+        );
         out.push('\n');
     }
     out
@@ -48,7 +62,9 @@ fn csv_field(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 1);
     let mut mark = Some(0);
     for c in s.chars() {
-        if let Some(m) = mark.filter(|_| !matches!(c, '\u{feff}' | '\u{200b}' | '\u{200c}' | '\u{200d}' | ' ')) {
+        if let Some(m) =
+            mark.filter(|_| !matches!(c, '\u{feff}' | '\u{200b}' | '\u{200c}' | '\u{200d}' | ' '))
+        {
             if matches!(c, '=' | '+' | '-' | '@' | '\t' | '\r') {
                 out.insert(m, '\'');
             }

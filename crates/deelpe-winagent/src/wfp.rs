@@ -93,7 +93,9 @@ const NEVER_CAGE: &[&str] = &[
 /// without it a tool renamed `chrome.exe` was never caged.
 pub fn may_cage(pid: u32, name: &str, asks_first: bool, name_vouched: bool) -> Result<()> {
     if asks_first {
-        anyhow::bail!("{name} submits its uploads for inspection; the connector decides, not the cage");
+        anyhow::bail!(
+            "{name} submits its uploads for inspection; the connector decides, not the cage"
+        );
     }
     if pid <= 4 || pid == std::process::id() {
         anyhow::bail!("pid {pid} is not a process we may cage");
@@ -139,6 +141,7 @@ fn name_is_vouched_for(exe: &str) -> bool {
 /// which renaming does not change) is `name`. The publisher is not asked:
 /// the lists are about not crippling the program that really is `opera.exe`,
 /// whoever publishes it — and a signed tool renamed keeps its own name.
+#[cfg_attr(not(windows), allow(dead_code))] // the caller is Windows-only; the tests run everywhere
 pub fn signature_vouches_for(id: &deelpe_core::identity::ProcessIdentity, name: &str) -> bool {
     use deelpe_core::identity::{image_name, ProcessIdentity};
     matches!(id, ProcessIdentity::Signed { signing_id, .. } if image_name(signing_id) == image_name(name))
@@ -151,7 +154,11 @@ fn name_is_vouched_for(_exe: &str) -> bool {
 
 /// SYSTEM, the administrators, TrustedInstaller.
 #[cfg(windows)]
-const PRIVILEGED_OWNERS: &[&str] = &["S-1-5-18", "S-1-5-32-544", "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464"];
+const PRIVILEGED_OWNERS: &[&str] = &[
+    "S-1-5-18",
+    "S-1-5-32-544",
+    "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464",
+];
 
 /// Is the file owned by one of [`PRIVILEGED_OWNERS`]? An owner that cannot
 /// be read counts as no: SYSTEM can read the owner of every file Windows or
@@ -160,17 +167,32 @@ const PRIVILEGED_OWNERS: &[&str] = &["S-1-5-18", "S-1-5-32-544", "S-1-5-80-95600
 fn privileged_owner(exe: &str) -> bool {
     use windows::core::{HSTRING, PCWSTR, PWSTR};
     use windows::Win32::Foundation::{LocalFree, HLOCAL};
-    use windows::Win32::Security::Authorization::{ConvertSidToStringSidW, GetNamedSecurityInfoW, SE_FILE_OBJECT};
+    use windows::Win32::Security::Authorization::{
+        ConvertSidToStringSidW, GetNamedSecurityInfoW, SE_FILE_OBJECT,
+    };
     use windows::Win32::Security::{OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID};
     let path = HSTRING::from(exe);
     let mut owner = PSID::default();
     let mut sd = PSECURITY_DESCRIPTOR::default();
-    let rc = unsafe { GetNamedSecurityInfoW(PCWSTR(path.as_ptr()), SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION, Some(&mut owner), None, None, None, &mut sd) };
+    let rc = unsafe {
+        GetNamedSecurityInfoW(
+            PCWSTR(path.as_ptr()),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION,
+            Some(&mut owner),
+            None,
+            None,
+            None,
+            &mut sd,
+        )
+    };
     if rc.is_err() || owner.is_invalid() {
         return false;
     }
     let mut s = PWSTR::null();
-    let sid = unsafe { ConvertSidToStringSidW(owner, &mut s) }.ok().and_then(|()| unsafe { s.to_string() }.ok());
+    let sid = unsafe { ConvertSidToStringSidW(owner, &mut s) }
+        .ok()
+        .and_then(|()| unsafe { s.to_string() }.ok());
     unsafe {
         let _ = LocalFree(Some(HLOCAL(s.0 as *mut _)));
         let _ = LocalFree(Some(HLOCAL(sd.0)));
@@ -186,6 +208,7 @@ fn exempt_by_name(name: &str) -> bool {
 }
 
 /// Netmask from a prefix length. `/0` is 0, `/32` is everything.
+#[cfg_attr(not(windows), allow(dead_code))] // the caller is Windows-only; the tests run everywhere
 fn v4_mask(bits: u8) -> u32 {
     if bits >= 32 {
         u32::MAX
@@ -229,10 +252,12 @@ pub struct Cages {
     /// Handle of the dynamic WFP session. `0` means: not open yet. As a
     /// number and not as a `HANDLE`, so that the struct may travel between
     /// Tokio tasks without an `unsafe impl Send`.
+    #[cfg_attr(not(windows), allow(dead_code))]
     engine: usize,
     /// The session could not be opened. Then it is not retried on every
     /// touch — the log would fill up and the error would be the same every
     /// time.
+    #[cfg_attr(not(windows), allow(dead_code))]
     broken: bool,
     /// Why no cage came up last time. Goes to the central, not only into
     /// the log: this component fails **open**, so nobody notices by
@@ -249,7 +274,12 @@ impl Default for Cages {
 
 impl Cages {
     pub fn new() -> Self {
-        Cages { open: HashMap::new(), engine: 0, broken: false, last_error: None }
+        Cages {
+            open: HashMap::new(),
+            engine: 0,
+            broken: false,
+            last_error: None,
+        }
     }
 
     /// For the status report to the central: `None` means "it is up".
@@ -308,8 +338,22 @@ impl Cages {
         // already open. Without this teardown the cage only covers what
         // happens to start later — and that is no corner case (ADR 0002).
         let torn = self.tear_down(pid);
-        tracing::warn!(exe, pid, filters = filters.len(), permits = permits.len(), torn, "network cage armed (strict folder)");
-        self.open.insert(key, Cage { until: now + CAGE_TTL, permits: permits.to_vec(), filters });
+        tracing::warn!(
+            exe,
+            pid,
+            filters = filters.len(),
+            permits = permits.len(),
+            torn,
+            "network cage armed (strict folder)"
+        );
+        self.open.insert(
+            key,
+            Cage {
+                until: now + CAGE_TTL,
+                permits: permits.to_vec(),
+                filters,
+            },
+        );
     }
 
     /// A fresh touch: cage the process if it qualifies.
@@ -352,7 +396,12 @@ impl Cages {
     /// event: whoever stops reading also stops producing events — and would
     /// otherwise stay caged forever.
     pub fn expire(&mut self, now: Instant) {
-        let done: Vec<String> = self.open.iter().filter(|(_, c)| c.until <= now).map(|(k, _)| k.clone()).collect();
+        let done: Vec<String> = self
+            .open
+            .iter()
+            .filter(|(_, c)| c.until <= now)
+            .map(|(k, _)| k.clone())
+            .collect();
         for key in done {
             if let Some(c) = self.open.remove(&key) {
                 self.delete(&c.filters);
@@ -381,7 +430,9 @@ impl Cages {
     /// promise: handle closed, filters gone.
     fn engine(&mut self) -> Result<windows::Win32::Foundation::HANDLE> {
         use windows::Win32::Foundation::HANDLE;
-        use windows::Win32::NetworkManagement::WindowsFilteringPlatform::{FwpmEngineOpen0, FWPM_SESSION0, FWPM_SESSION_FLAG_DYNAMIC};
+        use windows::Win32::NetworkManagement::WindowsFilteringPlatform::{
+            FwpmEngineOpen0, FWPM_SESSION0, FWPM_SESSION_FLAG_DYNAMIC,
+        };
 
         if self.engine != 0 {
             return Ok(HANDLE(self.engine as *mut std::ffi::c_void));
@@ -389,7 +440,10 @@ impl Cages {
         if self.broken {
             anyhow::bail!("the filtering engine could not be opened earlier");
         }
-        let session = FWPM_SESSION0 { flags: FWPM_SESSION_FLAG_DYNAMIC, ..Default::default() };
+        let session = FWPM_SESSION0 {
+            flags: FWPM_SESSION_FLAG_DYNAMIC,
+            ..Default::default()
+        };
         let mut h = HANDLE::default();
         // 10 is `RPC_C_AUTHN_WINNT`, the authentication that the example in
         // the documentation uses locally.
@@ -399,7 +453,9 @@ impl Cages {
             anyhow::bail!("FwpmEngineOpen0: 0x{rc:08x}");
         }
         self.engine = h.0 as usize;
-        tracing::info!("filtering engine open (dynamic session: the cage opens by itself if the service dies)");
+        tracing::info!(
+            "filtering engine open (dynamic session: the cage opens by itself if the service dies)"
+        );
         Ok(h)
     }
 
@@ -409,7 +465,8 @@ impl Cages {
     fn add(&mut self, exe: &str, permits: &[Permit]) -> Result<Vec<u64>> {
         use windows::core::HSTRING;
         use windows::Win32::NetworkManagement::WindowsFilteringPlatform::{
-            FwpmFreeMemory0, FwpmGetAppIdFromFileName0, FWPM_LAYER_ALE_AUTH_CONNECT_V4, FWPM_LAYER_ALE_AUTH_CONNECT_V6, FWP_BYTE_BLOB,
+            FwpmFreeMemory0, FwpmGetAppIdFromFileName0, FWPM_LAYER_ALE_AUTH_CONNECT_V4,
+            FWPM_LAYER_ALE_AUTH_CONNECT_V6, FWP_BYTE_BLOB,
         };
 
         let engine = self.engine()?;
@@ -421,7 +478,10 @@ impl Cages {
         }
         let mut ids = Vec::new();
         let mut err = None;
-        for layer in [FWPM_LAYER_ALE_AUTH_CONNECT_V4, FWPM_LAYER_ALE_AUTH_CONNECT_V6] {
+        for layer in [
+            FWPM_LAYER_ALE_AUTH_CONNECT_V4,
+            FWPM_LAYER_ALE_AUTH_CONNECT_V6,
+        ] {
             let v4 = layer == FWPM_LAYER_ALE_AUTH_CONNECT_V4;
             match win::block_all(engine, layer, app, exe) {
                 Ok(id) => ids.push(id),
@@ -465,6 +525,9 @@ impl Cages {
 }
 
 #[cfg(windows)]
+// The WFP structs are C structs with unions inside: filled field by field, as
+// the Windows documentation does, not through nested initializers.
+#[allow(clippy::field_reassign_with_default)]
 mod win {
     use super::{v4_mask, Permit};
     use anyhow::Result;
@@ -488,7 +551,14 @@ mod win {
     /// Add a filter. The conditions point at the caller's memory and have
     /// to outlive the call — which is why the function takes them as a slice
     /// and allocates nothing itself.
-    fn add(engine: HANDLE, layer: GUID, name: &HSTRING, weight: u8, action: FWP_ACTION_TYPE, conds: &mut [FWPM_FILTER_CONDITION0]) -> Result<u64> {
+    fn add(
+        engine: HANDLE,
+        layer: GUID,
+        name: &HSTRING,
+        weight: u8,
+        action: FWP_ACTION_TYPE,
+        conds: &mut [FWPM_FILTER_CONDITION0],
+    ) -> Result<u64> {
         let mut f = FWPM_FILTER0::default();
         f.displayData.name = PWSTR(name.as_ptr() as *mut u16);
         f.layerKey = layer;
@@ -506,13 +576,24 @@ mod win {
         Ok(id)
     }
 
-    pub fn block_all(engine: HANDLE, layer: GUID, app: *mut FWP_BYTE_BLOB, exe: &str) -> Result<u64> {
+    pub fn block_all(
+        engine: HANDLE,
+        layer: GUID,
+        app: *mut FWP_BYTE_BLOB,
+        exe: &str,
+    ) -> Result<u64> {
         let name = HSTRING::from(format!("DLPrevent: {exe} may not leave the strict folder"));
         let mut conds = [app_cond(app)];
         add(engine, layer, &name, W_BLOCK, FWP_ACTION_BLOCK, &mut conds)
     }
 
-    pub fn permit(engine: HANDLE, layer: GUID, app: *mut FWP_BYTE_BLOB, exe: &str, p: &Permit) -> Result<u64> {
+    pub fn permit(
+        engine: HANDLE,
+        layer: GUID,
+        app: *mut FWP_BYTE_BLOB,
+        exe: &str,
+        p: &Permit,
+    ) -> Result<u64> {
         let name = HSTRING::from(format!("DLPrevent: {exe} may reach {}/{}", p.net, p.bits));
         // These two live until the end of the function and thus beyond the
         // call — the condition points at them.
@@ -548,7 +629,14 @@ mod win {
             c.conditionValue.Anonymous.uint16 = port;
             conds.push(c);
         }
-        add(engine, layer, &name, W_PERMIT, FWP_ACTION_PERMIT, &mut conds)
+        add(
+            engine,
+            layer,
+            &name,
+            W_PERMIT,
+            FWP_ACTION_PERMIT,
+            &mut conds,
+        )
     }
 
     /// Tear down this process's open TCP connections.
@@ -562,8 +650,8 @@ mod win {
     /// IPv6 connection.
     pub fn kill_tcp_of(pid: u32) -> usize {
         use windows::Win32::NetworkManagement::IpHelper::{
-            GetExtendedTcpTable, SetTcpEntry, MIB_TCPROW_LH, MIB_TCPROW_LH_0, MIB_TCPROW_OWNER_PID, MIB_TCPTABLE_OWNER_PID,
-            MIB_TCP_STATE_DELETE_TCB, TCP_TABLE_OWNER_PID_ALL,
+            GetExtendedTcpTable, SetTcpEntry, MIB_TCPROW_LH, MIB_TCPROW_LH_0, MIB_TCPROW_OWNER_PID,
+            MIB_TCPTABLE_OWNER_PID, MIB_TCP_STATE_DELETE_TCB, TCP_TABLE_OWNER_PID_ALL,
         };
         const AF_INET: u32 = 2;
 
@@ -573,7 +661,16 @@ mod win {
             return 0;
         }
         let mut buf = vec![0u8; size as usize];
-        let rc = unsafe { GetExtendedTcpTable(Some(buf.as_mut_ptr().cast()), &mut size, false, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0) };
+        let rc = unsafe {
+            GetExtendedTcpTable(
+                Some(buf.as_mut_ptr().cast()),
+                &mut size,
+                false,
+                AF_INET,
+                TCP_TABLE_OWNER_PID_ALL,
+                0,
+            )
+        };
         if rc != 0 {
             tracing::debug!("GetExtendedTcpTable: 0x{rc:08x}");
             return 0;
@@ -588,7 +685,9 @@ mod win {
                 continue;
             }
             let row = MIB_TCPROW_LH {
-                Anonymous: MIB_TCPROW_LH_0 { State: MIB_TCP_STATE_DELETE_TCB },
+                Anonymous: MIB_TCPROW_LH_0 {
+                    State: MIB_TCP_STATE_DELETE_TCB,
+                },
                 dwLocalAddr: r.dwLocalAddr,
                 dwLocalPort: r.dwLocalPort,
                 dwRemoteAddr: r.dwRemoteAddr,
@@ -646,15 +745,36 @@ mod tests {
     /// the process is caged like any other.
     #[test]
     fn a_protected_name_nobody_vouches_for_protects_nothing() {
-        for renamed in ["chrome.exe", "msedge.exe", "explorer.exe", "svchost.exe", "EXPLORER.EXE.MUI"] {
+        for renamed in [
+            "chrome.exe",
+            "msedge.exe",
+            "explorer.exe",
+            "svchost.exe",
+            "EXPLORER.EXE.MUI",
+        ] {
             assert!(may_cage(1234, renamed, false, false).is_ok(), "{renamed}");
-            assert!(may_cage(1234, renamed, false, true).is_err(), "{renamed}, vouched for");
+            assert!(
+                may_cage(1234, renamed, false, true).is_err(),
+                "{renamed}, vouched for"
+            );
         }
         // What does not rest on the name stays as it was.
-        assert!(may_cage(4, "chrome.exe", false, false).is_err(), "the kernel is never caged");
-        assert!(may_cage(std::process::id(), "x.exe", false, false).is_err(), "nor the agent itself");
-        assert!(may_cage(4242, "", false, false).is_err(), "nor what we cannot name");
-        assert!(may_cage(1234, "chrome.exe", true, false).is_err(), "a browser that asked is judged by the connector");
+        assert!(
+            may_cage(4, "chrome.exe", false, false).is_err(),
+            "the kernel is never caged"
+        );
+        assert!(
+            may_cage(std::process::id(), "x.exe", false, false).is_err(),
+            "nor the agent itself"
+        );
+        assert!(
+            may_cage(4242, "", false, false).is_err(),
+            "nor what we cannot name"
+        );
+        assert!(
+            may_cage(1234, "chrome.exe", true, false).is_err(),
+            "a browser that asked is judged by the connector"
+        );
     }
 
     /// Review 2026-09-30: Opera and Vivaldi install per user, and so does
@@ -665,20 +785,52 @@ mod tests {
     #[test]
     fn a_signature_under_the_same_name_vouches_for_it() {
         use deelpe_core::identity::ProcessIdentity;
-        let signed = |p: &str, n: &str| ProcessIdentity::Signed { team_id: p.into(), signing_id: n.into() };
-        assert!(signature_vouches_for(&signed("Opera Norway AS", "opera.exe"), "opera.exe"));
-        assert!(signature_vouches_for(&signed("Vivaldi Technologies AS", "vivaldi.exe"), "Vivaldi.exe"));
-        assert!(signature_vouches_for(&signed("Brave Software, Inc.", "brave.exe"), "brave.exe"));
-        assert!(signature_vouches_for(&signed("Microsoft Corporation", "EXPLORER.EXE.MUI"), "explorer.exe"));
-        assert!(!signature_vouches_for(&signed("Microsoft Corporation", "curl.exe"), "chrome.exe"), "a signed tool renamed");
-        assert!(!signature_vouches_for(&ProcessIdentity::Unknown { path: "chrome.exe".into() }, "chrome.exe"), "unsigned");
+        let signed = |p: &str, n: &str| ProcessIdentity::Signed {
+            team_id: p.into(),
+            signing_id: n.into(),
+        };
+        assert!(signature_vouches_for(
+            &signed("Opera Norway AS", "opera.exe"),
+            "opera.exe"
+        ));
+        assert!(signature_vouches_for(
+            &signed("Vivaldi Technologies AS", "vivaldi.exe"),
+            "Vivaldi.exe"
+        ));
+        assert!(signature_vouches_for(
+            &signed("Brave Software, Inc.", "brave.exe"),
+            "brave.exe"
+        ));
+        assert!(signature_vouches_for(
+            &signed("Microsoft Corporation", "EXPLORER.EXE.MUI"),
+            "explorer.exe"
+        ));
+        assert!(
+            !signature_vouches_for(&signed("Microsoft Corporation", "curl.exe"), "chrome.exe"),
+            "a signed tool renamed"
+        );
+        assert!(
+            !signature_vouches_for(
+                &ProcessIdentity::Unknown {
+                    path: "chrome.exe".into()
+                },
+                "chrome.exe"
+            ),
+            "unsigned"
+        );
     }
 
     /// Whoever cages the shell takes the machine's operability away without
     /// preventing anything. Happened in the lab on 2026-09-09.
     #[test]
     fn the_shell_and_the_browsers_never_go_into_the_cage() {
-        for shell in ["StartMenuExperienceHost.exe", "rdpclip.exe", "explorer.exe", "dllhost.exe", "sihost.exe"] {
+        for shell in [
+            "StartMenuExperienceHost.exe",
+            "rdpclip.exe",
+            "explorer.exe",
+            "dllhost.exe",
+            "sihost.exe",
+        ] {
             assert!(may_cage(1234, shell, false, true).is_err(), "{shell}");
         }
         // Browsers belong to the connector -- even if they have never
@@ -691,10 +843,19 @@ mod tests {
         assert!(may_cage(1234, "sshd.exe", false, true).is_err());
         // 0 and 4 are idle and system, 1..=4 belong to the kernel.
         for pid in [0, 1, 2, 3, 4] {
-            assert!(may_cage(pid, "irgendwas.exe", false, true).is_err(), "pid {pid}");
+            assert!(
+                may_cage(pid, "irgendwas.exe", false, true).is_err(),
+                "pid {pid}"
+            );
         }
-        assert!(may_cage(std::process::id(), "curl.exe", false, true).is_err(), "sich selbst sperrt der Agent nie ein");
-        assert!(may_cage(4242, "", false, true).is_err(), "wen wir nicht benennen koennen, sperren wir nicht ein");
+        assert!(
+            may_cage(std::process::id(), "curl.exe", false, true).is_err(),
+            "sich selbst sperrt der Agent nie ein"
+        );
+        assert!(
+            may_cage(4242, "", false, true).is_err(),
+            "wen wir nicht benennen koennen, sperren wir nicht ein"
+        );
         // And the ones the cage is built for.
         assert!(may_cage(1234, "powershell.exe", false, true).is_ok());
         assert!(may_cage(1234, "curl.exe", false, true).is_ok());
@@ -718,12 +879,24 @@ mod tests {
         let t0 = Instant::now();
         let ps = vec![p("10.0.0.0/8")];
         c.arm(1234, r"C:\Windows\System32\curl.exe", &ps, t0);
-        assert!(c.holds(r"c:\windows\system32\CURL.EXE"), "der Bildpfad zaehlt ohne Gross- und Kleinschreibung");
+        assert!(
+            c.holds(r"c:\windows\system32\CURL.EXE"),
+            "der Bildpfad zaehlt ohne Gross- und Kleinschreibung"
+        );
 
         // Touched again shortly before it expires: the deadline moves along.
-        c.arm(1234, r"C:\Windows\System32\curl.exe", &ps, t0 + Duration::from_secs(59));
+        c.arm(
+            1234,
+            r"C:\Windows\System32\curl.exe",
+            &ps,
+            t0 + Duration::from_secs(59),
+        );
         c.expire(t0 + Duration::from_secs(90));
-        assert_eq!(c.len(), 1, "60 s nach der *letzten* Beruehrung, nicht nach der ersten");
+        assert_eq!(
+            c.len(),
+            1,
+            "60 s nach der *letzten* Beruehrung, nicht nach der ersten"
+        );
 
         c.expire(t0 + Duration::from_secs(120));
         assert!(c.is_empty());
@@ -735,9 +908,19 @@ mod tests {
         let mut c = Cages::new();
         let t0 = Instant::now();
         c.arm(1, "curl.exe", &[p("10.0.0.0/8")], t0);
-        c.arm(1, "curl.exe", &[p("10.0.0.0/8")], t0 + Duration::from_secs(1));
+        c.arm(
+            1,
+            "curl.exe",
+            &[p("10.0.0.0/8")],
+            t0 + Duration::from_secs(1),
+        );
         assert_eq!(c.len(), 1);
-        c.arm(1, "curl.exe", &[p("10.0.0.0/8"), p("192.168.0.0/16")], t0 + Duration::from_secs(2));
+        c.arm(
+            1,
+            "curl.exe",
+            &[p("10.0.0.0/8"), p("192.168.0.0/16")],
+            t0 + Duration::from_secs(2),
+        );
         assert_eq!(c.len(), 1);
         assert_eq!(c.open["curl.exe"].permits.len(), 2);
     }

@@ -125,9 +125,17 @@ pub fn build_fingerprint() -> &'static str {
     static FP: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     FP.get_or_init(|| {
         use sha2::{Digest, Sha256};
-        let Ok(exe) = std::env::current_exe() else { return String::new() };
-        let Ok(data) = std::fs::read(&exe) else { return String::new() };
-        Sha256::digest(data).iter().take(BUILD_FINGERPRINT_HEX / 2).map(|b| format!("{b:02x}")).collect()
+        let Ok(exe) = std::env::current_exe() else {
+            return String::new();
+        };
+        let Ok(data) = std::fs::read(&exe) else {
+            return String::new();
+        };
+        Sha256::digest(data)
+            .iter()
+            .take(BUILD_FINGERPRINT_HEX / 2)
+            .map(|b| format!("{b:02x}"))
+            .collect()
     })
 }
 
@@ -209,7 +217,11 @@ impl UserRef {
     pub fn key(&self) -> String {
         match &self.sid {
             Some(s) if !s.is_empty() => format!("sid:{}", s),
-            _ => format!("{}\\{}", self.source.to_lowercase(), self.name.to_lowercase()),
+            _ => format!(
+                "{}\\{}",
+                self.source.to_lowercase(),
+                self.name.to_lowercase()
+            ),
         }
     }
     pub fn display(&self) -> String {
@@ -327,7 +339,17 @@ pub struct Report {
 
 impl Default for Report {
     fn default() -> Self {
-        Self { api_version: Some(API_VERSION), generation: None, status: None, alerts: Vec::new(), access_alerts: Vec::new(), counts: Vec::new(), groups: None, learn_done: Vec::new(), log: Vec::new() }
+        Self {
+            api_version: Some(API_VERSION),
+            generation: None,
+            status: None,
+            alerts: Vec::new(),
+            access_alerts: Vec::new(),
+            counts: Vec::new(),
+            groups: None,
+            learn_done: Vec::new(),
+            log: Vec::new(),
+        }
     }
 }
 
@@ -525,12 +547,19 @@ mod build_tests {
     fn the_fingerprint_is_the_first_twelve_hex_of_the_files_sha256() {
         use sha2::{Digest, Sha256};
         let exe = std::env::current_exe().expect("eigene Datei");
-        let full: String = Sha256::digest(std::fs::read(&exe).unwrap()).iter().map(|b| format!("{b:02x}")).collect();
+        let full: String = Sha256::digest(std::fs::read(&exe).unwrap())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
 
         let fp = build_fingerprint();
         assert_eq!(fp.len(), 12, "zwoelf Hexstellen: {fp}");
         assert!(fp.chars().all(|c| c.is_ascii_hexdigit()), "nur Hex: {fp}");
-        assert_eq!(fp, &full[..12], "muss der Anfang der echten Pruefsumme sein");
+        assert_eq!(
+            fp,
+            &full[..12],
+            "muss der Anfang der echten Pruefsumme sein"
+        );
         // Computed once, always the same answer.
         assert_eq!(fp, build_fingerprint());
     }
@@ -545,7 +574,10 @@ mod build_tests {
         assert!(st.build.is_empty());
         // And an empty fingerprint does not go into the wire format.
         let back = serde_json::to_string(&st).unwrap();
-        assert!(!back.contains("build"), "leeres Feld gehoert nicht in den Bericht: {back}");
+        assert!(
+            !back.contains("build"),
+            "leeres Feld gehoert nicht in den Bericht: {back}"
+        );
     }
 }
 
@@ -600,7 +632,10 @@ mod update_tests {
     /// only on the spelling would be an update on **every** report.
     #[test]
     fn case_does_not_decide() {
-        assert!(!update_due(&SHA.to_uppercase(), &SHA[..BUILD_FINGERPRINT_HEX]));
+        assert!(!update_due(
+            &SHA.to_uppercase(),
+            &SHA[..BUILD_FINGERPRINT_HEX]
+        ));
     }
 
     /// An agent from before the fingerprint does not send the field.

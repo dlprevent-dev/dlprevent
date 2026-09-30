@@ -35,7 +35,9 @@ pub(super) struct AssistView {
 
 pub(super) async fn assist(State(st): State<Shared>, _u: Admin) -> R<AssistView> {
     let cfg = assist::config(&st.pool).await?;
-    let (stored,): (i64,) = sqlx::query_as("SELECT count(*) FROM alert_insights").fetch_one(&st.pool).await?;
+    let (stored,): (i64,) = sqlx::query_as("SELECT count(*) FROM alert_insights")
+        .fetch_one(&st.pool)
+        .await?;
     Ok(Json(AssistView {
         active: cfg.is_some(),
         endpoint: cfg.as_ref().map(|c| c.endpoint()).unwrap_or_default(),
@@ -49,7 +51,11 @@ pub(super) async fn assist(State(st): State<Shared>, _u: Admin) -> R<AssistView>
 
 /// What has already been written about this alert. `null` if nothing yet —
 /// not a 404: „there is no explanation" is an answer, not an error.
-pub(super) async fn insight(State(st): State<Shared>, _u: Admin, Path(id): Path<i64>) -> R<Option<Insight>> {
+pub(super) async fn insight(
+    State(st): State<Shared>,
+    _u: Admin,
+    Path(id): Path<i64>,
+) -> R<Option<Insight>> {
     Ok(Json(assist::cached(&st.pool, id).await?))
 }
 
@@ -58,18 +64,28 @@ pub(super) async fn insight(State(st): State<Shared>, _u: Admin, Path(id): Path<
 /// The provider's error goes back unchanged. „model 'lama3' not found" or
 /// „connection refused" tell an administrator exactly what is wrong with the
 /// configuration; any wording of our own would be less precise.
-pub(super) async fn explain(State(st): State<Shared>, Admin(user): Admin, Path(id): Path<i64>) -> R<Insight> {
+pub(super) async fn explain(
+    State(st): State<Shared>,
+    Admin(user): Admin,
+    Path(id): Path<i64>,
+) -> R<Insight> {
     let Some(cfg) = assist::config(&st.pool).await? else {
-        return Err(bad("AI assistance is off or incomplete (Settings -> Assistant)"));
+        return Err(bad(
+            "AI assistance is off or incomplete (Settings -> Assistant)",
+        ));
     };
     if assist::used_today(&st.pool).await? >= cfg.daily_limit {
-        return Err(bad("daily budget for explanations spent, try again tomorrow"));
+        return Err(bad(
+            "daily budget for explanations spent, try again tomorrow",
+        ));
     }
     let Some(prompt) = assist::dossier(&st.pool, id).await? else {
         return Err(not_found());
     };
     let client = assist::client().map_err(|e| bad(e.to_string()))?;
-    let summary = assist::ask(&client, &cfg, &prompt).await.map_err(|e| bad(e.to_string()))?;
+    let summary = assist::ask(&client, &cfg, &prompt)
+        .await
+        .map_err(|e| bad(e.to_string()))?;
     let out = assist::store(&st.pool, id, &cfg, &prompt, &summary, (user.id, &user.name)).await?;
     // What gets logged is that a question was asked and where it went — not
     // the dossier: that is stored in full on the alert, and the audit log is
@@ -99,11 +115,19 @@ pub(super) async fn test(State(st): State<Shared>, Admin(user): Admin) -> R<Prob
     // short, but with a paid service it costs too — and a button without a
     // brake is no button.
     if assist::used_today(&st.pool).await? >= cfg.daily_limit {
-        return Err(bad("daily budget spent, try again tomorrow (or raise it above)"));
+        return Err(bad(
+            "daily budget spent, try again tomorrow (or raise it above)",
+        ));
     }
     let client = assist::client().map_err(|e| bad(e.to_string()))?;
     let outcome = assist::probe(&client, &cfg).await;
-    db::audit(&st.pool, (&user).into(), assist::AUDIT_TEST, json!({ "endpoint": cfg.endpoint(), "model": cfg.model, "ok": outcome.is_ok() })).await;
+    db::audit(
+        &st.pool,
+        (&user).into(),
+        assist::AUDIT_TEST,
+        json!({ "endpoint": cfg.endpoint(), "model": cfg.model, "ok": outcome.is_ok() }),
+    )
+    .await;
     let reply = outcome.map_err(|e| bad(e.to_string()))?;
     Ok(Json(Probe {
         endpoint: cfg.endpoint(),

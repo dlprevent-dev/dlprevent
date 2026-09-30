@@ -37,7 +37,9 @@ pub struct SignatureCache {
 impl SignatureCache {
     pub fn identity(&mut self, path: &str) -> ProcessIdentity {
         if path.is_empty() {
-            return ProcessIdentity::Unknown { path: String::new() };
+            return ProcessIdentity::Unknown {
+                path: String::new(),
+            };
         }
         if let Some(id) = self.known.get(path) {
             return id.clone();
@@ -61,7 +63,9 @@ fn identity_of(path: &str) -> ProcessIdentity {
         },
         // Validly signed, but no readable publisher: that is not an ID an
         // exception rule should rest on.
-        _ => ProcessIdentity::Unknown { path: path.to_string() },
+        _ => ProcessIdentity::Unknown {
+            path: path.to_string(),
+        },
     }
 }
 
@@ -78,8 +82,9 @@ fn wide(s: &str) -> Vec<u16> {
 fn verify(path: &str) -> bool {
     use windows::Win32::Foundation::HANDLE;
     use windows::Win32::Security::WinTrust::{
-        WinVerifyTrust, WINTRUST_ACTION_GENERIC_VERIFY_V2, WINTRUST_DATA, WINTRUST_DATA_0, WINTRUST_FILE_INFO, WTD_CACHE_ONLY_URL_RETRIEVAL,
-        WTD_CHOICE_FILE, WTD_REVOKE_NONE, WTD_STATEACTION_CLOSE, WTD_STATEACTION_VERIFY, WTD_UI_NONE,
+        WinVerifyTrust, WINTRUST_ACTION_GENERIC_VERIFY_V2, WINTRUST_DATA, WINTRUST_DATA_0,
+        WINTRUST_FILE_INFO, WTD_CACHE_ONLY_URL_RETRIEVAL, WTD_CHOICE_FILE, WTD_REVOKE_NONE,
+        WTD_STATEACTION_CLOSE, WTD_STATEACTION_VERIFY, WTD_UI_NONE,
     };
     let p = wide(path);
     let mut file = WINTRUST_FILE_INFO {
@@ -99,11 +104,21 @@ fn verify(path: &str) -> bool {
         ..Default::default()
     };
     let mut action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
-    let rc = unsafe { WinVerifyTrust(windows::Win32::Foundation::HWND::default(), &mut action, &mut data as *mut _ as *mut std::ffi::c_void) };
+    let rc = unsafe {
+        WinVerifyTrust(
+            windows::Win32::Foundation::HWND::default(),
+            &mut action,
+            &mut data as *mut _ as *mut std::ffi::c_void,
+        )
+    };
     // The second call releases the state; without it every check leaks.
     data.dwStateAction = WTD_STATEACTION_CLOSE;
     unsafe {
-        let _ = WinVerifyTrust(windows::Win32::Foundation::HWND::default(), &mut action, &mut data as *mut _ as *mut std::ffi::c_void);
+        let _ = WinVerifyTrust(
+            windows::Win32::Foundation::HWND::default(),
+            &mut action,
+            &mut data as *mut _ as *mut std::ffi::c_void,
+        );
     }
     rc == 0
 }
@@ -111,10 +126,12 @@ fn verify(path: &str) -> bool {
 /// The name in the signing certificate, for instance "Google LLC".
 fn publisher(path: &str) -> Option<String> {
     use windows::Win32::Security::Cryptography::{
-        CertCloseStore, CertFindCertificateInStore, CertFreeCertificateContext, CertGetNameStringW, CryptMsgClose, CryptMsgGetParam,
-        CryptQueryObject, CERT_FIND_SUBJECT_CERT, CERT_NAME_SIMPLE_DISPLAY_TYPE, CERT_QUERY_CONTENT_FLAG_PKCS7_SIGNED_EMBED,
-        CERT_QUERY_FORMAT_FLAG_BINARY, CERT_QUERY_OBJECT_FILE, CERT_QUERY_ENCODING_TYPE, CMSG_SIGNER_INFO_PARAM, CMSG_SIGNER_INFO,
-        HCERTSTORE, X509_ASN_ENCODING, PKCS_7_ASN_ENCODING,
+        CertCloseStore, CertFindCertificateInStore, CertFreeCertificateContext, CertGetNameStringW,
+        CryptMsgClose, CryptMsgGetParam, CryptQueryObject, CERT_FIND_SUBJECT_CERT,
+        CERT_NAME_SIMPLE_DISPLAY_TYPE, CERT_QUERY_CONTENT_FLAG_PKCS7_SIGNED_EMBED,
+        CERT_QUERY_ENCODING_TYPE, CERT_QUERY_FORMAT_FLAG_BINARY, CERT_QUERY_OBJECT_FILE,
+        CMSG_SIGNER_INFO, CMSG_SIGNER_INFO_PARAM, HCERTSTORE, PKCS_7_ASN_ENCODING,
+        X509_ASN_ENCODING,
     };
     let p = wide(path);
     let mut store = HCERTSTORE::default();
@@ -140,7 +157,16 @@ fn publisher(path: &str) -> Option<String> {
         let mut len = 0u32;
         unsafe { CryptMsgGetParam(msg, CMSG_SIGNER_INFO_PARAM, 0, None, &mut len).ok()? };
         let mut buf = vec![0u8; len as usize];
-        unsafe { CryptMsgGetParam(msg, CMSG_SIGNER_INFO_PARAM, 0, Some(buf.as_mut_ptr() as *mut std::ffi::c_void), &mut len).ok()? };
+        unsafe {
+            CryptMsgGetParam(
+                msg,
+                CMSG_SIGNER_INFO_PARAM,
+                0,
+                Some(buf.as_mut_ptr() as *mut std::ffi::c_void),
+                &mut len,
+            )
+            .ok()?
+        };
         let signer = unsafe { &*(buf.as_ptr() as *const CMSG_SIGNER_INFO) };
         // Issuer and serial number identify the certificate in the store
         // that came along with the file.
@@ -165,12 +191,20 @@ fn publisher(path: &str) -> Option<String> {
         let n = unsafe { CertGetNameStringW(ctx, CERT_NAME_SIMPLE_DISPLAY_TYPE, 0, None, None) };
         let name = if n > 1 {
             let mut w = vec![0u16; n as usize];
-            unsafe { CertGetNameStringW(ctx, CERT_NAME_SIMPLE_DISPLAY_TYPE, 0, None, Some(&mut w)) };
-            Some(String::from_utf16_lossy(&w).trim_end_matches('\0').to_string())
+            unsafe {
+                CertGetNameStringW(ctx, CERT_NAME_SIMPLE_DISPLAY_TYPE, 0, None, Some(&mut w))
+            };
+            Some(
+                String::from_utf16_lossy(&w)
+                    .trim_end_matches('\0')
+                    .to_string(),
+            )
         } else {
             None
         };
-        unsafe { let _ = CertFreeCertificateContext(Some(ctx)); }
+        unsafe {
+            let _ = CertFreeCertificateContext(Some(ctx));
+        }
         name
     })();
     unsafe {
@@ -184,14 +218,18 @@ fn publisher(path: &str) -> Option<String> {
 /// the name on disk.
 fn original_filename(path: &str) -> Option<String> {
     use windows::core::PCWSTR;
-    use windows::Win32::Storage::FileSystem::{GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW};
+    use windows::Win32::Storage::FileSystem::{
+        GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW,
+    };
     let p = wide(path);
     let size = unsafe { GetFileVersionInfoSizeW(PCWSTR(p.as_ptr()), None) };
     if size == 0 {
         return None;
     }
     let mut data = vec![0u8; size as usize];
-    unsafe { GetFileVersionInfoW(PCWSTR(p.as_ptr()), None, size, data.as_mut_ptr() as *mut _).ok()? };
+    unsafe {
+        GetFileVersionInfoW(PCWSTR(p.as_ptr()), None, size, data.as_mut_ptr() as *mut _).ok()?
+    };
 
     // Language and code page are in the resource; hard-coding "040904b0"
     // goes wrong for a non-English program.
@@ -199,10 +237,20 @@ fn original_filename(path: &str) -> Option<String> {
     let mut tr_len = 0u32;
     let key = wide(r"\VarFileInfo\Translation");
     let langs: Vec<(u16, u16)> = unsafe {
-        if VerQueryValueW(data.as_ptr() as *const _, PCWSTR(key.as_ptr()), &mut tr, &mut tr_len).as_bool() && tr_len >= 4 {
+        if VerQueryValueW(
+            data.as_ptr() as *const _,
+            PCWSTR(key.as_ptr()),
+            &mut tr,
+            &mut tr_len,
+        )
+        .as_bool()
+            && tr_len >= 4
+        {
             std::slice::from_raw_parts(tr as *const u16, (tr_len / 2) as usize)
-                .chunks_exact(2)
-                .map(|c| (c[0], c[1]))
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|&[lang, cp]| (lang, cp))
                 .collect()
         } else {
             // With nothing stated, the usual case: English (US), Unicode.
@@ -210,13 +258,26 @@ fn original_filename(path: &str) -> Option<String> {
         }
     };
     for (lang, cp) in langs {
-        let q = wide(&format!("\\StringFileInfo\\{lang:04x}{cp:04x}\\OriginalFilename"));
+        let q = wide(&format!(
+            "\\StringFileInfo\\{lang:04x}{cp:04x}\\OriginalFilename"
+        ));
         let mut val: *mut std::ffi::c_void = std::ptr::null_mut();
         let mut len = 0u32;
-        let ok = unsafe { VerQueryValueW(data.as_ptr() as *const _, PCWSTR(q.as_ptr()), &mut val, &mut len).as_bool() };
+        let ok = unsafe {
+            VerQueryValueW(
+                data.as_ptr() as *const _,
+                PCWSTR(q.as_ptr()),
+                &mut val,
+                &mut len,
+            )
+            .as_bool()
+        };
         if ok && len > 0 && !val.is_null() {
             let s = unsafe { std::slice::from_raw_parts(val as *const u16, len as usize) };
-            let s = String::from_utf16_lossy(s).trim_end_matches('\0').trim().to_string();
+            let s = String::from_utf16_lossy(s)
+                .trim_end_matches('\0')
+                .trim()
+                .to_string();
             if !s.is_empty() {
                 return Some(s);
             }

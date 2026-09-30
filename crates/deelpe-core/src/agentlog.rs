@@ -39,7 +39,12 @@ struct Ring {
 
 fn ring() -> &'static Mutex<Ring> {
     static R: OnceLock<Mutex<Ring>> = OnceLock::new();
-    R.get_or_init(|| Mutex::new(Ring { first: 0, lines: VecDeque::new() }))
+    R.get_or_init(|| {
+        Mutex::new(Ring {
+            first: 0,
+            lines: VecDeque::new(),
+        })
+    })
 }
 
 fn push(line: LogLine) {
@@ -63,7 +68,13 @@ pub fn since(seq: u64) -> (u64, Vec<LogLine>) {
     let r = ring().lock().unwrap_or_else(|e| e.into_inner());
     let start = seq.max(r.first);
     let skip = (start - r.first) as usize;
-    let lines: Vec<LogLine> = r.lines.iter().skip(skip).take(PER_REPORT).cloned().collect();
+    let lines: Vec<LogLine> = r
+        .lines
+        .iter()
+        .skip(skip)
+        .take(PER_REPORT)
+        .cloned()
+        .collect();
     (start + lines.len() as u64, lines)
 }
 
@@ -73,7 +84,9 @@ pub fn since(seq: u64) -> (u64, Vec<LogLine>) {
 pub fn init(path: Option<&Path>, console: bool) {
     // `info` as the default, which `RUST_LOG` refines instead of replacing:
     // whoever puts one module on `debug` does not want to lose the rest.
-    let filter = EnvFilter::builder().with_default_directive(tracing_subscriber::filter::LevelFilter::INFO.into()).from_env_lossy();
+    let filter = EnvFilter::builder()
+        .with_default_directive(tracing_subscriber::filter::LevelFilter::INFO.into())
+        .from_env_lossy();
     let file = path.and_then(|p| {
         if let Some(dir) = p.parent() {
             let _ = std::fs::create_dir_all(dir);
@@ -82,19 +95,27 @@ pub fn init(path: Option<&Path>, console: bool) {
         // start at all.
         open(p).ok().map(Mutex::new)
     });
-    let sink = Sink { file, path: path.map(Path::to_path_buf).unwrap_or_default() };
+    let sink = Sink {
+        file,
+        path: path.map(Path::to_path_buf).unwrap_or_default(),
+    };
     let reg = tracing_subscriber::registry().with(filter).with(sink);
     if console {
         // Without module names: those are in the file, the console should
         // stay readable.
-        let _ = reg.with(tracing_subscriber::fmt::layer().with_target(false)).try_init();
+        let _ = reg
+            .with(tracing_subscriber::fmt::layer().with_target(false))
+            .try_init();
     } else {
         let _ = reg.try_init();
     }
 }
 
 fn open(path: &Path) -> std::io::Result<std::fs::File> {
-    std::fs::OpenOptions::new().create(true).append(true).open(path)
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
 }
 
 struct Sink {
@@ -108,7 +129,14 @@ impl Sink {
         let mut f = f.lock().unwrap_or_else(|e| e.into_inner());
         // Without colour codes: otherwise they sit in the log as control
         // characters.
-        let _ = writeln!(f, "{} {:<5} {} {}", l.at.format("%Y-%m-%d %H:%M:%S%.3f"), l.level.to_uppercase(), l.target, l.msg);
+        let _ = writeln!(
+            f,
+            "{} {:<5} {} {}",
+            l.at.format("%Y-%m-%d %H:%M:%S%.3f"),
+            l.level.to_uppercase(),
+            l.target,
+            l.msg
+        );
         if f.metadata().map(|m| m.len() > MAX_BYTES).unwrap_or(false) {
             let old = self.path.with_extension("log.1");
             // Windows does not rename over an existing file.
@@ -127,7 +155,12 @@ impl<S: tracing::Subscriber> Layer<S> for Sink {
         let mut text = Text(String::new());
         ev.record(&mut text);
         let m = ev.metadata();
-        let line = LogLine { at: Utc::now(), level: m.level().as_str().to_ascii_lowercase(), target: m.target().to_string(), msg: text.0 };
+        let line = LogLine {
+            at: Utc::now(),
+            level: m.level().as_str().to_ascii_lowercase(),
+            target: m.target().to_string(),
+            msg: text.0,
+        };
         self.write(&line);
         push(line);
     }
@@ -169,7 +202,12 @@ mod tests {
     use super::*;
 
     fn line(msg: &str) -> LogLine {
-        LogLine { at: Utc::now(), level: "info".into(), target: "t".into(), msg: msg.into() }
+        LogLine {
+            at: Utc::now(),
+            level: "info".into(),
+            target: "t".into(),
+            msg: msg.into(),
+        }
     }
 
     /// The contract of the loop: first fetch, send, and **then** adopt the
@@ -203,7 +241,11 @@ mod tests {
         }
         let (_, lines) = since(0);
         assert_eq!(lines.len(), PER_REPORT);
-        assert!(lines[0].msg.starts_with('x'), "die aeltesten Zeilen sind weg: {}", lines[0].msg);
+        assert!(
+            lines[0].msg.starts_with('x'),
+            "die aeltesten Zeilen sind weg: {}",
+            lines[0].msg
+        );
         let r = ring().lock().unwrap();
         assert!(r.first > 0, "der Ring muss weitergelaufen sein");
         assert_eq!(r.lines.len(), RING);

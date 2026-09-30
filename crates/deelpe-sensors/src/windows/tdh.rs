@@ -12,7 +12,9 @@
 //! `crate::winpath` and is tested there.
 
 use crate::winpath;
-use windows::Win32::System::Diagnostics::Etw::{TdhGetProperty, TdhGetPropertySize, EVENT_RECORD, PROPERTY_DATA_DESCRIPTOR};
+use windows::Win32::System::Diagnostics::Etw::{
+    TdhGetProperty, TdhGetPropertySize, EVENT_RECORD, PROPERTY_DATA_DESCRIPTOR,
+};
 
 fn descriptor(name: &[u16]) -> PROPERTY_DATA_DESCRIPTOR {
     PROPERTY_DATA_DESCRIPTOR {

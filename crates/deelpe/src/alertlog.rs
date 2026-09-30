@@ -39,7 +39,12 @@ impl AlertLog {
         // `mode` only applies on creation; an existing file gets it here.
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
         alerts.shrink_to_fit();
-        Ok(Self { path: path.to_path_buf(), file, alerts, next_id })
+        Ok(Self {
+            path: path.to_path_buf(),
+            file,
+            alerts,
+            next_id,
+        })
     }
 
     /// Reads the file; returns (alerts kept, next ID, whether pruning is
@@ -48,10 +53,16 @@ impl AlertLog {
     fn read(path: &Path, retain_days: u32) -> Result<(Vec<Alert>, u64, bool)> {
         let file = match File::open(path) {
             Ok(f) => f,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((Vec::new(), 1, false)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok((Vec::new(), 1, false))
+            }
             Err(e) => return Err(e).with_context(|| format!("lese {}", path.display())),
         };
-        let cutoff = if retain_days == 0 { DateTime::<Utc>::MIN_UTC } else { Utc::now() - Duration::days(retain_days as i64) };
+        let cutoff = if retain_days == 0 {
+            DateTime::<Utc>::MIN_UTC
+        } else {
+            Utc::now() - Duration::days(retain_days as i64)
+        };
         let mut alerts: Vec<Alert> = Vec::new();
         let mut index: std::collections::HashMap<u64, usize> = std::collections::HashMap::new();
         let mut next_id = 1;
@@ -75,7 +86,11 @@ impl AlertLog {
                         alerts.push(a);
                     }
                 }
-                Err(e) => tracing::warn!("{}:{}: skipped an unreadable alert: {e}", path.display(), n + 1),
+                Err(e) => tracing::warn!(
+                    "{}:{}: skipped an unreadable alert: {e}",
+                    path.display(),
+                    n + 1
+                ),
             }
         }
         Ok((alerts, next_id, pruned))
@@ -83,7 +98,12 @@ impl AlertLog {
 
     fn rewrite(path: &Path, alerts: &[Alert]) -> Result<()> {
         let tmp = path.with_extension("jsonl.tmp");
-        let mut f = OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?;
+        let mut f = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp)?;
         for a in alerts {
             serde_json::to_writer(&mut f, a)?;
             f.write_all(b"\n")?;
@@ -99,7 +119,9 @@ impl AlertLog {
         self.alerts.push(a.clone());
         let mut line = serde_json::to_string(a)?;
         line.push('\n');
-        self.file.write_all(line.as_bytes()).with_context(|| format!("schreibe {}", self.path.display()))?;
+        self.file
+            .write_all(line.as_bytes())
+            .with_context(|| format!("schreibe {}", self.path.display()))?;
         self.file.flush()?;
         Ok(())
     }
@@ -113,7 +135,9 @@ impl AlertLog {
         }
         let mut line = serde_json::to_string(a)?;
         line.push('\n');
-        self.file.write_all(line.as_bytes()).with_context(|| format!("schreibe {}", self.path.display()))?;
+        self.file
+            .write_all(line.as_bytes())
+            .with_context(|| format!("schreibe {}", self.path.display()))?;
         self.file.flush()?;
         Ok(())
     }

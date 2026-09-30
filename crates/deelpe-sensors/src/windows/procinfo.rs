@@ -93,7 +93,10 @@ impl ProcCache {
     }
 
     fn parent_of(&mut self, pid: u32) -> Option<u32> {
-        let stale = self.parents_at.map(|t| t.elapsed() > SNAPSHOT_EVERY).unwrap_or(true);
+        let stale = self
+            .parents_at
+            .map(|t| t.elapsed() > SNAPSHOT_EVERY)
+            .unwrap_or(true);
         if !self.parents.contains_key(&pid) && stale {
             self.parents = snapshot_parents();
             self.parents_at = Some(std::time::Instant::now());
@@ -106,12 +109,21 @@ impl ProcCache {
 /// that, and it is the weakest right that yields the answer.
 pub fn image_path(pid: u32) -> Option<String> {
     use windows::Win32::Foundation::CloseHandle;
-    use windows::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION};
+    use windows::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+    };
     unsafe {
         let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
         let mut buf = [0u16; 260 * 2];
         let mut len = buf.len() as u32;
-        let ok = QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, windows::core::PWSTR(buf.as_mut_ptr()), &mut len).is_ok();
+        let ok = QueryFullProcessImageNameW(
+            h,
+            PROCESS_NAME_WIN32,
+            windows::core::PWSTR(buf.as_mut_ptr()),
+            &mut len,
+        )
+        .is_ok();
         let _ = CloseHandle(h);
         if !ok || len == 0 {
             return None;
@@ -124,12 +136,18 @@ pub fn image_path(pid: u32) -> Option<String> {
 fn snapshot_parents() -> HashMap<u32, u32> {
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
     };
     let mut out = HashMap::new();
     unsafe {
-        let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else { return out };
-        let mut e = PROCESSENTRY32W { dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
+        let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
+            return out;
+        };
+        let mut e = PROCESSENTRY32W {
+            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
         if Process32FirstW(snap, &mut e).is_ok() {
             loop {
                 out.insert(e.th32ProcessID, e.th32ParentProcessID);
@@ -158,7 +176,9 @@ pub fn volume_map() -> HashMap<String, String> {
         if n == 0 {
             continue;
         }
-        let target = String::from_utf16_lossy(&buf[..n as usize]).trim_end_matches('\0').to_string();
+        let target = String::from_utf16_lossy(&buf[..n as usize])
+            .trim_end_matches('\0')
+            .to_string();
         if !target.is_empty() {
             out.insert(target, dos);
         }

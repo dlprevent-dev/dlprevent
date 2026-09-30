@@ -96,7 +96,10 @@ impl Policy {
             // counts from the first version on, see [`Policy::adopt`].
             taint_ttl: Config::default().sensor_taint_ttl(),
         });
-        Self { connector: Arc::new(tokio::sync::RwLock::new(Config::default())), state }
+        Self {
+            connector: Arc::new(tokio::sync::RwLock::new(Config::default())),
+            state,
+        }
     }
 
     /// The handle for the connector's task.
@@ -117,8 +120,15 @@ impl Policy {
         // expiry follows `touch_ttl_secs` of this version: it must never be
         // the narrower filter, otherwise it drops the copy the correlator is
         // still waiting for.
-        let watched: Vec<String> = cfg.watched.iter().map(|p| p.display().to_string()).collect();
-        deelpe_sensors::set_watched(deelpe_sensors::Watch::Folders { paths: &watched, taint_ttl: cfg.sensor_taint_ttl() });
+        let watched: Vec<String> = cfg
+            .watched
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect();
+        deelpe_sensors::set_watched(deelpe_sensors::Watch::Folders {
+            paths: &watched,
+            taint_ttl: cfg.sensor_taint_ttl(),
+        });
         *self.connector.write().await = cfg.clone();
         self.state.lock().await.corr.set_config(cfg);
     }
@@ -136,8 +146,14 @@ struct State {
 }
 
 pub async fn run(mut stop: tokio::sync::watch::Receiver<bool>) -> Result<()> {
-    let cfg = CentralConfig::load()?.context("not enrolled — run `deelpe-winagent enroll` first")?;
-    let mut session = Session::new(cfg.credentials(), crate::config::hostname(), UA, Box::new(cfg.clone()))?;
+    let cfg =
+        CentralConfig::load()?.context("not enrolled — run `deelpe-winagent enroll` first")?;
+    let mut session = Session::new(
+        cfg.credentials(),
+        crate::config::hostname(),
+        UA,
+        Box::new(cfg.clone()),
+    )?;
     let mut st = AgentState::load();
     // Counts the update attempts per checksum; see `update::Updater`.
     let mut updater = crate::update::Updater::default();
@@ -148,8 +164,14 @@ pub async fn run(mut stop: tokio::sync::watch::Receiver<bool>) -> Result<()> {
     // although the central said something else long ago.
     let learn_days = st.central_config.as_ref().map_or(7u32, |c| c.learn_days);
     let state = Arc::new(Mutex::new(State {
-        corr: Correlator::with_next_id(Config::for_endpoint(Vec::new(), Vec::new(), learn_days), st.next_alert_id),
-        learner: st.learner.take().unwrap_or_else(|| Learner::new(learn_days, Utc::now())),
+        corr: Correlator::with_next_id(
+            Config::for_endpoint(Vec::new(), Vec::new(), learn_days),
+            st.next_alert_id,
+        ),
+        learner: st
+            .learner
+            .take()
+            .unwrap_or_else(|| Learner::new(learn_days, Utc::now())),
         pending: std::mem::take(&mut st.pending_endpoint_alerts),
         reported: std::mem::take(&mut st.reported_endpoint_alerts),
     }));
@@ -209,11 +231,14 @@ pub async fn run(mut stop: tokio::sync::watch::Receiver<bool>) -> Result<()> {
     // Until 2026-09-08 a block by the connector wrote only a log line — in
     // the dashboard the one intervention that comes before the bytes was
     // invisible. Now it creates an alert, like any other finding.
-    let (blocked_tx, mut blocked_rx) = tokio::sync::mpsc::channel::<crate::browser::Blocked>(BLOCKED_QUEUE);
+    let (blocked_tx, mut blocked_rx) =
+        tokio::sync::mpsc::channel::<crate::browser::Blocked>(BLOCKED_QUEUE);
     {
         let policy = policy.connector();
         tokio::spawn(async move {
-            if let Err(e) = crate::browser::serve(crate::browser::PIPE_NAME, policy, blocked_tx).await {
+            if let Err(e) =
+                crate::browser::serve(crate::browser::PIPE_NAME, policy, blocked_tx).await
+            {
                 warn!("content analysis connector stopped: {e:#}");
             }
         });
@@ -223,14 +248,23 @@ pub async fn run(mut stop: tokio::sync::watch::Receiver<bool>) -> Result<()> {
         tokio::spawn(async move {
             while let Some(b) = blocked_rx.recv().await {
                 let mut s = st_blocked.lock().await;
-                match s.pending.iter_mut().find(|a| crate::browser::same_action(a, &b)) {
+                match s
+                    .pending
+                    .iter_mut()
+                    .find(|a| crate::browser::same_action(a, &b))
+                {
                     // The same action again: the alert grows, the list does
                     // not.
                     Some(prev) => prev.last_at = Some(b.at),
                     None => {
                         let id = s.corr.take_id();
                         let a = crate::browser::alert_for(&b, id);
-                        warn!("ALERT #{} blocked {} -> {}", a.id, a.identity.short(), b.url.as_deref().unwrap_or("-"));
+                        warn!(
+                            "ALERT #{} blocked {} -> {}",
+                            a.id,
+                            a.identity.short(),
+                            b.url.as_deref().unwrap_or("-")
+                        );
                         push_pending(&mut s, a);
                     }
                 }
@@ -273,11 +307,18 @@ pub async fn run(mut stop: tokio::sync::watch::Receiver<bool>) -> Result<()> {
             // A copy, not a reference: behind the `MutexGuard` lies a value,
             // and `&mut s.learner` is already holding it.
             let allow = s.corr.config().allow_processes.clone();
-            let Some((mut judged, _is_new)) = deelpe_core::pipeline::judge(&mut s.learner, &allow, o, Utc::now()) else { continue };
+            let Some((mut judged, _is_new)) =
+                deelpe_core::pipeline::judge(&mut s.learner, &allow, o, Utc::now())
+            else {
+                continue;
+            };
             let cfg = s.corr.config();
             deelpe_core::pipeline::enforce(cfg, &mut judged, &EndpointEnforcer { ev: &ev, cfg });
             let a = judged.into_alert();
-            warn!("ALERT #{} {:?} {} -> {:?} {} B", a.id, a.verdict, a.identity, a.remote, a.bytes_out);
+            warn!(
+                "ALERT #{} {:?} {} -> {:?} {} B",
+                a.id, a.verdict, a.identity, a.remote, a.bytes_out
+            );
             match s.pending.iter_mut().find(|p| p.id == a.id) {
                 Some(prev) => *prev = a,
                 None => push_pending(&mut s, a),
@@ -307,13 +348,22 @@ pub async fn run(mut stop: tokio::sync::watch::Receiver<bool>) -> Result<()> {
         let cage_health = cages.lock().await.health();
         let (status, alerts, configured) = {
             let s = state.lock().await;
-            let watched: Vec<String> = s.corr.config().watched.iter().map(|p| p.display().to_string()).collect();
+            let watched: Vec<String> = s
+                .corr
+                .config()
+                .watched
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect();
             // The same question as `unconfigured` further down, and
             // deliberately the same expression: whoever judges differently
             // here than there reports a generation it is not running at all
             // — and never gets the rules again.
             let configured = !watched.is_empty();
-            let phase = serde_json::to_value(s.learner.phase(Utc::now())).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
+            let phase = serde_json::to_value(s.learner.phase(Utc::now()))
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_default();
             (
                 AgentStatus {
                     version: env!("CARGO_PKG_VERSION").into(),
@@ -357,9 +407,7 @@ pub async fn run(mut stop: tokio::sync::watch::Receiver<bool>) -> Result<()> {
         // Log lines, error counters, wait time and the renewal of the
         // certificate are the session's job; what stays here is what only
         // this agent knows.
-        let result = session
-            .send(&mut report)
-            .await;
+        let result = session.send(&mut report).await;
         match result {
             Ok(resp) => {
                 // Taken completely apart, without `..`: a new field in the
@@ -386,7 +434,10 @@ pub async fn run(mut stop: tokio::sync::watch::Receiver<bool>) -> Result<()> {
                     let mut s = state.lock().await;
                     if s.learner.phase(Utc::now()) != deelpe_core::learn::Phase::Active {
                         s.learner.confirm();
-                        info!("central: learning phase finished, {} pairs known", s.learner.pair_count());
+                        info!(
+                            "central: learning phase finished, {} pairs known",
+                            s.learner.pair_count()
+                        );
                     }
                 }
                 st.tally.ok(Utc::now());
@@ -400,7 +451,9 @@ pub async fn run(mut stop: tokio::sync::watch::Receiver<bool>) -> Result<()> {
                     // stays lying. Reported does not mean forgotten — the
                     // alert moves into the ring so that a later learn command
                     // can still find its pair.
-                    let (gone, stay): (Vec<_>, Vec<_>) = std::mem::take(&mut s.pending).into_iter().partition(|a| sent.contains(&a.id));
+                    let (gone, stay): (Vec<_>, Vec<_>) = std::mem::take(&mut s.pending)
+                        .into_iter()
+                        .partition(|a| sent.contains(&a.id));
                     s.pending = stay;
                     for a in gone {
                         push_reported(&mut s, a);
@@ -413,8 +466,18 @@ pub async fn run(mut stop: tokio::sync::watch::Receiver<bool>) -> Result<()> {
                 // once and come again until the agent reports them.
                 if !learn.is_empty() {
                     let mut s = state.lock().await;
-                    let alerts: Vec<_> = s.reported.iter().cloned().chain(s.pending.iter().cloned()).collect();
-                    let out = deelpe_core::pipeline::apply_learn(&mut s.learner, &alerts, &learn, &st.learn_done);
+                    let alerts: Vec<_> = s
+                        .reported
+                        .iter()
+                        .cloned()
+                        .chain(s.pending.iter().cloned())
+                        .collect();
+                    let out = deelpe_core::pipeline::apply_learn(
+                        &mut s.learner,
+                        &alerts,
+                        &learn,
+                        &st.learn_done,
+                    );
                     for (action, key) in &out.learned {
                         info!("central: {action:?} {key}");
                     }
@@ -423,7 +486,11 @@ pub async fn run(mut stop: tokio::sync::watch::Receiver<bool>) -> Result<()> {
                 // The same question as with the file server agent, and now
                 // the same expression too.
                 let configured = !state.lock().await.corr.config().watched.is_empty();
-                if deelpe_core::central::adopt_generation(new_config.generation, st.generation, configured) {
+                if deelpe_core::central::adopt_generation(
+                    new_config.generation,
+                    st.generation,
+                    configured,
+                ) {
                     apply(&new_config, &policy, &mut skipped).await;
                     st.generation = new_config.generation;
                     // Only the adopted version, never a merely received
@@ -436,7 +503,11 @@ pub async fn run(mut stop: tokio::sync::watch::Receiver<bool>) -> Result<()> {
                     // ruleset version that is meant to survive a restart. An
                     // update applies once, and after the restart the agent
                     // runs the new program anyway.
-                    st.central_config = Some(deelpe_core::central::AgentConfig { update_to_sha256: None, finish_learning: false, ..new_config });
+                    st.central_config = Some(deelpe_core::central::AgentConfig {
+                        update_to_sha256: None,
+                        finish_learning: false,
+                        ..new_config
+                    });
                 }
                 if let Some(want) = want_update {
                     if let Err(e) = crate::update::apply(&session, &want, &mut updater).await {
@@ -471,7 +542,11 @@ pub async fn run(mut stop: tokio::sync::watch::Receiver<bool>) -> Result<()> {
             // ring, and the dashboard would show only a version that changed
             // unexplained. In a product that keeps evidence, exactly that
             // belongs in the central log.
-            let mut last = Report { api_version: Some(API_VERSION), generation: Some(st.generation), ..Default::default() };
+            let mut last = Report {
+                api_version: Some(API_VERSION),
+                generation: Some(st.generation),
+                ..Default::default()
+            };
             if let Err(e) = session.send(&mut last).await {
                 warn!("the last report before the restart did not get through: {e:#}");
             }
@@ -546,7 +621,11 @@ fn push_pending(s: &mut State, a: deelpe_core::correlate::Alert) {
 /// the central learns of it, otherwise the dashboard would show a green rule
 /// that protects nothing.
 fn to_config(c: &AgentConfig, skipped: &mut Vec<String>) -> Config {
-    let usable: Vec<&Rule> = c.rules.iter().filter(|r| r.enabled && crate::agent::is_absolute(&r.path)).collect();
+    let usable: Vec<&Rule> = c
+        .rules
+        .iter()
+        .filter(|r| r.enabled && crate::agent::is_absolute(&r.path))
+        .collect();
     *skipped = c
         .rules
         .iter()
@@ -558,7 +637,11 @@ fn to_config(c: &AgentConfig, skipped: &mut Vec<String>) -> Config {
         usable
             .iter()
             .filter(|r| r.strict)
-            .map(|r| Strict { path: PathBuf::from(&r.path), allow: r.allow_destinations.clone(), enforce: r.enforce })
+            .map(|r| Strict {
+                path: PathBuf::from(&r.path),
+                allow: r.allow_destinations.clone(),
+                enforce: r.enforce,
+            })
             .collect(),
         c.learn_days,
     )
@@ -573,7 +656,13 @@ async fn apply(c: &AgentConfig, policy: &Policy, skipped: &mut Vec<String>) {
     // loop, every round — not here: otherwise it would stand there without a
     // policy when it is loaded or reloaded after a ruleset adoption.
     policy.adopt(cfg).await;
-    info!(generation = c.generation, folders = n, strict, skipped = skipped.len(), "configuration applied");
+    info!(
+        generation = c.generation,
+        folders = n,
+        strict,
+        skipped = skipped.len(),
+        "configuration applied"
+    );
     for p in skipped.iter() {
         warn!(path = %p, "rule path is relative; an endpoint cannot resolve it — use the full path, e.g. \\\\srv01\\GL");
     }
@@ -588,11 +677,19 @@ fn sensors(err: &Option<String>, skipped: &[String], cage: Option<String>) -> Ve
         (None, 0) => None,
         (None, n) => Some(format!("{n} events dropped: the engine could not keep up")),
     };
-    let mut out = vec![SensorHealth { name: "etw".into(), ok: etw_err.is_none(), error: etw_err }];
+    let mut out = vec![SensorHealth {
+        name: "etw".into(),
+        ok: etw_err.is_none(),
+        error: etw_err,
+    }];
     // The network cage deliberately fails **open** (ADR 0002). That is
     // exactly why its failure has to be listed here: otherwise it no longer
     // protects and everything looks green in the dashboard.
-    out.push(SensorHealth { name: "network cage".into(), ok: cage.is_none(), error: cage });
+    out.push(SensorHealth {
+        name: "network cage".into(),
+        ok: cage.is_none(),
+        error: cage,
+    });
     // Can it renew itself? Otherwise the dashboard says "outdated" and
     // "Update sent", and why nothing happens is found only by whoever opens
     // the device's log.
@@ -601,7 +698,9 @@ fn sensors(err: &Option<String>, skipped: &[String], cage: Option<String>) -> Ve
         out.push(SensorHealth {
             name: format!("rule {p}"),
             ok: false,
-            error: Some("relative path; an endpoint needs the full path, e.g. \\\\srv01\\GL".into()),
+            error: Some(
+                "relative path; an endpoint needs the full path, e.g. \\\\srv01\\GL".into(),
+            ),
         });
     }
     out
@@ -633,15 +732,24 @@ impl deelpe_core::pipeline::Enforcer for EndpointEnforcer<'_> {
                 // junction a path outside can lead into the share. Lock and
                 // delete decide on where the file really lies, see `enforce`.
                 let cfg = self.cfg.clone();
-                let protected: crate::enforce::Protected = std::sync::Arc::new(move |p: &std::path::Path| cfg.is_watched(p));
+                let protected: crate::enforce::Protected =
+                    std::sync::Arc::new(move |p: &std::path::Path| cfg.is_watched(p));
                 use crate::enforce::Outcome;
                 let locked = match crate::enforce::lock_copy(path, &protected) {
-                    Ok(Outcome::Refused(real)) => return format!("copy NOT deleted: it leads into the protected folder ({})", real.display()),
+                    Ok(Outcome::Refused(real)) => {
+                        return format!(
+                            "copy NOT deleted: it leads into the protected folder ({})",
+                            real.display()
+                        )
+                    }
                     Ok(Outcome::Gone) => return "copy already gone".into(),
                     other => other,
                 };
                 match crate::enforce::delete_copy(path, &protected) {
-                    Ok(Outcome::Refused(real)) => format!("copy NOT deleted: it leads into the protected folder ({})", real.display()),
+                    Ok(Outcome::Refused(real)) => format!(
+                        "copy NOT deleted: it leads into the protected folder ({})",
+                        real.display()
+                    ),
                     Ok(Outcome::Gone) => "copy already gone".into(),
                     Ok(Outcome::Done) => "copy deleted".into(),
                     // The copier still holds the file open; keep trying in
@@ -650,7 +758,9 @@ impl deelpe_core::pipeline::Enforcer for EndpointEnforcer<'_> {
                         crate::enforce::delete_copy_later(path.to_path_buf(), protected);
                         match locked {
                             Ok(_) => format!("copy locked, deletion pending ({e})"),
-                            Err(le) => format!("copy NOT deleted ({e}) and NOT locked ({le}), retrying"),
+                            Err(le) => {
+                                format!("copy NOT deleted ({e}) and NOT locked ({le}), retrying")
+                            }
                         }
                     }
                 }
@@ -697,10 +807,21 @@ mod tests {
         let link = dir.join("in");
         std::os::unix::fs::symlink(&share, &link).unwrap();
 
-        let cfg = Config { watched: vec![share.clone()], ..Default::default() };
+        let cfg = Config {
+            watched: vec![share.clone()],
+            ..Default::default()
+        };
         let ev = Event::File(deelpe_core::event::FileEvent {
             at: Utc::now(),
-            process: deelpe_core::event::ProcessRef { pid: 4242, ppid: None, responsible: None, path: "curl.exe".into(), identity: ProcessIdentity::Unknown { path: "curl.exe".into() } },
+            process: deelpe_core::event::ProcessRef {
+                pid: 4242,
+                ppid: None,
+                responsible: None,
+                path: "curl.exe".into(),
+                identity: ProcessIdentity::Unknown {
+                    path: "curl.exe".into(),
+                },
+            },
             path: link.join("colleague.docx"),
             action: deelpe_core::event::FileAction::Write,
             target: None,
@@ -708,9 +829,15 @@ mod tests {
             nlink: None,
             argv: None,
         });
-        let said = deelpe_core::pipeline::Enforcer::delete_copy(&EndpointEnforcer { ev: &ev, cfg: &cfg }, &alert(1));
+        let said = deelpe_core::pipeline::Enforcer::delete_copy(
+            &EndpointEnforcer { ev: &ev, cfg: &cfg },
+            &alert(1),
+        );
         assert!(said.contains("NOT deleted"), "{said}");
-        assert!(share.join("colleague.docx").exists(), "the file in the share is still there");
+        assert!(
+            share.join("colleague.docx").exists(),
+            "the file in the share is still there"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -728,7 +855,10 @@ mod tests {
             id,
             at: Utc::now(),
             pid: 10,
-            identity: ProcessIdentity::Signed { signing_id: "curl.exe".into(), team_id: "TEAM1".into() },
+            identity: ProcessIdentity::Signed {
+                signing_id: "curl.exe".into(),
+                team_id: "TEAM1".into(),
+            },
             files: Vec::new(),
             remote: Some("1.2.3.4".parse().unwrap()),
             remote_port: Some(443),
@@ -760,17 +890,33 @@ mod tests {
         push_reported(&mut s, a.clone());
         assert!(s.pending.is_empty());
 
-        let cmds = [LearnCommand { id: 7, alert_id: 1, action: LearnAction::Remember }];
-        let alerts: Vec<_> = s.reported.iter().cloned().chain(s.pending.iter().cloned()).collect();
+        let cmds = [LearnCommand {
+            id: 7,
+            alert_id: 1,
+            action: LearnAction::Remember,
+        }];
+        let alerts: Vec<_> = s
+            .reported
+            .iter()
+            .cloned()
+            .chain(s.pending.iter().cloned())
+            .collect();
         let out = deelpe_core::pipeline::apply_learn(&mut s.learner, &alerts, &cmds, &[]);
 
         assert_eq!(out.done, vec![7], "die Anweisung muss abgehakt werden");
-        assert_eq!(out.learned.len(), 1, "und das Paar muss wirklich gelernt sein");
+        assert_eq!(
+            out.learned.len(),
+            1,
+            "und das Paar muss wirklich gelernt sein"
+        );
 
         let mut next = alert(2);
         next.id = 2;
         assert!(
-            matches!(s.learner.judge(&next, true, Utc::now()), deelpe_core::learn::Decision::Drop),
+            matches!(
+                s.learner.judge(&next, true, Utc::now()),
+                deelpe_core::learn::Decision::Drop
+            ),
             "nach dem Merken muss dasselbe Paar still sein"
         );
     }
@@ -792,19 +938,35 @@ mod tests {
         let policy = Policy::new(state.clone());
 
         // Started closed: without a version no folder is protected.
-        assert!(!deelpe_sensors::filter::wanted(GL_FILE), "vor der ersten Fassung darf nichts durch");
+        assert!(
+            !deelpe_sensors::filter::wanted(GL_FILE),
+            "vor der ersten Fassung darf nichts durch"
+        );
 
         let gl = std::path::PathBuf::from(GL_DIR);
         let cfg = Config::for_endpoint(vec![gl.clone()], Vec::new(), 0);
         policy.adopt(cfg).await;
 
         // 1. The sensor lets the folder's events through -- and only those.
-        assert!(deelpe_sensors::filter::wanted(GL_FILE), "der Sensor kennt den Ordner nicht");
-        assert!(!deelpe_sensors::filter::wanted(r"C:\Freigaben\HR\Lohn.xlsx"));
+        assert!(
+            deelpe_sensors::filter::wanted(GL_FILE),
+            "der Sensor kennt den Ordner nicht"
+        );
+        assert!(!deelpe_sensors::filter::wanted(
+            r"C:\Freigaben\HR\Lohn.xlsx"
+        ));
         // 2. The browser connector judges on the same version.
-        assert_eq!(policy.connector().read().await.watched, vec![gl.clone()], "der Connector haelt eine andere Fassung");
+        assert_eq!(
+            policy.connector().read().await.watched,
+            vec![gl.clone()],
+            "der Connector haelt eine andere Fassung"
+        );
         // 3. And the correlator too.
-        assert_eq!(state.lock().await.corr.config().watched, vec![gl], "der Korrelator haelt eine andere Fassung");
+        assert_eq!(
+            state.lock().await.corr.config().watched,
+            vec![gl],
+            "der Korrelator haelt eine andere Fassung"
+        );
     }
 
     /// The ring keeps its upper bound, and the same alert reported twice
@@ -817,11 +979,18 @@ mod tests {
         }
         assert_eq!(s.reported.len(), MAX_REPORTED);
         // The oldest has given way, the newest is in there.
-        assert_eq!(s.reported.last().expect("nicht leer").id, MAX_REPORTED as u64 + 49);
+        assert_eq!(
+            s.reported.last().expect("nicht leer").id,
+            MAX_REPORTED as u64 + 49
+        );
 
         let n = s.reported.len();
         let again = s.reported[0].clone();
         push_reported(&mut s, again);
-        assert_eq!(s.reported.len(), n, "dieselbe Kennung darf nicht zweimal liegen");
+        assert_eq!(
+            s.reported.len(),
+            n,
+            "dieselbe Kennung darf nicht zweimal liegen"
+        );
     }
 }

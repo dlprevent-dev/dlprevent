@@ -151,7 +151,10 @@ fn cached(st: &Shared, platform: &str) -> Option<(String, axum::body::Bytes)> {
     }
     let bytes = axum::body::Bytes::from(std::fs::read(&path).ok()?);
     let sha = hex(&Sha256::digest(&bytes));
-    st.binary_sha.lock().unwrap().insert(platform.to_string(), (mtime, len, sha.clone(), bytes.clone()));
+    st.binary_sha.lock().unwrap().insert(
+        platform.to_string(),
+        (mtime, len, sha.clone(), bytes.clone()),
+    );
     Some((sha, bytes))
 }
 
@@ -162,7 +165,10 @@ pub fn as_download(name: &str, bytes: axum::body::Bytes) -> Response {
         StatusCode::OK,
         [
             (header::CONTENT_TYPE, "application/octet-stream".to_string()),
-            (header::CONTENT_DISPOSITION, format!("attachment; filename=\"{name}\"")),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{name}\""),
+            ),
         ],
         bytes,
     )
@@ -184,16 +190,29 @@ async fn agent_download(
     Path(platform): Path<String>,
     headers: axum::http::HeaderMap,
 ) -> Result<Response, ApiError> {
-    let token = headers.get("x-deelpe-token").and_then(|v| v.to_str().ok()).unwrap_or("").trim().to_string();
+    let token = headers
+        .get("x-deelpe-token")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .trim()
+        .to_string();
     if token.is_empty() {
-        return Err(ApiError(StatusCode::UNAUTHORIZED, "enrollment token required".into()));
+        return Err(ApiError(
+            StatusCode::UNAUTHORIZED,
+            "enrollment token required".into(),
+        ));
     }
     let hash = crate::auth::sha256_hex(&token);
     let row: Option<(bool, chrono::DateTime<chrono::Utc>)> =
         sqlx::query_as("SELECT COALESCE(uses >= max_uses, false), expires_at FROM enroll_tokens WHERE token_hash = $1").bind(&hash).fetch_optional(&st.pool).await?;
     match row {
         Some((false, exp)) if exp >= chrono::Utc::now() => {}
-        _ => return Err(ApiError(StatusCode::UNAUTHORIZED, "token unknown, used or expired".into())),
+        _ => {
+            return Err(ApiError(
+                StatusCode::UNAUTHORIZED,
+                "token unknown, used or expired".into(),
+            ))
+        }
     }
     let (name, bytes) = read(&st, &platform).ok_or_else(not_found)?;
     Ok(as_download(name, bytes))
@@ -202,7 +221,10 @@ async fn agent_download(
 pub fn router() -> Router<Shared> {
     Router::new()
         .route("/api/binaries", get(list))
-        .route("/api/binaries/{platform}", get(download).post(upload).delete(remove))
+        .route(
+            "/api/binaries/{platform}",
+            get(download).post(upload).delete(remove),
+        )
         .layer(axum::extract::DefaultBodyLimit::max(MAX_UPLOAD))
 }
 
@@ -217,17 +239,31 @@ async fn list(_u: User, State(st): State<Shared>) -> Result<Json<Vec<Binary>>, A
         // answer to an agent.
         let (present, size, sha256, uploaded_at) = match cached(&st, platform) {
             Some((sha, bytes)) => {
-                let at = std::fs::metadata(&p).ok().and_then(|m| m.modified().ok()).map(chrono::DateTime::<chrono::Utc>::from);
+                let at = std::fs::metadata(&p)
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .map(chrono::DateTime::<chrono::Utc>::from);
                 (true, bytes.len() as u64, sha, at)
             }
             None => (false, 0, String::new(), None),
         };
-        out.push(Binary { platform, file_name, present, size, sha256, uploaded_at });
+        out.push(Binary {
+            platform,
+            file_name,
+            present,
+            size,
+            sha256,
+            uploaded_at,
+        });
     }
     Ok(Json(out))
 }
 
-async fn download(_u: User, State(st): State<Shared>, Path(platform): Path<String>) -> Result<Response, ApiError> {
+async fn download(
+    _u: User,
+    State(st): State<Shared>,
+    Path(platform): Path<String>,
+) -> Result<Response, ApiError> {
     let (name, bytes) = read(&st, &platform).ok_or_else(not_found)?;
     Ok(as_download(name, bytes))
 }
@@ -239,7 +275,13 @@ struct UploadQuery {
     sig: Option<String>,
 }
 
-async fn upload(Admin(a): Admin, State(st): State<Shared>, Path(platform): Path<String>, Query(q): Query<UploadQuery>, body: Bytes) -> Result<Json<Binary>, ApiError> {
+async fn upload(
+    Admin(a): Admin,
+    State(st): State<Shared>,
+    Path(platform): Path<String>,
+    Query(q): Query<UploadQuery>,
+    body: Bytes,
+) -> Result<Json<Binary>, ApiError> {
     if file_name(&platform).is_none() {
         return Err(bad("unknown platform"));
     }
@@ -250,12 +292,23 @@ async fn upload(Admin(a): Admin, State(st): State<Shared>, Path(platform): Path<
     // the release channel **and** through this form. Otherwise the key would
     // only guard the door nobody has to use: one administrator login could
     // still hand every endpoint any program.
-    let key = crate::release::pubkey(&st).await.map_err(|e| bad(format!("{e:#}")))?;
+    let key = crate::release::pubkey(&st)
+        .await
+        .map_err(|e| bad(format!("{e:#}")))?;
     if let Some(key) = &key {
-        let sig = q.sig.as_deref().filter(|s| !s.trim().is_empty()).ok_or_else(|| bad("a signing key is configured: upload the program together with its .sig file"))?;
+        let sig = q
+            .sig
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .ok_or_else(|| {
+                bad("a signing key is configured: upload the program together with its .sig file")
+            })?;
         let name = file_name(&platform).unwrap_or_default();
-        let version = crate::release::verify_release(&body, sig, key, name).map_err(|e| bad(format!("signature: {e:#}")))?;
-        install_signed(&st, &platform, &body, &version, sig).await.map_err(|e| bad(format!("{e:#}")))?;
+        let version = crate::release::verify_release(&body, sig, key, name)
+            .map_err(|e| bad(format!("signature: {e:#}")))?;
+        install_signed(&st, &platform, &body, &version, sig)
+            .await
+            .map_err(|e| bad(format!("{e:#}")))?;
     } else {
         install(&st, &platform, &body).map_err(|e| bad(format!("{e:#}")))?;
         // No key here to check it with — but the agents may carry one. The
@@ -263,14 +316,19 @@ async fn upload(Admin(a): Admin, State(st): State<Shared>, Path(platform): Path<
         // it, and without it an agent carrying the key would never update.
         if let Some(sig) = q.sig.as_deref().filter(|s| !s.trim().is_empty()) {
             let path = path_for(&st, &platform).ok_or_else(|| bad("unknown platform"))?;
-            write_atomic(&statement_path(&path), sig.as_bytes()).map_err(|e| bad(format!("{e:#}")))?;
+            write_atomic(&statement_path(&path), sig.as_bytes())
+                .map_err(|e| bad(format!("{e:#}")))?;
         }
     }
     let sha256 = hex(&Sha256::digest(&body));
     tracing::info!(platform, bytes = body.len(), "agent binary uploaded");
     crate::db::audit(&st.pool, (&a).into(), "binary_upload", serde_json::json!({ "platform": platform, "size": body.len(), "sha256": sha256, "signed": key.is_some() })).await;
     Ok(Json(Binary {
-        platform: KNOWN.iter().find(|(p, _)| *p == platform).map(|(p, _)| *p).unwrap_or("?"),
+        platform: KNOWN
+            .iter()
+            .find(|(p, _)| *p == platform)
+            .map(|(p, _)| *p)
+            .unwrap_or("?"),
         file_name: file_name(&platform).unwrap_or("?"),
         present: true,
         size: body.len() as u64,
@@ -279,11 +337,21 @@ async fn upload(Admin(a): Admin, State(st): State<Shared>, Path(platform): Path<
     }))
 }
 
-async fn remove(Admin(a): Admin, State(st): State<Shared>, Path(platform): Path<String>) -> Result<StatusCode, ApiError> {
+async fn remove(
+    Admin(a): Admin,
+    State(st): State<Shared>,
+    Path(platform): Path<String>,
+) -> Result<StatusCode, ApiError> {
     let path = path_for(&st, &platform).ok_or_else(not_found)?;
     let _ = std::fs::remove_file(statement_path(&path));
     let _ = std::fs::remove_file(path);
-    crate::db::audit(&st.pool, (&a).into(), "binary_remove", serde_json::json!({ "platform": platform })).await;
+    crate::db::audit(
+        &st.pool,
+        (&a).into(),
+        "binary_remove",
+        serde_json::json!({ "platform": platform }),
+    )
+    .await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -295,7 +363,8 @@ async fn remove(Admin(a): Admin, State(st): State<Shared>, Path(platform): Path<
 /// whoever arrives here already has their check behind them (the signature on
 /// the release, and on an upload whenever a key exists).
 pub fn install(st: &Shared, platform: &str, bytes: &[u8]) -> anyhow::Result<()> {
-    let path = path_for(st, platform).ok_or_else(|| anyhow::anyhow!("unknown platform {platform}"))?;
+    let path =
+        path_for(st, platform).ok_or_else(|| anyhow::anyhow!("unknown platform {platform}"))?;
     check_header(platform, bytes)?;
     write_atomic(&path, bytes)?;
     // An unsigned program carries no statement; one left over from the
@@ -348,15 +417,25 @@ const VERSIONS: &str = "agent_program_versions";
 /// Written first — should the program then fail to land, the old program
 /// meets a statement that does not fit it, and agents refuse rather than
 /// swap.
-pub async fn install_signed(st: &Shared, platform: &str, bytes: &[u8], version: &str, statement: &str) -> anyhow::Result<()> {
+pub async fn install_signed(
+    st: &Shared,
+    platform: &str,
+    bytes: &[u8],
+    version: &str,
+    statement: &str,
+) -> anyhow::Result<()> {
     use crate::release::parse_version;
-    let mut held = crate::db::settings_map(&st.pool, &[VERSIONS]).await?.remove(VERSIONS).unwrap_or_else(|| serde_json::json!({}));
+    let mut held = crate::db::settings_map(&st.pool, &[VERSIONS])
+        .await?
+        .remove(VERSIONS)
+        .unwrap_or_else(|| serde_json::json!({}));
     if let Some(have) = held.get(platform).and_then(|v| v.as_str()) {
         if parse_version(version) < parse_version(have) {
             anyhow::bail!("version {version} is older than the {have} this server already had for {platform} — a signed old build is still an old build");
         }
     }
-    let path = path_for(st, platform).ok_or_else(|| anyhow::anyhow!("unknown platform {platform}"))?;
+    let path =
+        path_for(st, platform).ok_or_else(|| anyhow::anyhow!("unknown platform {platform}"))?;
     check_header(platform, bytes)?;
     write_atomic(&statement_path(&path), statement.as_bytes())?;
     write_atomic(&path, bytes)?;
@@ -378,8 +457,12 @@ pub async fn install_signed(st: &Shared, platform: &str, bytes: &[u8], version: 
 /// does not start.
 fn check_header(platform: &str, bytes: &[u8]) -> anyhow::Result<()> {
     match platform {
-        "windows" if !bytes.starts_with(b"MZ") => anyhow::bail!("that is not a Windows program (no MZ header)"),
-        "mac" if !bytes.starts_with(b"PK") => anyhow::bail!("that is not a zip archive (no PK header)"),
+        "windows" if !bytes.starts_with(b"MZ") => {
+            anyhow::bail!("that is not a Windows program (no MZ header)")
+        }
+        "mac" if !bytes.starts_with(b"PK") => {
+            anyhow::bail!("that is not a zip archive (no PK header)")
+        }
         "linux-amd64" | "linux-arm64" => {
             if !bytes.starts_with(b"\x7fELF") {
                 anyhow::bail!("that is not a Linux program (no ELF header) — upload the bare deelpe, not the .deb");
@@ -387,12 +470,18 @@ fn check_header(platform: &str, bytes: &[u8]) -> anyhow::Result<()> {
             let machine = bytes.get(18..20).map(|m| u16::from_le_bytes([m[0], m[1]]));
             let want = if platform == "linux-amd64" { 62 } else { 183 };
             if machine != Some(want) {
-                anyhow::bail!("that Linux program is built for a different architecture than {platform}");
+                anyhow::bail!(
+                    "that Linux program is built for a different architecture than {platform}"
+                );
             }
             Ok(())
         }
         _ => Ok(()),
     }
+}
+
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
 #[cfg(test)]
@@ -422,8 +511,4 @@ mod tests {
         // earlier, at `path_for`.
         assert!(super::check_header("bsd", b"egal").is_ok());
     }
-}
-
-fn hex(b: &[u8]) -> String {
-    b.iter().map(|x| format!("{x:02x}")).collect()
 }

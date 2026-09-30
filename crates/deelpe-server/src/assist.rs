@@ -127,7 +127,13 @@ impl Config {
 /// brackets; an address that does not parse has no host (and counts as
 /// outside).
 pub fn host_of(base: &str) -> String {
-    reqwest::Url::parse(base).ok().and_then(|u| u.host_str().map(|h| h.trim_start_matches('[').trim_end_matches(']').to_string())).unwrap_or_default()
+    reqwest::Url::parse(base)
+        .ok()
+        .and_then(|u| {
+            u.host_str()
+                .map(|h| h.trim_start_matches('[').trim_end_matches(']').to_string())
+        })
+        .unwrap_or_default()
 }
 
 /// Would the stored key go to the same place? Scheme, host and port: a key
@@ -142,15 +148,26 @@ pub async fn config(pool: &PgPool) -> Result<Option<Config>> {
     if !db::setting_bool(pool, "assist_enabled", false).await? {
         return Ok(None);
     }
-    let base_url = db::setting_str(pool, "assist_base_url").await?.unwrap_or_default().trim().trim_end_matches('/').to_string();
-    let model = db::setting_str(pool, "assist_model").await?.unwrap_or_default().trim().to_string();
+    let base_url = db::setting_str(pool, "assist_base_url")
+        .await?
+        .unwrap_or_default()
+        .trim()
+        .trim_end_matches('/')
+        .to_string();
+    let model = db::setting_str(pool, "assist_model")
+        .await?
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     if base_url.is_empty() || model.is_empty() {
         return Ok(None);
     }
     Ok(Some(Config {
         base_url,
         model,
-        key: db::setting_str(pool, "assist_key").await?.unwrap_or_default(),
+        key: db::setting_str(pool, "assist_key")
+            .await?
+            .unwrap_or_default(),
         daily_limit: db::setting_i64(pool, "assist_daily_limit", 50).await?,
     }))
 }
@@ -181,13 +198,22 @@ pub enum Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Error::Unauthorized => write!(f, "AI service: API key missing, wrong, or not valid for this endpoint."),
-            Error::NotFound(m) if m.is_empty() => write!(f, "AI service: endpoint or model not found - check the base URL and the model name."),
+            Error::Unauthorized => write!(
+                f,
+                "AI service: API key missing, wrong, or not valid for this endpoint."
+            ),
+            Error::NotFound(m) if m.is_empty() => write!(
+                f,
+                "AI service: endpoint or model not found - check the base URL and the model name."
+            ),
             Error::NotFound(m) => write!(f, "AI service: not found - {m}"),
             Error::RateLimited => write!(f, "AI service: too many requests, try again shortly."),
             Error::Http(code, m) if m.is_empty() => write!(f, "AI service: HTTP {code}"),
             Error::Http(code, m) => write!(f, "AI service: HTTP {code} {m}"),
-            Error::Malformed => write!(f, "AI service: unexpected response (is this an OpenAI-compatible endpoint?)"),
+            Error::Malformed => write!(
+                f,
+                "AI service: unexpected response (is this an OpenAI-compatible endpoint?)"
+            ),
             Error::Empty => write!(f, "AI service: the model returned no text."),
             Error::Network(m) => write!(f, "AI service: {m}"),
         }
@@ -253,9 +279,19 @@ enum ErrorItem {
 pub fn parse(status: u16, body: &[u8]) -> Result<String, Error> {
     if status == 200 {
         let env: Envelope = serde_json::from_slice(body).map_err(|_| Error::Malformed)?;
-        let text = env.choices.into_iter().next().and_then(|c| c.message).and_then(|m| m.content).unwrap_or_default();
+        let text = env
+            .choices
+            .into_iter()
+            .next()
+            .and_then(|c| c.message)
+            .and_then(|m| m.content)
+            .unwrap_or_default();
         let text = strip_thoughts(&text);
-        return if text.is_empty() { Err(Error::Empty) } else { Ok(text) };
+        return if text.is_empty() {
+            Err(Error::Empty)
+        } else {
+            Ok(text)
+        };
     }
     let detail = serde_json::from_slice::<ErrorEnvelope>(body)
         .ok()
@@ -315,7 +351,16 @@ fn strip_thoughts(text: &str) -> String {
 pub async fn ask(client: &reqwest::Client, cfg: &Config, prompt: &str) -> Result<String, Error> {
     let body = Request {
         model: &cfg.model,
-        messages: [Message { role: "system", content: SYSTEM }, Message { role: "user", content: prompt }],
+        messages: [
+            Message {
+                role: "system",
+                content: SYSTEM,
+            },
+            Message {
+                role: "user",
+                content: prompt,
+            },
+        ],
         // Low, not zero: this is about a summary of facts, not about
         // ideas.
         temperature: 0.2,
@@ -335,7 +380,12 @@ pub async fn ask(client: &reqwest::Client, cfg: &Config, prompt: &str) -> Result
 /// "Test connection": the cheapest question there is. Checks address, key
 /// and model name in one go, without an alert leaving the house.
 pub async fn probe(client: &reqwest::Client, cfg: &Config) -> Result<String, Error> {
-    ask(client, cfg, "This is a connection test. Reply with the single word: ready").await
+    ask(
+        client,
+        cfg,
+        "This is a connection test. Reply with the single word: ready",
+    )
+    .await
 }
 
 // ---------- Dossier ----------
@@ -354,30 +404,97 @@ pub async fn dossier(pool: &PgPool, alert_id: i64) -> Result<Option<String>> {
     if let Some(last) = a.last_at.filter(|l| *l != a.at) {
         let _ = writeln!(d, "  last seen:  {}", last.format("%Y-%m-%d %H:%M:%S UTC"));
     }
-    let _ = writeln!(d, "  source: {} ({})", a.origin_name, if a.kind == "access" { "file server access log" } else { "endpoint agent" });
-    let _ = writeln!(d, "  user: {}", a.user_display.as_deref().unwrap_or("unknown"));
-    let _ = writeln!(d, "  process: {}", a.process.as_deref().unwrap_or("unknown"));
-    let _ = writeln!(d, "  protected folder: {}", a.path.as_deref().unwrap_or("unknown"));
-    let _ = writeln!(d, "  destination: {}", a.remote.as_deref().unwrap_or("none recorded"));
-    let _ = writeln!(d, "  volume: {} in {} file(s)", bytes(a.bytes), a.file_count);
-    let _ = writeln!(d, "  verdict: {}{}", a.verdict, a.reason.as_deref().map(|r| format!(" - {r}")).unwrap_or_default());
+    let _ = writeln!(
+        d,
+        "  source: {} ({})",
+        a.origin_name,
+        if a.kind == "access" {
+            "file server access log"
+        } else {
+            "endpoint agent"
+        }
+    );
+    let _ = writeln!(
+        d,
+        "  user: {}",
+        a.user_display.as_deref().unwrap_or("unknown")
+    );
+    let _ = writeln!(
+        d,
+        "  process: {}",
+        a.process.as_deref().unwrap_or("unknown")
+    );
+    let _ = writeln!(
+        d,
+        "  protected folder: {}",
+        a.path.as_deref().unwrap_or("unknown")
+    );
+    let _ = writeln!(
+        d,
+        "  destination: {}",
+        a.remote.as_deref().unwrap_or("none recorded")
+    );
+    let _ = writeln!(
+        d,
+        "  volume: {} in {} file(s)",
+        bytes(a.bytes),
+        a.file_count
+    );
+    let _ = writeln!(
+        d,
+        "  verdict: {}{}",
+        a.verdict,
+        a.reason
+            .as_deref()
+            .map(|r| format!(" - {r}"))
+            .unwrap_or_default()
+    );
     if let Some(files) = a.files.as_array().filter(|f| !f.is_empty()) {
-        let names: Vec<&str> = files.iter().filter_map(|f| f.as_str()).take(MAX_FILES).collect();
-        let _ = writeln!(d, "  files: {}{}", names.join(", "), if files.len() > names.len() { format!(" (+{} more)", files.len() - names.len()) } else { String::new() });
+        let names: Vec<&str> = files
+            .iter()
+            .filter_map(|f| f.as_str())
+            .take(MAX_FILES)
+            .collect();
+        let _ = writeln!(
+            d,
+            "  files: {}{}",
+            names.join(", "),
+            if files.len() > names.len() {
+                format!(" (+{} more)", files.len() - names.len())
+            } else {
+                String::new()
+            }
+        );
     }
 
     // ---- the rule that matched ----
     if let Some(r) = rule(pool, a.rule_id).await? {
         let _ = writeln!(d, "\nRULE \"{}\"", r.name);
         let _ = writeln!(d, "  path: {}", r.path);
-        let _ = writeln!(d, "  strict folder (nothing may leave except to allowed destinations): {}", yes(r.strict));
+        let _ = writeln!(
+            d,
+            "  strict folder (nothing may leave except to allowed destinations): {}",
+            yes(r.strict)
+        );
         if r.strict {
-            let allowed = if r.allow_destinations.is_empty() { "none - every destination is forbidden".to_string() } else { r.allow_destinations.join(", ") };
+            let allowed = if r.allow_destinations.is_empty() {
+                "none - every destination is forbidden".to_string()
+            } else {
+                r.allow_destinations.join(", ")
+            };
             let _ = writeln!(d, "  allowed destinations: {allowed}");
         }
-        let _ = writeln!(d, "  agent removes copies that left the folder (enforce): {}", yes(r.enforce));
+        let _ = writeln!(
+            d,
+            "  agent removes copies that left the folder (enforce): {}",
+            yes(r.enforce)
+        );
         if r.hard_max_files > 0 {
-            let _ = writeln!(d, "  hard limit: more than {} files within {} s", r.hard_max_files, r.window_secs);
+            let _ = writeln!(
+                d,
+                "  hard limit: more than {} files within {} s",
+                r.hard_max_files, r.window_secs
+            );
         }
     } else {
         let _ = writeln!(d, "\nRULE: none recorded for this alert.");
@@ -386,12 +503,34 @@ pub async fn dossier(pool: &PgPool, alert_id: i64) -> Result<Option<String>> {
     // ---- the reputation of the destination address ----
     if let Some(ip) = a.remote.as_deref().and_then(abuseipdb::ip_of) {
         let _ = writeln!(d, "\nDESTINATION REPUTATION (AbuseIPDB)");
-        match abuseipdb::cached(pool, &[ip.to_string()]).await?.into_iter().next() {
+        match abuseipdb::cached(pool, &[ip.to_string()])
+            .await?
+            .into_iter()
+            .next()
+        {
             Some(r) => {
-                let _ = writeln!(d, "  {}: {}% abuse confidence, {} reports in 90 days{}{}", r.ip, r.score, r.total_reports,
+                let _ = writeln!(
+                    d,
+                    "  {}: {}% abuse confidence, {} reports in 90 days{}{}",
+                    r.ip,
+                    r.score,
+                    r.total_reports,
                     if r.is_tor { ", Tor exit node" } else { "" },
-                    if r.is_whitelisted { ", whitelisted" } else { "" });
-                let who: Vec<&str> = [r.country_code.as_deref(), r.isp.as_deref(), r.domain.as_deref(), r.usage_type.as_deref()].into_iter().flatten().collect();
+                    if r.is_whitelisted {
+                        ", whitelisted"
+                    } else {
+                        ""
+                    }
+                );
+                let who: Vec<&str> = [
+                    r.country_code.as_deref(),
+                    r.isp.as_deref(),
+                    r.domain.as_deref(),
+                    r.usage_type.as_deref(),
+                ]
+                .into_iter()
+                .flatten()
+                .collect();
                 if !who.is_empty() {
                     let _ = writeln!(d, "  {}", who.join(" / "));
                 }
@@ -400,21 +539,63 @@ pub async fn dossier(pool: &PgPool, alert_id: i64) -> Result<Option<String>> {
                 let _ = writeln!(d, "  {ip} is a private or reserved address - inside this network, not on the internet.");
             }
             None => {
-                let _ = writeln!(d, "  {ip} has not been checked. Do not assume it is either good or bad.");
+                let _ = writeln!(
+                    d,
+                    "  {ip} has not been checked. Do not assume it is either good or bad."
+                );
             }
         }
     }
 
     // ---- what the same user did otherwise ----
     if let Some(user) = a.user_key.as_deref().filter(|u| !u.is_empty()) {
-        let _ = writeln!(d, "\nSAME USER, LAST {USER_HISTORY_DAYS} DAYS (this alert excluded)");
-        let verdicts = top(pool, "verdict", "user_key = $1", user, a.id, USER_HISTORY_DAYS).await?;
+        let _ = writeln!(
+            d,
+            "\nSAME USER, LAST {USER_HISTORY_DAYS} DAYS (this alert excluded)"
+        );
+        let verdicts = top(
+            pool,
+            "verdict",
+            "user_key = $1",
+            user,
+            a.id,
+            USER_HISTORY_DAYS,
+        )
+        .await?;
         if verdicts.is_empty() {
             let _ = writeln!(d, "  no other alerts.");
         } else {
             let _ = writeln!(d, "  verdicts: {}", counted(&verdicts));
-            let _ = writeln!(d, "  processes: {}", counted(&top(pool, "coalesce(process, '(none)')", "user_key = $1", user, a.id, USER_HISTORY_DAYS).await?));
-            let _ = writeln!(d, "  folders: {}", counted(&top(pool, "coalesce(path, '(none)')", "user_key = $1", user, a.id, USER_HISTORY_DAYS).await?));
+            let _ = writeln!(
+                d,
+                "  processes: {}",
+                counted(
+                    &top(
+                        pool,
+                        "coalesce(process, '(none)')",
+                        "user_key = $1",
+                        user,
+                        a.id,
+                        USER_HISTORY_DAYS
+                    )
+                    .await?
+                )
+            );
+            let _ = writeln!(
+                d,
+                "  folders: {}",
+                counted(
+                    &top(
+                        pool,
+                        "coalesce(path, '(none)')",
+                        "user_key = $1",
+                        user,
+                        a.id,
+                        USER_HISTORY_DAYS
+                    )
+                    .await?
+                )
+            );
         }
     }
 
@@ -424,14 +605,28 @@ pub async fn dossier(pool: &PgPool, alert_id: i64) -> Result<Option<String>> {
             "SELECT count(*), count(DISTINCT origin_name), min(at) FROM alerts \
              WHERE process = $1 AND id <> $2 AND at > now() - ($3::bigint * interval '1 day')",
         )
-        .bind(p).bind(a.id).bind(PROCESS_HISTORY_DAYS).fetch_one(pool).await?;
-        let _ = writeln!(d, "\nSAME PROCESS ACROSS THE FLEET, LAST {PROCESS_HISTORY_DAYS} DAYS");
+        .bind(p)
+        .bind(a.id)
+        .bind(PROCESS_HISTORY_DAYS)
+        .fetch_one(pool)
+        .await?;
+        let _ = writeln!(
+            d,
+            "\nSAME PROCESS ACROSS THE FLEET, LAST {PROCESS_HISTORY_DAYS} DAYS"
+        );
         match first {
             Some(f) => {
-                let _ = writeln!(d, "  {p}: {n} other alert(s) on {devices} device(s), earliest {}", f.format("%Y-%m-%d"));
+                let _ = writeln!(
+                    d,
+                    "  {p}: {n} other alert(s) on {devices} device(s), earliest {}",
+                    f.format("%Y-%m-%d")
+                );
             }
             None => {
-                let _ = writeln!(d, "  {p}: no other alerts. This is the first time it turns up.");
+                let _ = writeln!(
+                    d,
+                    "  {p}: no other alerts. This is the first time it turns up."
+                );
             }
         }
     }
@@ -449,14 +644,25 @@ pub async fn dossier(pool: &PgPool, alert_id: i64) -> Result<Option<String>> {
         // `last_at` and is hours long. A model that has been told "use only
         // facts from the dossier" must not find a false fact at the head of
         // the list.
-        let _ = writeln!(d, "\nAGENT LOG, {} to {} (newest {MAX_LOG_LINES} lines at most)", from.format("%Y-%m-%d %H:%M:%S UTC"), to.format("%H:%M:%S UTC"));
+        let _ = writeln!(
+            d,
+            "\nAGENT LOG, {} to {} (newest {MAX_LOG_LINES} lines at most)",
+            from.format("%Y-%m-%d %H:%M:%S UTC"),
+            to.format("%H:%M:%S UTC")
+        );
         if lines.is_empty() {
             let _ = writeln!(d, "  nothing logged in that window.");
         }
         // The query fetches the newest first (that is what the index is
         // for), reading goes from front to back.
         for (at, level, target, msg) in lines.into_iter().rev() {
-            let _ = writeln!(d, "  {} {:<5} {target}: {}", at.format("%H:%M:%S"), level.to_uppercase(), clamp(msg.trim(), 300));
+            let _ = writeln!(
+                d,
+                "  {} {:<5} {target}: {}",
+                at.format("%H:%M:%S"),
+                level.to_uppercase(),
+                clamp(msg.trim(), 300)
+            );
         }
     }
 
@@ -464,18 +670,35 @@ pub async fn dossier(pool: &PgPool, alert_id: i64) -> Result<Option<String>> {
 }
 
 async fn alert(pool: &PgPool, id: i64) -> Result<Option<AlertRow>> {
-    Ok(sqlx::query_as(sqlx::AssertSqlSafe(format!("SELECT {ALERT_COLS} FROM alerts WHERE id = $1"))).bind(id).fetch_optional(pool).await?)
+    Ok(sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT {ALERT_COLS} FROM alerts WHERE id = $1"
+    )))
+    .bind(id)
+    .fetch_optional(pool)
+    .await?)
 }
 
 async fn rule(pool: &PgPool, id: Option<Uuid>) -> Result<Option<RuleRow>> {
     let Some(id) = id else { return Ok(None) };
-    Ok(sqlx::query_as(sqlx::AssertSqlSafe(format!("SELECT {RULE_COLS} FROM rules WHERE id = $1"))).bind(id).fetch_optional(pool).await?)
+    Ok(sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT {RULE_COLS} FROM rules WHERE id = $1"
+    )))
+    .bind(id)
+    .fetch_optional(pool)
+    .await?)
 }
 
 /// The most frequent values of an expression among related alerts. `expr`
 /// and `filter` are fixed strings from this module — only `key` comes from
 /// the request, and it is bound.
-async fn top(pool: &PgPool, expr: &str, filter: &str, key: &str, id: i64, days: i64) -> Result<Vec<(String, i64)>> {
+async fn top(
+    pool: &PgPool,
+    expr: &str,
+    filter: &str,
+    key: &str,
+    id: i64,
+    days: i64,
+) -> Result<Vec<(String, i64)>> {
     Ok(sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT {expr}, count(*) FROM alerts \
          WHERE {filter} AND id <> $2 AND at > now() - ($3::bigint * interval '1 day') \
@@ -492,7 +715,10 @@ fn counted(rows: &[(String, i64)]) -> String {
     if rows.is_empty() {
         return "none".into();
     }
-    rows.iter().map(|(k, n)| format!("{k} ({n})")).collect::<Vec<_>>().join(", ")
+    rows.iter()
+        .map(|(k, n)| format!("{k} ({n})"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn yes(b: bool) -> &'static str {
@@ -552,16 +778,26 @@ pub struct Insight {
     pub created_by_name: String,
 }
 
-pub const INSIGHT_COLS: &str = "alert_id, model, endpoint, prompt, summary, created_at, created_by_name";
+pub const INSIGHT_COLS: &str =
+    "alert_id, model, endpoint, prompt, summary, created_at, created_by_name";
 
 pub async fn cached(pool: &PgPool, alert_id: i64) -> Result<Option<Insight>> {
-    Ok(sqlx::query_as(sqlx::AssertSqlSafe(format!("SELECT {INSIGHT_COLS} FROM alert_insights WHERE alert_id = $1")))
-        .bind(alert_id)
-        .fetch_optional(pool)
-        .await?)
+    Ok(sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT {INSIGHT_COLS} FROM alert_insights WHERE alert_id = $1"
+    )))
+    .bind(alert_id)
+    .fetch_optional(pool)
+    .await?)
 }
 
-pub async fn store(pool: &PgPool, alert_id: i64, cfg: &Config, prompt: &str, summary: &str, by: (Uuid, &str)) -> Result<Insight> {
+pub async fn store(
+    pool: &PgPool,
+    alert_id: i64,
+    cfg: &Config,
+    prompt: &str,
+    summary: &str,
+    by: (Uuid, &str),
+) -> Result<Insight> {
     Ok(sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "INSERT INTO alert_insights (alert_id, model, endpoint, prompt, summary, created_by, created_by_name) \
          VALUES ($1, $2, $3, $4, $5, $6, $7) \
@@ -623,22 +859,41 @@ mod tests {
             Error::NotFound("model 'lama3' not found".into())
         );
         // Some services send `error` as plain text.
-        assert_eq!(parse(400, br#"{"error":"bad request"}"#).unwrap_err(), Error::Http(400, "bad request".into()));
-        assert_eq!(parse(500, b"<html>gateway</html>").unwrap_err(), Error::Http(500, String::new()));
+        assert_eq!(
+            parse(400, br#"{"error":"bad request"}"#).unwrap_err(),
+            Error::Http(400, "bad request".into())
+        );
+        assert_eq!(
+            parse(500, b"<html>gateway</html>").unwrap_err(),
+            Error::Http(500, String::new())
+        );
         // An answer that is not an OpenAI answer: the most common
         // consequence of a base URL without `/v1`.
-        assert_eq!(parse(200, b"<html>hello</html>").unwrap_err(), Error::Malformed);
+        assert_eq!(
+            parse(200, b"<html>hello</html>").unwrap_err(),
+            Error::Malformed
+        );
         assert_eq!(parse(200, br#"{"choices":[]}"#).unwrap_err(), Error::Empty);
     }
 
     #[test]
     fn a_thinking_model_keeps_its_thoughts_to_itself() {
-        assert_eq!(strip_thoughts("<think>hmm, the user...</think>\n\nWhat happened: x"), "What happened: x");
+        assert_eq!(
+            strip_thoughts("<think>hmm, the user...</think>\n\nWhat happened: x"),
+            "What happened: x"
+        );
         assert_eq!(strip_thoughts("  plain answer  "), "plain answer");
         // Cut off in the middle of the thinking: nothing is left, and the
         // caller reports `Empty` instead of half a soliloquy.
         assert_eq!(strip_thoughts("<think>hmm, and then"), "");
-        assert_eq!(parse(200, br#"{"choices":[{"message":{"content":"<think>a</think>b"}}]}"#).unwrap(), "b");
+        assert_eq!(
+            parse(
+                200,
+                br#"{"choices":[{"message":{"content":"<think>a</think>b"}}]}"#
+            )
+            .unwrap(),
+            "b"
+        );
     }
 
     #[test]
@@ -671,7 +926,12 @@ mod tests {
         .fetch_one(&pool).await.unwrap();
 
         let at: DateTime<Utc> = "2026-09-08T12:00:00Z".parse().unwrap();
-        let add = |ext: &'static str, user: &'static str, process: &'static str, verdict: &'static str, remote: Option<&'static str>, ago_days: i64| {
+        let add = |ext: &'static str,
+                   user: &'static str,
+                   process: &'static str,
+                   verdict: &'static str,
+                   remote: Option<&'static str>,
+                   ago_days: i64| {
             let pool = pool.clone();
             async move {
                 sqlx::query_scalar::<_, i64>(
@@ -682,7 +942,15 @@ mod tests {
                 .fetch_one(&pool).await.unwrap()
             }
         };
-        let id = add("e1", "CORP\\dl-anna", "firefox.exe", "denied", Some("203.0.113.9:443"), 0).await;
+        let id = add(
+            "e1",
+            "CORP\\dl-anna",
+            "firefox.exe",
+            "denied",
+            Some("203.0.113.9:443"),
+            0,
+        )
+        .await;
         // History: the same user this week, the same process on another
         // device.
         add("e2", "CORP\\dl-anna", "explorer.exe", "new", None, 2).await;
@@ -692,51 +960,129 @@ mod tests {
 
         // The time of the alert is fixed; the log has to lie around it so
         // that the window hits it.
-        sqlx::query("UPDATE alerts SET at = $1, last_at = $1 WHERE id = $2").bind(at).bind(id).execute(&pool).await.unwrap();
-        for (offset_secs, level, msg) in [(-120i64, "info", "watching G:\\Vertraege"), (5, "warn", "strict folder: destination 203.0.113.9 not in allow list"), (3600, "info", "zu spaet, gehoert nicht mehr dazu")] {
+        sqlx::query("UPDATE alerts SET at = $1, last_at = $1 WHERE id = $2")
+            .bind(at)
+            .bind(id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        for (offset_secs, level, msg) in [
+            (-120i64, "info", "watching G:\\Vertraege"),
+            (
+                5,
+                "warn",
+                "strict folder: destination 203.0.113.9 not in allow list",
+            ),
+            (3600, "info", "zu spaet, gehoert nicht mehr dazu"),
+        ] {
             sqlx::query("INSERT INTO agent_log (agent_id, at, level, target, msg) VALUES ($1, $2, $3, 'deelpe::pipeline', $4)")
                 .bind(agent).bind(at + chrono::Duration::seconds(offset_secs)).bind(level).bind(msg)
                 .execute(&pool).await.unwrap();
         }
-        abuseipdb::store(&pool, &abuseipdb::Reputation {
-            ip: "203.0.113.9".into(), score: 91, country_code: Some("RU".into()), isp: Some("Acme".into()),
-            domain: None, usage_type: None, total_reports: 42, is_tor: true, is_whitelisted: false, checked_at: Utc::now(),
-        }).await.unwrap();
+        abuseipdb::store(
+            &pool,
+            &abuseipdb::Reputation {
+                ip: "203.0.113.9".into(),
+                score: 91,
+                country_code: Some("RU".into()),
+                isp: Some("Acme".into()),
+                domain: None,
+                usage_type: None,
+                total_reports: 42,
+                is_tor: true,
+                is_whitelisted: false,
+                checked_at: Utc::now(),
+            },
+        )
+        .await
+        .unwrap();
 
-        let d = dossier(&pool, id).await.unwrap().expect("die Warnung gibt es");
+        let d = dossier(&pool, id)
+            .await
+            .unwrap()
+            .expect("die Warnung gibt es");
 
         // 1. the alert itself
         assert!(d.contains("ALERT #"), "{d}");
-        assert!(d.contains("CORP\\dl-anna") && d.contains("firefox.exe") && d.contains("a.pdf"), "{d}");
+        assert!(
+            d.contains("CORP\\dl-anna") && d.contains("firefox.exe") && d.contains("a.pdf"),
+            "{d}"
+        );
         assert!(d.contains("4.0 MB in 2 file(s)"), "{d}");
         // 2. the rule, including allow list and threshold
-        assert!(d.contains("RULE \"GL strict\"") && d.contains("10.0.0.0/8") && d.contains("more than 50 files within 300 s"), "{d}");
+        assert!(
+            d.contains("RULE \"GL strict\"")
+                && d.contains("10.0.0.0/8")
+                && d.contains("more than 50 files within 300 s"),
+            "{d}"
+        );
         // 3. the reputation of the destination
-        assert!(d.contains("91% abuse confidence") && d.contains("Tor exit node"), "{d}");
+        assert!(
+            d.contains("91% abuse confidence") && d.contains("Tor exit node"),
+            "{d}"
+        );
         // 4. the history — and only what is inside the window
         assert!(d.contains("explorer.exe (1)"), "{d}");
-        assert!(!d.contains("curl.exe"), "90 Tage alt, gehoert nicht in die Wochenschau: {d}");
-        assert!(d.contains("firefox.exe: 1 other alert(s) on 1 device(s)"), "{d}");
+        assert!(
+            !d.contains("curl.exe"),
+            "90 Tage alt, gehoert nicht in die Wochenschau: {d}"
+        );
+        assert!(
+            d.contains("firefox.exe: 1 other alert(s) on 1 device(s)"),
+            "{d}"
+        );
         // 5. the log around the event, in reading order
-        assert!(d.contains("AGENT LOG, 2026-09-08 11:50:00 UTC to 12:10:00 UTC"), "die Ueberschrift nennt das Fenster, das wirklich gilt: {d}");
+        assert!(
+            d.contains("AGENT LOG, 2026-09-08 11:50:00 UTC to 12:10:00 UTC"),
+            "die Ueberschrift nennt das Fenster, das wirklich gilt: {d}"
+        );
         assert!(d.contains("watching G:\\Vertraege"), "{d}");
         assert!(d.contains("not in allow list"), "{d}");
-        assert!(!d.contains("zu spaet"), "eine Stunde spaeter gehoert nicht mehr dazu: {d}");
-        assert!(d.find("watching") < d.find("not in allow list"), "aelteste Zeile zuerst: {d}");
+        assert!(
+            !d.contains("zu spaet"),
+            "eine Stunde spaeter gehoert nicht mehr dazu: {d}"
+        );
+        assert!(
+            d.find("watching") < d.find("not in allow list"),
+            "aelteste Zeile zuerst: {d}"
+        );
 
-        assert!(dossier(&pool, id + 9999).await.unwrap().is_none(), "eine Warnung, die es nicht gibt");
+        assert!(
+            dossier(&pool, id + 9999).await.unwrap().is_none(),
+            "eine Warnung, die es nicht gibt"
+        );
     }
 
     #[test]
     fn the_base_url_alone_says_whether_data_leaves_the_house() {
-        let cfg = |u: &str| Config { base_url: u.into(), model: "m".into(), key: String::new(), daily_limit: 50 };
-        for local in ["http://localhost:11434/v1", "http://LOCALHOST:11434/v1", "http://localhost./v1", "http://127.0.0.1:11434/v1", "http://10.0.0.5:11434/v1", "http://192.168.1.9:11434/v1", "http://[::1]:11434/v1"] {
+        let cfg = |u: &str| Config {
+            base_url: u.into(),
+            model: "m".into(),
+            key: String::new(),
+            daily_limit: 50,
+        };
+        for local in [
+            "http://localhost:11434/v1",
+            "http://LOCALHOST:11434/v1",
+            "http://localhost./v1",
+            "http://127.0.0.1:11434/v1",
+            "http://10.0.0.5:11434/v1",
+            "http://192.168.1.9:11434/v1",
+            "http://[::1]:11434/v1",
+        ] {
             assert!(!cfg(local).external(), "{local} liegt im eigenen Netz");
         }
-        for out in ["https://api.infomaniak.com/2/ai/123/openai/v1", "https://api.openai.com/v1", "http://8.8.8.8/v1"] {
+        for out in [
+            "https://api.infomaniak.com/2/ai/123/openai/v1",
+            "https://api.openai.com/v1",
+            "http://8.8.8.8/v1",
+        ] {
             assert!(cfg(out).external(), "{out} liegt draussen");
         }
-        assert_eq!(cfg("http://localhost:11434/v1").endpoint(), "http://localhost:11434/v1/chat/completions");
+        assert_eq!(
+            cfg("http://localhost:11434/v1").endpoint(),
+            "http://localhost:11434/v1/chat/completions"
+        );
         // What looks local in the user-info part is not where the request goes.
         assert!(cfg("http://[10.0.0.5]@evil.example/v1").external());
     }
@@ -745,10 +1091,22 @@ mod tests {
     #[test]
     fn the_key_stays_only_where_it_was_meant_for() {
         let home = "https://api.infomaniak.com/2/ai/1/openai/v1";
-        assert!(same_origin(home, "https://API.infomaniak.com/2/ai/2/openai/v1"));
-        assert!(!same_origin(home, "https://[api.infomaniak.com]@evil.example/v1"), "user-info trick");
-        assert!(!same_origin(home, "http://api.infomaniak.com/2/ai/1/openai/v1"), "downgrade to http");
-        assert!(!same_origin(home, "https://api.infomaniak.com:8443/v1"), "other port");
+        assert!(same_origin(
+            home,
+            "https://API.infomaniak.com/2/ai/2/openai/v1"
+        ));
+        assert!(
+            !same_origin(home, "https://[api.infomaniak.com]@evil.example/v1"),
+            "user-info trick"
+        );
+        assert!(
+            !same_origin(home, "http://api.infomaniak.com/2/ai/1/openai/v1"),
+            "downgrade to http"
+        );
+        assert!(
+            !same_origin(home, "https://api.infomaniak.com:8443/v1"),
+            "other port"
+        );
         assert!(!same_origin(home, "not a url"));
     }
 }

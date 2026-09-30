@@ -34,7 +34,12 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 // one NAT share an address, so it would need care).
 const MAX_CONNECTIONS: usize = 4096;
 
-pub async fn serve(addr: SocketAddr, tls: Option<Arc<ServerConfig>>, router: Router, stop: CancellationToken) -> Result<()> {
+pub async fn serve(
+    addr: SocketAddr,
+    tls: Option<Arc<ServerConfig>>,
+    router: Router,
+    stop: CancellationToken,
+) -> Result<()> {
     let listener = TcpListener::bind(addr).await?;
     info!(%addr, tls = tls.is_some(), "listening");
     let acceptor = tls.map(TlsAcceptor::from);
@@ -60,19 +65,38 @@ pub async fn serve(addr: SocketAddr, tls: Option<Arc<ServerConfig>>, router: Rou
     }
 }
 
-async fn handle(stream: TcpStream, peer: SocketAddr, acceptor: Option<TlsAcceptor>, router: Router, stop: CancellationToken) -> Result<()> {
+async fn handle(
+    stream: TcpStream,
+    peer: SocketAddr,
+    acceptor: Option<TlsAcceptor>,
+    router: Router,
+    stop: CancellationToken,
+) -> Result<()> {
     let _ = stream.set_nodelay(true);
     match acceptor {
         Some(acc) => {
-            let tls = tokio::time::timeout(HANDSHAKE_TIMEOUT, acc.accept(stream)).await.map_err(|_| anyhow::anyhow!("TLS handshake timed out"))??;
-            let cert = tls.get_ref().1.peer_certificates().and_then(|c| c.first()).map(|c| PeerCert(crate::pki::fingerprint(c)));
+            let tls = tokio::time::timeout(HANDSHAKE_TIMEOUT, acc.accept(stream))
+                .await
+                .map_err(|_| anyhow::anyhow!("TLS handshake timed out"))??;
+            let cert = tls
+                .get_ref()
+                .1
+                .peer_certificates()
+                .and_then(|c| c.first())
+                .map(|c| PeerCert(crate::pki::fingerprint(c)));
             run(TokioIo::new(tls), peer, cert, router, stop).await
         }
         None => run(TokioIo::new(stream), peer, None, router, stop).await,
     }
 }
 
-async fn run<I>(io: I, peer: SocketAddr, cert: Option<PeerCert>, router: Router, stop: CancellationToken) -> Result<()>
+async fn run<I>(
+    io: I,
+    peer: SocketAddr,
+    cert: Option<PeerCert>,
+    router: Router,
+    stop: CancellationToken,
+) -> Result<()>
 where
     I: hyper::rt::Read + hyper::rt::Write + Unpin + Send + 'static,
 {
@@ -108,7 +132,9 @@ mod tests {
 
     async fn pair() -> (TcpStream, TcpStream, SocketAddr) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let client = TcpStream::connect(listener.local_addr().unwrap()).await.unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
         let (server, peer) = listener.accept().await.unwrap();
         (client, server, peer)
     }
@@ -123,8 +149,14 @@ mod tests {
         let pki = crate::pki::Pki::load_or_create(&dir, &["localhost".into()]).unwrap();
         let (_client, server, peer) = pair().await;
         let acc = Some(TlsAcceptor::from(pki.ui_config.clone()));
-        let r = tokio::time::timeout(Duration::from_secs(300), handle(server, peer, acc, Router::new(), CancellationToken::new())).await;
-        assert!(r.expect("the handshake still waits after five minutes").is_err());
+        let r = tokio::time::timeout(
+            Duration::from_secs(300),
+            handle(server, peer, acc, Router::new(), CancellationToken::new()),
+        )
+        .await;
+        assert!(r
+            .expect("the handshake still waits after five minutes")
+            .is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -132,11 +164,23 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_client_that_sends_nothing_or_speaks_http2_is_dropped() {
         // The last: one whole request, then an idle keep-alive connection.
-        for opening in [&b""[..], b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n", b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"] {
+        for opening in [
+            &b""[..],
+            b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n",
+            b"GET / HTTP/1.1\r\nHost: x\r\n\r\n",
+        ] {
             let (mut client, server, peer) = pair().await;
             client.write_all(opening).await.unwrap();
-            let r = tokio::time::timeout(Duration::from_secs(300), handle(server, peer, None, Router::new(), CancellationToken::new())).await;
-            assert!(r.is_ok(), "{:?}: still open after five minutes", String::from_utf8_lossy(opening));
+            let r = tokio::time::timeout(
+                Duration::from_secs(300),
+                handle(server, peer, None, Router::new(), CancellationToken::new()),
+            )
+            .await;
+            assert!(
+                r.is_ok(),
+                "{:?}: still open after five minutes",
+                String::from_utf8_lossy(opening)
+            );
         }
     }
 
@@ -144,8 +188,18 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_client_that_never_finishes_its_headers_is_dropped() {
         let (mut client, server, peer) = pair().await;
-        client.write_all(b"GET / HTTP/1.1\r\nHost: x\r\n").await.unwrap();
-        let r = tokio::time::timeout(Duration::from_secs(300), handle(server, peer, None, Router::new(), CancellationToken::new())).await;
-        assert!(r.is_ok(), "the headers are still awaited after five minutes");
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: x\r\n")
+            .await
+            .unwrap();
+        let r = tokio::time::timeout(
+            Duration::from_secs(300),
+            handle(server, peer, None, Router::new(), CancellationToken::new()),
+        )
+        .await;
+        assert!(
+            r.is_ok(),
+            "the headers are still awaited after five minutes"
+        );
     }
 }

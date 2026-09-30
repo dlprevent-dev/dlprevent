@@ -27,22 +27,45 @@ pub(super) struct ReleaseView {
 pub(super) async fn release(State(st): State<Shared>, _u: Admin) -> R<ReleaseView> {
     let m = db::settings_map(
         &st.pool,
-        &["release_repo", "release_check_enabled", "release_installed_tag", "release_installed_platforms", "agent_update_enabled"],
+        &[
+            "release_repo",
+            "release_check_enabled",
+            "release_installed_tag",
+            "release_installed_platforms",
+            "agent_update_enabled",
+        ],
     )
     .await?;
-    let str_of = |k: &str| m.get(k).and_then(serde_json::Value::as_str).unwrap_or_default().to_string();
+    let str_of = |k: &str| {
+        m.get(k)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
     Ok(Json(ReleaseView {
-        check_enabled: m.get("release_check_enabled").and_then(serde_json::Value::as_bool).unwrap_or(false),
+        check_enabled: m
+            .get("release_check_enabled")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
         repo: str_of("release_repo"),
         key_set: crate::release::pubkey(&st).await?.is_some(),
-        key_built_in: crate::release::BUILT_IN_PUBKEY.map(str::trim).is_some_and(|k| !k.is_empty()),
+        key_built_in: crate::release::BUILT_IN_PUBKEY
+            .map(str::trim)
+            .is_some_and(|k| !k.is_empty()),
         installed_tag: str_of("release_installed_tag"),
         installed_platforms: m
             .get("release_installed_platforms")
             .and_then(serde_json::Value::as_array)
-            .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
             .unwrap_or_default(),
-        rolls_out_at_once: m.get("agent_update_enabled").and_then(serde_json::Value::as_bool).unwrap_or(false),
+        rolls_out_at_once: m
+            .get("agent_update_enabled")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
         status: st.release.lock().unwrap().clone(),
     }))
 }
@@ -50,7 +73,9 @@ pub(super) async fn release(State(st): State<Shared>, _u: Admin) -> R<ReleaseVie
 /// Check now. Changes nothing but the note in memory — that is why being an
 /// administrator is enough here, and no confirmation is needed.
 pub(super) async fn check(State(st): State<Shared>, _u: Admin) -> R<crate::release::Status> {
-    let s = crate::release::check(&st).await.map_err(|e| bad(format!("{e:#}")))?;
+    let s = crate::release::check(&st)
+        .await
+        .map_err(|e| bad(format!("{e:#}")))?;
     Ok(Json(s))
 }
 
@@ -61,9 +86,19 @@ pub(super) async fn check(State(st): State<Shared>, _u: Admin) -> R<crate::relea
 /// After that, only what somebody explicitly rolls out still reaches the
 /// devices.
 pub(super) async fn fetch(State(st): State<Shared>, Admin(user): Admin) -> R<serde_json::Value> {
-    let (tag, platforms, refused) = crate::release::fetch(&st).await.map_err(|e| bad(format!("{e:#}")))?;
+    let (tag, platforms, refused) = crate::release::fetch(&st)
+        .await
+        .map_err(|e| bad(format!("{e:#}")))?;
     // What was refused goes into the audit log too: that a version only
     // arrived in part is exactly what you go looking for later.
-    db::audit(&st.pool, (&user).into(), "release_fetch", json!({ "tag": tag, "platforms": platforms, "refused": refused })).await;
-    Ok(Json(json!({ "tag": tag, "platforms": platforms, "refused": refused })))
+    db::audit(
+        &st.pool,
+        (&user).into(),
+        "release_fetch",
+        json!({ "tag": tag, "platforms": platforms, "refused": refused }),
+    )
+    .await;
+    Ok(Json(
+        json!({ "tag": tag, "platforms": platforms, "refused": refused }),
+    ))
 }

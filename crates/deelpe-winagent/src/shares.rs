@@ -21,7 +21,9 @@ use windows::core::PCWSTR;
 #[cfg(windows)]
 use windows::Win32::NetworkManagement::NetManagement::NetApiBufferFree;
 #[cfg(windows)]
-use windows::Win32::Storage::FileSystem::{NetShareEnum, SHARE_INFO_1, SHARE_INFO_2, STYPE_DISKTREE, STYPE_MASK};
+use windows::Win32::Storage::FileSystem::{
+    NetShareEnum, SHARE_INFO_1, SHARE_INFO_2, STYPE_DISKTREE, STYPE_MASK,
+};
 
 /// `STYPE_SPECIAL`: `C$`, `ADMIN$`, `IPC$` — administrative shares that
 /// nobody means as a rule.
@@ -103,10 +105,15 @@ fn merge(mut out: Vec<ShareInfo>, learned: &HashMap<String, String>) -> Vec<Shar
     // … and take in shares the enumeration did not give at all.
     for (name, path) in learned {
         if !out.iter().any(|s| s.name.eq_ignore_ascii_case(name)) {
-            out.push(ShareInfo { name: name.clone(), path: Some(path.clone()), remark: None, path_from: Some("events".into()) });
+            out.push(ShareInfo {
+                name: name.clone(),
+                path: Some(path.clone()),
+                remark: None,
+                path_from: Some("events".into()),
+            });
         }
     }
-    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out.sort_by_key(|a| a.name.to_lowercase());
     out
 }
 
@@ -117,7 +124,17 @@ fn merge(mut out: Vec<ShareInfo>, learned: &HashMap<String, String>) -> Vec<Shar
 fn enum_level2() -> Option<Vec<ShareInfo>> {
     let mut buf: *mut u8 = std::ptr::null_mut();
     let (mut read, mut total) = (0u32, 0u32);
-    let rc = unsafe { NetShareEnum(PCWSTR::null(), 2, &mut buf, u32::MAX, &mut read, &mut total, None) };
+    let rc = unsafe {
+        NetShareEnum(
+            PCWSTR::null(),
+            2,
+            &mut buf,
+            u32::MAX,
+            &mut read,
+            &mut total,
+            None,
+        )
+    };
     if rc != NERR_SUCCESS || buf.is_null() {
         if rc == ERROR_ACCESS_DENIED {
             tracing::debug!("share table with path not readable (level 2 needs admin rights), falling back to level 1");
@@ -151,7 +168,17 @@ fn enum_level2() -> Option<Vec<ShareInfo>> {
 fn enum_level1() -> Vec<ShareInfo> {
     let mut buf: *mut u8 = std::ptr::null_mut();
     let (mut read, mut total) = (0u32, 0u32);
-    let rc = unsafe { NetShareEnum(PCWSTR::null(), 1, &mut buf, u32::MAX, &mut read, &mut total, None) };
+    let rc = unsafe {
+        NetShareEnum(
+            PCWSTR::null(),
+            1,
+            &mut buf,
+            u32::MAX,
+            &mut read,
+            &mut total,
+            None,
+        )
+    };
     if rc != NERR_SUCCESS || buf.is_null() {
         tracing::warn!(rc, "shares not readable");
         if !buf.is_null() {
@@ -164,7 +191,12 @@ fn enum_level1() -> Vec<ShareInfo> {
         .iter()
         .filter(|i| is_ordinary(i.shi1_type.0))
         .filter_map(|i| {
-            Some(ShareInfo { name: pwstr(i.shi1_netname)?, path: None, remark: pwstr(i.shi1_remark), path_from: None })
+            Some(ShareInfo {
+                name: pwstr(i.shi1_netname)?,
+                path: None,
+                remark: pwstr(i.shi1_remark),
+                path_from: None,
+            })
         })
         .collect();
     unsafe { NetApiBufferFree(Some(buf as *const _)) };
@@ -219,8 +251,14 @@ mod tests {
     #[test]
     fn a_share_only_the_events_knew_is_added_and_the_list_is_sorted() {
         let learned = HashMap::from([("hr".to_string(), r"C:\Freigaben\HR".to_string())]);
-        let out = merge(vec![enumerated("Projekte", Some(r"C:\Freigaben\Projekte"))], &learned);
-        assert_eq!(out.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["hr", "Projekte"]);
+        let out = merge(
+            vec![enumerated("Projekte", Some(r"C:\Freigaben\Projekte"))],
+            &learned,
+        );
+        assert_eq!(
+            out.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            ["hr", "Projekte"]
+        );
         assert_eq!(out[0].path_from.as_deref(), Some("events"));
     }
 

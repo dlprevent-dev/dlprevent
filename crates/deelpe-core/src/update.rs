@@ -72,7 +72,9 @@ pub fn is_sha256(s: &str) -> bool {
 /// and downloaded four and a half megabytes three times, only to fail on
 /// this line afterwards.
 pub fn can_replace(exe: &Path) -> Result<()> {
-    let dir = exe.parent().ok_or_else(|| anyhow::anyhow!("{} has no folder", exe.display()))?;
+    let dir = exe
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("{} has no folder", exe.display()))?;
     let probe = sibling(exe, "probe");
     std::fs::write(&probe, b"deelpe").map_err(|e| {
         anyhow::anyhow!(
@@ -86,7 +88,10 @@ pub fn can_replace(exe: &Path) -> Result<()> {
 
 /// Are these the bytes the central announced?
 pub fn verify(bytes: &[u8], want: &str) -> Result<()> {
-    let got: String = Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect();
+    let got: String = Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
     if !got.eq_ignore_ascii_case(want.trim()) {
         bail!("checksum does not match: downloaded {got}, central announced {want}. nothing was written.");
     }
@@ -102,12 +107,19 @@ pub fn verify(bytes: &[u8], want: &str) -> Result<()> {
 /// accepts what the checksum admits, as before — nobody gets locked out of
 /// updates by a missing build variable. With one, a missing or wrong
 /// statement refuses the swap and the agent keeps running what it has.
-pub fn check_release(bytes: &[u8], statement: Option<&str>, key: Option<&str>, file_name: &str, running: &str) -> Result<()> {
+pub fn check_release(
+    bytes: &[u8],
+    statement: Option<&str>,
+    key: Option<&str>,
+    file_name: &str,
+    running: &str,
+) -> Result<()> {
     let Some(key) = key.map(str::trim).filter(|k| !k.is_empty()) else {
         return Ok(());
     };
     let statement = statement.ok_or_else(|| anyhow::anyhow!("this agent checks the release signature, and the central server sent none with the program; staying on the running version"))?;
-    let version = crate::signing::verify_release(bytes, statement, key, file_name).context("the release signature does not hold; staying on the running version")?;
+    let version = crate::signing::verify_release(bytes, statement, key, file_name)
+        .context("the release signature does not hold; staying on the running version")?;
     if crate::signing::parse_version(&version) < crate::signing::parse_version(running) {
         bail!("the central server holds version {version}, older than the running {running}; staying on the running version");
     }
@@ -139,7 +151,11 @@ pub fn swap(exe: &Path, bytes: &[u8]) -> Result<()> {
         let back = std::fs::rename(&old, exe);
         bail!(
             "could not put the new program in place ({e}); the old one is {}",
-            if back.is_ok() { "back where it was" } else { "gone as well — restore it by hand" }
+            if back.is_ok() {
+                "back where it was"
+            } else {
+                "gone as well — restore it by hand"
+            }
         );
     }
     Ok(())
@@ -157,7 +173,9 @@ pub fn swap(exe: &Path, bytes: &[u8]) -> Result<()> {
 /// Costs one `exists()` per round after that; that is cheaper than a flag
 /// somebody has to maintain.
 pub fn cleanup_old() {
-    let Ok(exe) = std::env::current_exe() else { return };
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
     let old = sibling(&exe, "old");
     if !old.exists() {
         return;
@@ -195,29 +213,75 @@ mod tests {
     #[test]
     fn an_agent_with_a_key_swaps_only_to_a_signed_release_not_older_than_itself() {
         use ring::signature::KeyPair;
-        let pkcs8 = ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new()).unwrap();
+        let pkcs8 =
+            ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new())
+                .unwrap();
         let kp = ring::signature::Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
         let enc = |b: &[u8]| {
             const A: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-            b.chunks(3).flat_map(|c| {
-                let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
-                (0..4).map(move |i| if i <= c.len() { A[((n >> (18 - i * 6)) & 63) as usize] as char } else { '=' })
-            }).collect::<String>()
+            b.chunks(3)
+                .flat_map(|c| {
+                    let n = (c[0] as u32) << 16
+                        | (*c.get(1).unwrap_or(&0) as u32) << 8
+                        | *c.get(2).unwrap_or(&0) as u32;
+                    (0..4).map(move |i| {
+                        if i <= c.len() {
+                            A[((n >> (18 - i * 6)) & 63) as usize] as char
+                        } else {
+                            '='
+                        }
+                    })
+                })
+                .collect::<String>()
         };
         let key = enc(kp.public_key().as_ref());
         let exe = b"MZ neu";
-        let sha: String = Sha256::digest(exe).iter().map(|b| format!("{b:02x}")).collect();
+        let sha: String = Sha256::digest(exe)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
         let signed = |file: &str, version: &str| {
             let st = crate::signing::statement(file, version, &sha);
             format!("{st}sig: {}\n", enc(kp.sign(st.as_bytes()).as_ref()))
         };
         let good = signed("deelpe-winagent.exe", "0.1.9");
-        assert!(check_release(exe, Some(&good), Some(&key), "deelpe-winagent.exe", "0.1.8").is_ok());
-        assert!(check_release(exe, Some(&good), Some(&key), "deelpe-winagent.exe", "0.1.9").is_ok(), "the same version rebuilt");
-        assert!(check_release(exe, None, Some(&key), "deelpe-winagent.exe", "0.1.8").is_err(), "no statement from the server");
-        assert!(check_release(exe, Some(&good), Some(&key), "deelpe-linux-amd64", "0.1.8").is_err(), "another slot");
-        assert!(check_release(exe, Some(&signed("deelpe-winagent.exe", "0.1.7")), Some(&key), "deelpe-winagent.exe", "0.1.8").is_err(), "older than itself");
-        assert!(check_release(b"MZ anders", Some(&good), Some(&key), "deelpe-winagent.exe", "0.1.8").is_err(), "other bytes");
+        assert!(
+            check_release(exe, Some(&good), Some(&key), "deelpe-winagent.exe", "0.1.8").is_ok()
+        );
+        assert!(
+            check_release(exe, Some(&good), Some(&key), "deelpe-winagent.exe", "0.1.9").is_ok(),
+            "the same version rebuilt"
+        );
+        assert!(
+            check_release(exe, None, Some(&key), "deelpe-winagent.exe", "0.1.8").is_err(),
+            "no statement from the server"
+        );
+        assert!(
+            check_release(exe, Some(&good), Some(&key), "deelpe-linux-amd64", "0.1.8").is_err(),
+            "another slot"
+        );
+        assert!(
+            check_release(
+                exe,
+                Some(&signed("deelpe-winagent.exe", "0.1.7")),
+                Some(&key),
+                "deelpe-winagent.exe",
+                "0.1.8"
+            )
+            .is_err(),
+            "older than itself"
+        );
+        assert!(
+            check_release(
+                b"MZ anders",
+                Some(&good),
+                Some(&key),
+                "deelpe-winagent.exe",
+                "0.1.8"
+            )
+            .is_err(),
+            "other bytes"
+        );
         // Built without a key: the checksum alone decides, as before.
         assert!(check_release(exe, None, None, "deelpe-winagent.exe", "0.1.8").is_ok());
     }
@@ -232,7 +296,10 @@ mod tests {
     #[test]
     fn only_the_announced_bytes_pass() {
         assert!(verify(b"", SHA_LEER).is_ok());
-        assert!(verify(b"", &SHA_LEER.to_uppercase()).is_ok(), "Schreibweise entscheidet nicht");
+        assert!(
+            verify(b"", &SHA_LEER.to_uppercase()).is_ok(),
+            "Schreibweise entscheidet nicht"
+        );
         assert!(verify(b"etwas anderes", SHA_LEER).is_err());
         assert!(verify(b"", "").is_err());
     }
@@ -248,8 +315,14 @@ mod tests {
         swap(&exe, b"neu").unwrap();
 
         assert_eq!(std::fs::read(&exe).unwrap(), b"neu");
-        assert_eq!(std::fs::read(dir.join("deelpe-winagent.exe.old")).unwrap(), b"alt");
-        assert!(!dir.join("deelpe-winagent.exe.new").exists(), "die Zwischendatei bleibt nicht liegen");
+        assert_eq!(
+            std::fs::read(dir.join("deelpe-winagent.exe.old")).unwrap(),
+            b"alt"
+        );
+        assert!(
+            !dir.join("deelpe-winagent.exe.new").exists(),
+            "die Zwischendatei bleibt nicht liegen"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -262,7 +335,14 @@ mod tests {
     fn only_something_shaped_like_a_checksum_gets_that_far() {
         assert!(is_sha256(&"ab".repeat(32)));
         assert!(is_sha256(&"AB".repeat(32)));
-        for junk in ["", "kurz", &"ü".repeat(32), &"zz".repeat(32), &"ab".repeat(33), &"ab".repeat(31)] {
+        for junk in [
+            "",
+            "kurz",
+            &"ü".repeat(32),
+            &"zz".repeat(32),
+            &"ab".repeat(33),
+            &"ab".repeat(31),
+        ] {
             assert!(!is_sha256(junk), "{junk:?} ist keine SHA-256");
         }
         // And what gets through survives the truncation for the log.
@@ -278,7 +358,11 @@ mod tests {
         std::fs::write(&exe, b"alt").unwrap();
         can_replace(&exe).expect("ein beschreibbarer Ordner geht durch");
         // And the probe leaves nothing behind.
-        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "nur die EXE bleibt liegen");
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            1,
+            "nur die EXE bleibt liegen"
+        );
 
         // A folder that does not exist is just as unwritable as one without
         // permission — and the message names it.

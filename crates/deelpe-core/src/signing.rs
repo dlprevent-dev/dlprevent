@@ -17,7 +17,10 @@ use sha2::{Digest, Sha256};
 pub const BUILT_IN_PUBKEY: Option<&str> = option_env!("DEELPE_UPDATE_PUBKEY");
 
 fn sha256_hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 /// First line of a `.sig` file.
@@ -45,22 +48,42 @@ pub fn verify(bytes: &[u8], sig_b64: &str, pubkey_b64: &str) -> Result<()> {
     }
     ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, &key)
         .verify(bytes, &sig)
-        .map_err(|_| anyhow::anyhow!("signature does not match this key — the file is not the one that was signed"))
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "signature does not match this key — the file is not the one that was signed"
+            )
+        })
 }
 
 /// Check a program against its `.sig` file ([`statement`]) and return the
 /// version it was signed as. The slot has to match (`file_name`), and so
 /// does the checksum; the signature covers both and the version.
-pub fn verify_release(bytes: &[u8], sig_file: &str, pubkey_b64: &str, file_name: &str) -> Result<String> {
+pub fn verify_release(
+    bytes: &[u8],
+    sig_file: &str,
+    pubkey_b64: &str,
+    file_name: &str,
+) -> Result<String> {
     let mut lines = sig_file.lines().map(str::trim).filter(|l| !l.is_empty());
     if lines.next() != Some(STATEMENT_HEAD) {
         bail!("not a signed release statement — sign it again with `deelpe-sign sign <key> <file> <version>`; a bare signature over the file does not say which version it is");
     }
     let mut field = |name: &str| {
         let prefix = format!("{name}:");
-        lines.next().and_then(|l| l.strip_prefix(prefix.as_str())).map(|v| v.trim().to_string()).ok_or_else(|| anyhow::anyhow!("the signature file has no `{name}:` line where it belongs"))
+        lines
+            .next()
+            .and_then(|l| l.strip_prefix(prefix.as_str()))
+            .map(|v| v.trim().to_string())
+            .ok_or_else(|| {
+                anyhow::anyhow!("the signature file has no `{name}:` line where it belongs")
+            })
     };
-    let (file, version, sha, sig) = (field("file")?, field("version")?, field("sha256")?, field("sig")?);
+    let (file, version, sha, sig) = (
+        field("file")?,
+        field("version")?,
+        field("sha256")?,
+        field("sig")?,
+    );
     if file != file_name {
         bail!("signed as {file}, not as {file_name}");
     }
@@ -71,14 +94,21 @@ pub fn verify_release(bytes: &[u8], sig_file: &str, pubkey_b64: &str, file_name:
     if !sha.eq_ignore_ascii_case(&actual) {
         bail!("the file is not the one that was signed (checksum differs)");
     }
-    verify(statement(&file, &version, &actual).as_bytes(), &sig, pubkey_b64)?;
+    verify(
+        statement(&file, &version, &actual).as_bytes(),
+        &sig,
+        pubkey_b64,
+    )?;
     Ok(version)
 }
 
 /// `0.1.8` or `v0.1.8` as numbers, for comparing. `None` for anything else.
 pub fn parse_version(v: &str) -> Option<Vec<u64>> {
     let v = v.strip_prefix('v').unwrap_or(v);
-    v.split('.').map(|p| p.parse().ok()).collect::<Option<Vec<u64>>>().filter(|p| !p.is_empty())
+    v.split('.')
+        .map(|p| p.parse().ok())
+        .collect::<Option<Vec<u64>>>()
+        .filter(|p| !p.is_empty())
 }
 
 /// Does the key even have the shape of an ed25519 key?
@@ -101,7 +131,10 @@ pub fn b64(s: &str) -> Result<Vec<u8>> {
     let mut out = Vec::with_capacity(s.len() / 4 * 3);
     let (mut acc, mut bits) = (0u32, 0u32);
     for c in s.bytes().filter(|c| !c.is_ascii_whitespace() && *c != b'=') {
-        let v = A.iter().position(|a| *a == c).ok_or_else(|| anyhow::anyhow!("not base64: {:?}", c as char))? as u32;
+        let v = A
+            .iter()
+            .position(|a| *a == c)
+            .ok_or_else(|| anyhow::anyhow!("not base64: {:?}", c as char))? as u32;
         acc = (acc << 6) | v;
         bits += 6;
         if bits >= 8 {
@@ -111,4 +144,3 @@ pub fn b64(s: &str) -> Result<Vec<u8>> {
     }
     Ok(out)
 }
-

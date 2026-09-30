@@ -65,13 +65,29 @@ pub async fn apply(session: &Session, want: &str, tries: &mut Updater) -> Result
     // restart replaces an outdated, running agent with none at all.
     #[cfg(windows)]
     crate::service::restart_is_arranged()?;
-    info!(want = short(want), "central holds a different agent program, fetching it");
-    let (bytes, statement) = session.binary().await.context("downloading the agent program")?;
+    info!(
+        want = short(want),
+        "central holds a different agent program, fetching it"
+    );
+    let (bytes, statement) = session
+        .binary()
+        .await
+        .context("downloading the agent program")?;
     verify(&bytes, want)?;
-    check_release(&bytes, statement.as_deref(), deelpe_core::signing::BUILT_IN_PUBKEY, "deelpe-winagent.exe", env!("CARGO_PKG_VERSION"))?;
+    check_release(
+        &bytes,
+        statement.as_deref(),
+        deelpe_core::signing::BUILT_IN_PUBKEY,
+        "deelpe-winagent.exe",
+        env!("CARGO_PKG_VERSION"),
+    )?;
     swap(&exe, &bytes)?;
     RESTART.store(true, Ordering::Relaxed);
-    info!(bytes = bytes.len(), want = short(want), "agent program replaced, restarting into the new one");
+    info!(
+        bytes = bytes.len(),
+        want = short(want),
+        "agent program replaced, restarting into the new one"
+    );
     Ok(true)
 }
 
@@ -87,16 +103,7 @@ pub fn readiness() -> deelpe_core::central::SensorHealth {
         .and_then(|e| can_replace(&e))
         // The two belong together: being allowed to write **and** being
         // started again. Whoever has only one of them swaps into nothing.
-        .and_then(|()| {
-            #[cfg(windows)]
-            {
-                crate::service::restart_is_arranged()
-            }
-            #[cfg(not(windows))]
-            {
-                Ok(())
-            }
-        });
+        .and_then(|()| restart_is_arranged());
     deelpe_core::central::SensorHealth {
         name: "self-update".into(),
         ok: out.is_ok(),
@@ -104,3 +111,11 @@ pub fn readiness() -> deelpe_core::central::SensorHealth {
     }
 }
 
+#[cfg(windows)]
+use crate::service::restart_is_arranged;
+
+/// No service manager to ask outside Windows.
+#[cfg(not(windows))]
+fn restart_is_arranged() -> anyhow::Result<()> {
+    Ok(())
+}

@@ -20,7 +20,11 @@ pub struct EsLogger {
 
 impl Default for EsLogger {
     fn default() -> Self {
-        Self { events: vec!["open", "exec", "copyfile", "clone", "rename", "link", "exit", "mount", "unmount"] }
+        Self {
+            events: vec![
+                "open", "exec", "copyfile", "clone", "rename", "link", "exit", "mount", "unmount",
+            ],
+        }
     }
 }
 
@@ -58,7 +62,9 @@ impl Sensor for EsLogger {
                         break;
                     }
                 }
-                None => tracing::trace!(target: "eslogger", "ignoriert: {}", &line[..line.len().min(120)]),
+                None => {
+                    tracing::trace!(target: "eslogger", "ignoriert: {}", &line[..line.len().min(120)])
+                }
             }
         }
         let status = child.wait().await?;
@@ -84,10 +90,18 @@ pub fn parse_line(line: &str) -> Option<Event> {
     let at = Utc::now();
 
     if let Some(m) = event.get("mount") {
-        return Some(Event::Mount(MountEvent { at, mount_point: mount_point(m)?, mounted: true }));
+        return Some(Event::Mount(MountEvent {
+            at,
+            mount_point: mount_point(m)?,
+            mounted: true,
+        }));
     }
     if let Some(m) = event.get("unmount") {
-        return Some(Event::Mount(MountEvent { at, mount_point: mount_point(m)?, mounted: false }));
+        return Some(Event::Mount(MountEvent {
+            at,
+            mount_point: mount_point(m)?,
+            mounted: false,
+        }));
     }
 
     let process = v.get("process")?;
@@ -98,32 +112,87 @@ pub fn parse_line(line: &str) -> Option<Event> {
     if let Some(e) = event.get("exec") {
         // `process` is the image from before the exec (the shell); the new
         // program's identity is in `target`. PID and PPID are the same.
-        let target = e.get("target").and_then(process_ref).or_else(|| process_ref(process))?;
+        let target = e
+            .get("target")
+            .and_then(process_ref)
+            .or_else(|| process_ref(process))?;
         let path = target.path.clone();
-        return Some(Event::File(FileEvent { at, process: target, path, action: FileAction::Exec, target: None, inode: None, nlink: None, argv: None }));
+        return Some(Event::File(FileEvent {
+            at,
+            process: target,
+            path,
+            action: FileAction::Exec,
+            target: None,
+            inode: None,
+            nlink: None,
+            argv: None,
+        }));
     }
     let process = process_ref(process)?;
     let (path, action, target, file) = if let Some(o) = event.get("open") {
         // A folder opened is a listing, not content: a file dialog opens
         // every one it shows.
-        if o.get("file").and_then(|f| f.get("stat")).and_then(|s| s.get("st_mode")).and_then(Value::as_u64).is_some_and(|m| m & 0o170000 == 0o040000) {
+        if o.get("file")
+            .and_then(|f| f.get("stat"))
+            .and_then(|s| s.get("st_mode"))
+            .and_then(Value::as_u64)
+            .is_some_and(|m| m & 0o170000 == 0o040000)
+        {
             return None;
         }
         // fflag in FFLAGS format (sys/fcntl.h): FREAD 1, FWRITE 2.
-        let writes = o.get("fflag").and_then(Value::as_u64).map_or(false, |f| f & 2 != 0);
-        (str_at(o, &["file", "path"])?, if writes { FileAction::Write } else { FileAction::Open }, None, o.get("file"))
+        let writes = o
+            .get("fflag")
+            .and_then(Value::as_u64)
+            .is_some_and(|f| f & 2 != 0);
+        (
+            str_at(o, &["file", "path"])?,
+            if writes {
+                FileAction::Write
+            } else {
+                FileAction::Open
+            },
+            None,
+            o.get("file"),
+        )
     } else if let Some(c) = event.get("copyfile").or_else(|| event.get("clone")) {
-        (str_at(c, &["source", "path"])?, FileAction::Copy, copy_target(c), c.get("source"))
+        (
+            str_at(c, &["source", "path"])?,
+            FileAction::Copy,
+            copy_target(c),
+            c.get("source"),
+        )
     } else if let Some(r) = event.get("rename") {
-        (str_at(r, &["source", "path"])?, FileAction::Rename, rename_target(r), r.get("source"))
-    } else if let Some(l) = event.get("link") {
-        let target = Some(PathBuf::from(str_at(l, &["target_dir", "path"])?).join(str_at(l, &["target_filename"])?));
-        (str_at(l, &["source", "path"])?, FileAction::Link, target, l.get("source"))
+        (
+            str_at(r, &["source", "path"])?,
+            FileAction::Rename,
+            rename_target(r),
+            r.get("source"),
+        )
     } else {
-        return None;
+        let l = event.get("link")?;
+        let target = Some(
+            PathBuf::from(str_at(l, &["target_dir", "path"])?)
+                .join(str_at(l, &["target_filename"])?),
+        );
+        (
+            str_at(l, &["source", "path"])?,
+            FileAction::Link,
+            target,
+            l.get("source"),
+        )
     };
     let (inode, nlink) = file.map(stat_of).unwrap_or((None, None));
-    Some(Event::File(FileEvent { at, process, path: PathBuf::from(path), action, target, inode, nlink, argv: None }))
+    Some(Event::File(FileEvent {
+        at,
+        process,
+        path: PathBuf::from(path),
+        action,
+        target,
+        inode,
+        nlink,
+        argv: None,
+    }))
 }
 
 /// (device, inode) and link count from the `stat` of an es_file_t.
@@ -143,14 +212,22 @@ fn stat_of(file: &Value) -> (Option<(u64, u64)>, Option<u32>) {
 fn copy_target(c: &Value) -> Option<PathBuf> {
     str_at(c, &["target_file", "path"])
         .map(PathBuf::from)
-        .or_else(|| Some(PathBuf::from(str_at(c, &["target_dir", "path"])?).join(str_at(c, &["target_name"])?)))
+        .or_else(|| {
+            Some(
+                PathBuf::from(str_at(c, &["target_dir", "path"])?)
+                    .join(str_at(c, &["target_name"])?),
+            )
+        })
 }
 
 fn rename_target(r: &Value) -> Option<PathBuf> {
     str_at(r, &["destination", "existing_file", "path"])
         .map(PathBuf::from)
         .or_else(|| {
-            Some(PathBuf::from(str_at(r, &["destination", "new_path", "dir", "path"])?).join(str_at(r, &["destination", "new_path", "filename"])?))
+            Some(
+                PathBuf::from(str_at(r, &["destination", "new_path", "dir", "path"])?)
+                    .join(str_at(r, &["destination", "new_path", "filename"])?),
+            )
         })
 }
 
@@ -161,20 +238,45 @@ fn mount_point(m: &Value) -> Option<PathBuf> {
 fn process_ref(p: &Value) -> Option<ProcessRef> {
     let pid = p.get("audit_token")?.get("pid")?.as_u64()? as u32;
     let ppid = p.get("ppid").and_then(Value::as_u64).map(|x| x as u32);
-    let responsible = p.get("responsible_audit_token").and_then(|t| t.get("pid")).and_then(Value::as_u64).map(|x| x as u32);
+    let responsible = p
+        .get("responsible_audit_token")
+        .and_then(|t| t.get("pid"))
+        .and_then(Value::as_u64)
+        .map(|x| x as u32);
     let path = str_at(p, &["executable", "path"])?;
-    let signing_id = p.get("signing_id").and_then(Value::as_str).unwrap_or("").to_string();
-    let team_id = p.get("team_id").and_then(Value::as_str).unwrap_or("").to_string();
-    let platform = p.get("is_platform_binary").and_then(Value::as_bool).unwrap_or(false);
+    let signing_id = p
+        .get("signing_id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let team_id = p
+        .get("team_id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let platform = p
+        .get("is_platform_binary")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let identity = if !signing_id.is_empty() && (!team_id.is_empty() || platform) {
         ProcessIdentity::Signed {
-            team_id: if platform && team_id.is_empty() { "apple".into() } else { team_id },
+            team_id: if platform && team_id.is_empty() {
+                "apple".into()
+            } else {
+                team_id
+            },
             signing_id,
         }
     } else {
         ProcessIdentity::Unknown { path: path.clone() }
     };
-    Some(ProcessRef { pid, ppid, responsible, path: PathBuf::from(path), identity })
+    Some(ProcessRef {
+        pid,
+        ppid,
+        responsible,
+        path: PathBuf::from(path),
+        identity,
+    })
 }
 
 fn str_at(v: &Value, keys: &[&str]) -> Option<String> {
@@ -194,9 +296,16 @@ mod tests {
     /// was picked (LibreWolf and Gemini, 2026-09-16).
     #[test]
     fn opening_a_directory_is_no_file_event() {
-        let open = |mode: u32| format!(r#"{{"event":{{"open":{{"fflag":1,"file":{{"path":"/Users/me/Steuern/x","stat":{{"st_mode":{mode},"st_dev":1,"st_ino":2,"st_nlink":1}}}}}}}},"process":{{"audit_token":{{"pid":42}},"ppid":1,"executable":{{"path":"/usr/bin/curl"}},"signing_id":"com.apple.curl","team_id":"","is_platform_binary":true}}}}"#);
+        let open = |mode: u32| {
+            format!(
+                r#"{{"event":{{"open":{{"fflag":1,"file":{{"path":"/Users/me/Steuern/x","stat":{{"st_mode":{mode},"st_dev":1,"st_ino":2,"st_nlink":1}}}}}}}},"process":{{"audit_token":{{"pid":42}},"ppid":1,"executable":{{"path":"/usr/bin/curl"}},"signing_id":"com.apple.curl","team_id":"","is_platform_binary":true}}}}"#
+            )
+        };
         assert!(parse_line(&open(0o040755)).is_none(), "a directory");
-        assert!(matches!(parse_line(&open(0o100644)), Some(Event::File(_))), "a regular file");
+        assert!(
+            matches!(parse_line(&open(0o100644)), Some(Event::File(_))),
+            "a regular file"
+        );
     }
 
     #[test]
@@ -216,7 +325,10 @@ mod tests {
     fn unsigned_is_unknown() {
         let line = r#"{"event":{"open":{"file":{"path":"/x"}}},"process":{"audit_token":{"pid":1},"executable":{"path":"/tmp/evil"},"signing_id":"","team_id":""}}"#;
         match parse_line(line) {
-            Some(Event::File(f)) => assert!(matches!(f.process.identity, ProcessIdentity::Unknown { .. })),
+            Some(Event::File(f)) => assert!(matches!(
+                f.process.identity,
+                ProcessIdentity::Unknown { .. }
+            )),
             other => panic!("{other:?}"),
         }
     }
@@ -258,15 +370,21 @@ mod tests {
             other => panic!("{other:?}"),
         }
         let fresh = r#"{"event":{"clone":{"source":{"path":"/Users/me/Steuern/a.pdf"},"target_dir":{"path":"/tmp"},"target_name":"y.pdf"}},"process":{"audit_token":{"pid":5},"ppid":1,"executable":{"path":"/bin/cp"},"signing_id":"com.apple.cp","team_id":"","is_platform_binary":true}}"#;
-        assert!(matches!(parse_line(fresh), Some(Event::File(f)) if f.action == FileAction::Copy && f.target == Some(PathBuf::from("/tmp/y.pdf"))));
+        assert!(
+            matches!(parse_line(fresh), Some(Event::File(f)) if f.action == FileAction::Copy && f.target == Some(PathBuf::from("/tmp/y.pdf")))
+        );
     }
 
     #[test]
     fn rename_targets_both_forms() {
         let new_path = r#"{"event":{"rename":{"source":{"path":"/tmp/x.pdf"},"destination_type":"new_path","destination":{"new_path":{"dir":{"path":"/tmp"},"filename":"harmless.txt"}}}},"process":{"audit_token":{"pid":5},"ppid":1,"executable":{"path":"/bin/mv"},"signing_id":"com.apple.mv","team_id":"","is_platform_binary":true}}"#;
-        assert!(matches!(parse_line(new_path), Some(Event::File(f)) if f.action == FileAction::Rename && f.target == Some(PathBuf::from("/tmp/harmless.txt"))));
+        assert!(
+            matches!(parse_line(new_path), Some(Event::File(f)) if f.action == FileAction::Rename && f.target == Some(PathBuf::from("/tmp/harmless.txt")))
+        );
         let existing = r#"{"event":{"rename":{"source":{"path":"/tmp/x.pdf"},"destination_type":"existing_file","destination":{"existing_file":{"path":"/tmp/old.txt"}}}},"process":{"audit_token":{"pid":5},"ppid":1,"executable":{"path":"/bin/mv"},"signing_id":"com.apple.mv","team_id":"","is_platform_binary":true}}"#;
-        assert!(matches!(parse_line(existing), Some(Event::File(f)) if f.target == Some(PathBuf::from("/tmp/old.txt"))));
+        assert!(
+            matches!(parse_line(existing), Some(Event::File(f)) if f.target == Some(PathBuf::from("/tmp/old.txt")))
+        );
     }
 
     #[test]
@@ -282,7 +400,9 @@ mod tests {
         }
         // Without the field (older message version): None, not an error.
         let line = r#"{"event":{"open":{"file":{"path":"/x"}}},"process":{"audit_token":{"pid":1},"ppid":1,"executable":{"path":"/tmp/evil"},"signing_id":"","team_id":""}}"#;
-        assert!(matches!(parse_line(line), Some(Event::File(f)) if f.process.responsible.is_none()));
+        assert!(
+            matches!(parse_line(line), Some(Event::File(f)) if f.process.responsible.is_none())
+        );
     }
 
     #[test]
@@ -298,7 +418,9 @@ mod tests {
             other => panic!("{other:?}"),
         }
         let open = r#"{"event":{"open":{"fflag":1,"file":{"path":"/tmp/h","stat":{"st_dev":16777234,"st_ino":4711,"st_nlink":2}}}},"process":{"audit_token":{"pid":6},"ppid":1,"executable":{"path":"/usr/bin/curl"},"signing_id":"com.apple.curl","team_id":"","is_platform_binary":true}}"#;
-        assert!(matches!(parse_line(open), Some(Event::File(f)) if f.inode == Some((16777234, 4711)) && f.nlink == Some(2)));
+        assert!(
+            matches!(parse_line(open), Some(Event::File(f)) if f.inode == Some((16777234, 4711)) && f.nlink == Some(2))
+        );
     }
 
     #[test]

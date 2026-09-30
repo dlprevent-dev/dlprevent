@@ -89,7 +89,8 @@ pub fn process_name(pid: u32) -> Option<String> {
     #[cfg(target_os = "macos")]
     let path = {
         let mut buf = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
-        let n = unsafe { libc::proc_pidpath(pid as i32, buf.as_mut_ptr().cast(), buf.len() as u32) };
+        let n =
+            unsafe { libc::proc_pidpath(pid as i32, buf.as_mut_ptr().cast(), buf.len() as u32) };
         if n <= 0 {
             return None;
         }
@@ -110,14 +111,18 @@ pub fn may_cage(pid: u32, name: &str) -> Result<(), String> {
         return Err(format!("pid {pid} is not a process we may cage"));
     }
     if name.is_empty() {
-        return Err(format!("pid {pid} has no name; whom we cannot name we do not cage"));
+        return Err(format!(
+            "pid {pid} has no name; whom we cannot name we do not cage"
+        ));
     }
     let hit = NEVER_CAGE.iter().any(|n| match n.strip_suffix('*') {
         Some(prefix) => name.starts_with(prefix),
         None => name == *n,
     });
     if hit {
-        return Err(format!("{name} is part of the system or the desktop and is never caged"));
+        return Err(format!(
+            "{name} is part of the system or the desktop and is never caged"
+        ));
     }
     Ok(())
 }
@@ -139,7 +144,11 @@ pub struct Cages {
 
 impl Cages {
     pub fn new() -> Self {
-        Cages { open: HashMap::new(), backend: backend::Backend::new(), last_error: None }
+        Cages {
+            open: HashMap::new(),
+            backend: backend::Backend::new(),
+            last_error: None,
+        }
     }
 
     pub fn health(&self) -> Option<String> {
@@ -164,7 +173,14 @@ impl Cages {
 
     /// A fresh touch of a strict folder with `enforce`. `children`: the
     /// process's current children go into the cage along with it.
-    pub fn on_touch(&mut self, pid: u32, name: &str, allow: &[String], children: bool, now: Instant) {
+    pub fn on_touch(
+        &mut self,
+        pid: u32,
+        name: &str,
+        allow: &[String],
+        children: bool,
+        now: Instant,
+    ) {
         if let Err(e) = may_cage(pid, name) {
             tracing::debug!(pid, "no network cage: {e}");
             return;
@@ -202,9 +218,22 @@ impl Cages {
             None => {}
         }
         if !skipped.is_empty() {
-            tracing::info!(pid, name, "allowlist names do not apply to a packet filter: {}", skipped.join(", "));
+            tracing::info!(
+                pid,
+                name,
+                "allowlist names do not apply to a packet filter: {}",
+                skipped.join(", ")
+            );
         }
-        self.open.insert(pid, Cage { until: now + CAGE_TTL, permits: permits.clone(), children, token: Default::default() });
+        self.open.insert(
+            pid,
+            Cage {
+                until: now + CAGE_TTL,
+                permits: permits.clone(),
+                children,
+                token: Default::default(),
+            },
+        );
         if !self.sync() {
             self.open.remove(&pid);
             return;
@@ -214,7 +243,13 @@ impl Cages {
                 if let Some(c) = self.open.get_mut(&pid) {
                     c.token = token;
                 }
-                tracing::warn!(pid, name, permits = permits.len(), open_connections_cut = torn, "network cage armed (strict folder)");
+                tracing::warn!(
+                    pid,
+                    name,
+                    permits = permits.len(),
+                    open_connections_cut = torn,
+                    "network cage armed (strict folder)"
+                );
             }
             Err(e) => {
                 self.open.remove(&pid);
@@ -240,18 +275,30 @@ impl Cages {
     /// the table goes out again: a filter that restarted has lost it, and the
     /// relay only learns of that when it next writes.
     pub fn expire(&mut self, now: Instant) {
-        let done: Vec<u32> = self.open.iter().filter(|(_, c)| c.until <= now).map(|(k, _)| *k).collect();
+        let done: Vec<u32> = self
+            .open
+            .iter()
+            .filter(|(_, c)| c.until <= now)
+            .map(|(k, _)| *k)
+            .collect();
         if done.is_empty() {
             if !self.open.is_empty() && (cfg!(target_os = "macos") || self.last_error.is_some()) {
                 self.sync();
             }
             return;
         }
-        let gone: Vec<(u32, Cage)> = done.into_iter().filter_map(|pid| self.open.remove(&pid).map(|c| (pid, c))).collect();
+        let gone: Vec<(u32, Cage)> = done
+            .into_iter()
+            .filter_map(|pid| self.open.remove(&pid).map(|c| (pid, c)))
+            .collect();
         self.sync();
         for (pid, c) in gone {
             self.backend.leave(pid, c.token);
-            tracing::info!(pid, "network cage opened again (no touch for {}s)", CAGE_TTL.as_secs());
+            tracing::info!(
+                pid,
+                "network cage opened again (no touch for {}s)",
+                CAGE_TTL.as_secs()
+            );
         }
     }
 
@@ -278,7 +325,11 @@ impl Cages {
 
     /// Hand the whole table to the platform. `false` if it did not take it.
     fn sync(&mut self) -> bool {
-        let table: Vec<Entry> = self.open.iter().map(|(pid, c)| (*pid, c.permits.as_slice(), c.children)).collect();
+        let table: Vec<Entry> = self
+            .open
+            .iter()
+            .map(|(pid, c)| (*pid, c.permits.as_slice(), c.children))
+            .collect();
         match self.backend.sync(&table) {
             Ok(()) => {
                 self.last_error = None;
@@ -321,17 +372,39 @@ pub fn refused_events(line: &str) -> anyhow::Result<Vec<Event>> {
     Ok(refusals
         .into_iter()
         .map(|r| {
-            let at = chrono::DateTime::from_timestamp_millis((r.at * 1000.0) as i64).unwrap_or_else(chrono::Utc::now);
+            let at = chrono::DateTime::from_timestamp_millis((r.at * 1000.0) as i64)
+                .unwrap_or_else(chrono::Utc::now);
             // A name instead of an address (`chatgpt.com`) stays unnamed.
-            refusal(at, r.pid, r.ppid, r.ip.split('%').next().and_then(|ip| ip.parse().ok()), r.port)
+            refusal(
+                at,
+                r.pid,
+                r.ppid,
+                r.ip.split('%').next().and_then(|ip| ip.parse().ok()),
+                r.port,
+            )
         })
         .collect())
 }
 
 /// A refused flow as the correlator takes it: no byte went out.
 #[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
-fn refusal(at: chrono::DateTime<chrono::Utc>, pid: u32, ppid: Option<u32>, remote: Option<std::net::IpAddr>, remote_port: Option<u16>) -> Event {
-    Event::Refused(NetEvent { at, pid, ppid, process_name: process_name(pid).unwrap_or_default(), remote, remote_port, bytes_out: 0, bytes_in: 0 })
+fn refusal(
+    at: chrono::DateTime<chrono::Utc>,
+    pid: u32,
+    ppid: Option<u32>,
+    remote: Option<std::net::IpAddr>,
+    remote_port: Option<u16>,
+) -> Event {
+    Event::Refused(NetEvent {
+        at,
+        pid,
+        ppid,
+        process_name: process_name(pid).unwrap_or_default(),
+        remote,
+        remote_port,
+        bytes_out: 0,
+        bytes_in: 0,
+    })
 }
 
 /// One line to the macOS relay: the cages and what is always let through.
@@ -341,7 +414,8 @@ fn refusal(at: chrono::DateTime<chrono::Utc>, pid: u32, ppid: Option<u32>, remot
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn relay_line(table: &[Entry]) -> String {
     let cages: Vec<_> = table.iter().map(|(pid, permits, children)| serde_json::json!({ "pid": pid, "permits": permits, "children": children })).collect();
-    serde_json::json!({ "cages": cages, "always": deelpe_core::allow::internal_permits() }).to_string()
+    serde_json::json!({ "cages": cages, "always": deelpe_core::allow::internal_permits() })
+        .to_string()
 }
 
 #[cfg(all(target_os = "linux", not(test)))]
@@ -365,22 +439,35 @@ mod backend {
         pub fn new() -> Self {
             // Whatever an earlier run left behind goes first.
             cage::reset();
-            Backend { table: Vec::new(), flows: HashMap::new() }
+            Backend {
+                table: Vec::new(),
+                flows: HashMap::new(),
+            }
         }
 
         pub fn sync(&mut self, table: &[super::Entry]) -> Result<()> {
             self.table = table.iter().map(|(pid, p, _)| (*pid, p.to_vec())).collect();
-            self.flows.retain(|id, _| table.iter().any(|(pid, _, _)| pid == id));
+            self.flows
+                .retain(|id, _| table.iter().any(|(pid, _, _)| pid == id));
             self.load()
         }
 
         fn load(&self) -> Result<()> {
-            let table: Vec<(u32, &[Permit])> = self.table.iter().map(|(pid, p)| (*pid, p.as_slice())).collect();
+            let table: Vec<(u32, &[Permit])> = self
+                .table
+                .iter()
+                .map(|(pid, p)| (*pid, p.as_slice()))
+                .collect();
             let flows: Vec<cage::Flow> = self.flows.values().flatten().copied().collect();
             cage::apply(&table, &flows)
         }
 
-        pub fn enter(&mut self, pid: u32, permits: &[Permit], children: bool) -> Result<(Token, usize)> {
+        pub fn enter(
+            &mut self,
+            pid: u32,
+            permits: &[Permit],
+            children: bool,
+        ) -> Result<(Token, usize)> {
             let moved = cage::enter(pid, pid, children)?;
             let pids: Vec<u32> = moved.iter().map(|m| m.pid).collect();
             let flows = cage::open_flows(&pids, permits);
@@ -409,7 +496,10 @@ mod backend {
                 return Ok(Vec::new());
             }
             let now = chrono::Utc::now();
-            Ok(cage::refused()?.into_iter().map(|(pid, ip, port)| super::refusal(now, pid, None, Some(ip), Some(port))).collect())
+            Ok(cage::refused()?
+                .into_iter()
+                .map(|(pid, ip, port)| super::refusal(now, pid, None, Some(ip), Some(port)))
+                .collect())
         }
     }
 }
@@ -494,13 +584,22 @@ mod backend {
             let mut answer = String::new();
             out.read_line(&mut answer).context("network filter relay")?;
             match answer.trim() {
-                "" => bail!("the network filter relay ended; is the filter enabled in the DLPrevent app?"),
-                other if other.starts_with("error: ") => bail!("network filter: {}", other.trim_start_matches("error: ")),
+                "" => bail!(
+                    "the network filter relay ended; is the filter enabled in the DLPrevent app?"
+                ),
+                other if other.starts_with("error: ") => {
+                    bail!("network filter: {}", other.trim_start_matches("error: "))
+                }
                 other => Ok(other.to_string()),
             }
         }
 
-        pub fn enter(&mut self, _pid: u32, _permits: &[Permit], _children: bool) -> Result<(Token, usize)> {
+        pub fn enter(
+            &mut self,
+            _pid: u32,
+            _permits: &[Permit],
+            _children: bool,
+        ) -> Result<(Token, usize)> {
             // Nothing to move: the filter walks each flow's process up to a
             // caged ancestor (`children` in the table says whether children
             // that already ran count). Connections already open are cut by
@@ -542,7 +641,12 @@ mod backend {
             }
             Ok(())
         }
-        pub fn enter(&mut self, _pid: u32, _permits: &[Permit], _children: bool) -> Result<(Token, usize)> {
+        pub fn enter(
+            &mut self,
+            _pid: u32,
+            _permits: &[Permit],
+            _children: bool,
+        ) -> Result<(Token, usize)> {
             Ok((Vec::new(), 0))
         }
         pub fn leave(&mut self, _pid: u32, _token: Token) {}
@@ -559,7 +663,15 @@ mod tests {
 
     #[test]
     fn the_desktop_and_the_system_never_go_into_the_cage() {
-        for name in ["systemd", "systemd-resolved", "nautilus", "gvfsd-smb", "com.apple.finder", "com.apple.mdworker_shared", "ch.deelpe.bar"] {
+        for name in [
+            "systemd",
+            "systemd-resolved",
+            "nautilus",
+            "gvfsd-smb",
+            "com.apple.finder",
+            "com.apple.mdworker_shared",
+            "ch.deelpe.bar",
+        ] {
             assert!(may_cage(4242, name).is_err(), "{name}");
         }
         for pid in [0, 1, std::process::id()] {
@@ -568,16 +680,30 @@ mod tests {
         assert!(may_cage(4242, "").is_err());
         // The ones the cage is built for — browsers included, there is no
         // connector here.
-        for name in ["curl", "python3", "com.apple.curl", "org.mozilla.firefox", "rclone", "systemd2x"] {
+        for name in [
+            "curl",
+            "python3",
+            "com.apple.curl",
+            "org.mozilla.firefox",
+            "rclone",
+            "systemd2x",
+        ] {
             assert!(may_cage(4242, name).is_ok(), "{name}");
         }
     }
 
     #[test]
     fn the_relay_line_is_what_the_filter_decodes() {
-        let permits = [Permit { net: "203.0.113.9".parse().unwrap(), bits: 32, port: Some(443) }];
+        let permits = [Permit {
+            net: "203.0.113.9".parse().unwrap(),
+            bits: 32,
+            port: Some(443),
+        }];
         let line = relay_line(&[(4242, &permits, false)]);
-        assert!(line.starts_with(r#"{"always":[{"bits":8,"net":"10.0.0.0","port":null},"#), "{line}");
+        assert!(
+            line.starts_with(r#"{"always":[{"bits":8,"net":"10.0.0.0","port":null},"#),
+            "{line}"
+        );
         assert!(line.ends_with(r#""cages":[{"children":false,"permits":[{"bits":32,"net":"203.0.113.9","port":443}],"pid":4242}]}"#), "{line}");
         assert!(!line.contains('\n'), "one line per table");
     }
@@ -587,8 +713,19 @@ mod tests {
     #[test]
     fn the_refused_line_is_what_the_service_reads() {
         let evs = refused_events(r#"[{"at":1000000,"ip":"1.1.1.1","pid":300,"port":443,"ppid":100},{"at":1000001.5,"ip":"chatgpt.com","pid":301}]"#).unwrap();
-        let [Event::Refused(a), Event::Refused(b)] = evs.as_slice() else { panic!("{evs:?}") };
-        assert_eq!((a.pid, a.ppid, a.remote, a.remote_port, a.bytes_out), (300, Some(100), Some("1.1.1.1".parse().unwrap()), Some(443), 0));
+        let [Event::Refused(a), Event::Refused(b)] = evs.as_slice() else {
+            panic!("{evs:?}")
+        };
+        assert_eq!(
+            (a.pid, a.ppid, a.remote, a.remote_port, a.bytes_out),
+            (
+                300,
+                Some(100),
+                Some("1.1.1.1".parse().unwrap()),
+                Some(443),
+                0
+            )
+        );
         assert_eq!(a.at.timestamp(), 1_000_000);
         assert_eq!((b.remote, b.remote_port, b.ppid), (None, None, None));
         assert!(refused_events("[]").unwrap().is_empty());
@@ -618,9 +755,19 @@ mod tests {
         let mut c = Cages::new();
         let t0 = Instant::now();
         c.on_touch(4242, "curl", &["203.0.113.9".into()], true, t0);
-        c.on_touch(4242, "curl", &["203.0.113.9".into(), "198.51.100.0/24".into()], true, t0);
+        c.on_touch(
+            4242,
+            "curl",
+            &["203.0.113.9".into(), "198.51.100.0/24".into()],
+            true,
+            t0,
+        );
         assert_eq!(c.len(), 1);
-        assert!(c.open[&4242].permits.contains(&Permit { net: "198.51.100.0".parse().unwrap(), bits: 24, port: None }));
+        assert!(c.open[&4242].permits.contains(&Permit {
+            net: "198.51.100.0".parse().unwrap(),
+            bits: 24,
+            port: None
+        }));
     }
 
     /// Caged as a parent first, then it reads itself: from now on its
@@ -642,9 +789,26 @@ mod tests {
     fn an_exempt_reader_spares_its_parent() {
         let mut c = Cages::new();
         let now = Instant::now();
-        c.on_touches(vec![(4242, "com.apple.appkit.xpc.openAndSavePanelService".into(), vec![], true), (701, "net.librewolf.librewolf".into(), vec![], false)], now);
+        c.on_touches(
+            vec![
+                (
+                    4242,
+                    "com.apple.appkit.xpc.openAndSavePanelService".into(),
+                    vec![],
+                    true,
+                ),
+                (701, "net.librewolf.librewolf".into(), vec![], false),
+            ],
+            now,
+        );
         assert_eq!(c.len(), 0);
-        c.on_touches(vec![(4243, "curl".into(), vec![], true), (4200, "bash".into(), vec![], false)], now);
+        c.on_touches(
+            vec![
+                (4243, "curl".into(), vec![], true),
+                (4200, "bash".into(), vec![], false),
+            ],
+            now,
+        );
         assert_eq!(c.len(), 2);
     }
 

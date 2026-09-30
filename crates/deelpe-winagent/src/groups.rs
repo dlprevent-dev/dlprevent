@@ -18,7 +18,8 @@ use deelpe_core::central::GroupInfo;
 use windows::core::PCWSTR;
 #[cfg(windows)]
 use windows::Win32::NetworkManagement::NetManagement::{
-    NetApiBufferFree, NetGroupEnum, NetLocalGroupEnum, GROUP_INFO_0, LOCALGROUP_INFO_0, MAX_PREFERRED_LENGTH,
+    NetApiBufferFree, NetGroupEnum, NetLocalGroupEnum, GROUP_INFO_0, LOCALGROUP_INFO_0,
+    MAX_PREFERRED_LENGTH,
 };
 
 #[cfg(windows)]
@@ -53,12 +54,18 @@ pub fn list() -> Vec<GroupInfo> {
             Some(d) => format!("{d}\\{name}"),
             None => name,
         };
-        out.push(GroupInfo { name: full, kind: "domain".into() });
+        out.push(GroupInfo {
+            name: full,
+            kind: "domain".into(),
+        });
     }
     for name in enum_local() {
-        out.push(GroupInfo { name, kind: "local".into() });
+        out.push(GroupInfo {
+            name,
+            kind: "local".into(),
+        });
     }
-    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out.sort_by_key(|a| a.name.to_lowercase());
     out.dedup_by(|a, b| a.name.eq_ignore_ascii_case(&b.name));
     out
 }
@@ -91,7 +98,17 @@ fn enum_domain() -> Vec<String> {
     loop {
         let mut buf: *mut u8 = std::ptr::null_mut();
         let (mut read, mut total) = (0u32, 0u32);
-        let rc = unsafe { NetGroupEnum(PCWSTR::null(), 0, &mut buf, MAX_PREFERRED_LENGTH, &mut read, &mut total, Some(&mut resume as *mut usize)) };
+        let rc = unsafe {
+            NetGroupEnum(
+                PCWSTR::null(),
+                0,
+                &mut buf,
+                MAX_PREFERRED_LENGTH,
+                &mut read,
+                &mut total,
+                Some(&mut resume as *mut usize),
+            )
+        };
         if (rc != NERR_SUCCESS && rc != ERROR_MORE_DATA) || buf.is_null() {
             if rc != NERR_SUCCESS && rc != ERROR_MORE_DATA {
                 tracing::debug!(rc, "NetGroupEnum: no domain groups (not a domain member?)");
@@ -101,7 +118,8 @@ fn enum_domain() -> Vec<String> {
             }
             return out;
         }
-        let items = unsafe { std::slice::from_raw_parts(buf as *const GROUP_INFO_0, read as usize) };
+        let items =
+            unsafe { std::slice::from_raw_parts(buf as *const GROUP_INFO_0, read as usize) };
         out.extend(items.iter().filter_map(|i| pwstr(i.grpi0_name)));
         unsafe { NetApiBufferFree(Some(buf as *const _)) };
         if rc != ERROR_MORE_DATA {
@@ -118,14 +136,25 @@ fn enum_local() -> Vec<String> {
     loop {
         let mut buf: *mut u8 = std::ptr::null_mut();
         let (mut read, mut total) = (0u32, 0u32);
-        let rc = unsafe { NetLocalGroupEnum(PCWSTR::null(), 0, &mut buf, MAX_PREFERRED_LENGTH, &mut read, &mut total, Some(&mut resume as *mut usize)) };
+        let rc = unsafe {
+            NetLocalGroupEnum(
+                PCWSTR::null(),
+                0,
+                &mut buf,
+                MAX_PREFERRED_LENGTH,
+                &mut read,
+                &mut total,
+                Some(&mut resume as *mut usize),
+            )
+        };
         if (rc != NERR_SUCCESS && rc != ERROR_MORE_DATA) || buf.is_null() {
             if !buf.is_null() {
                 unsafe { NetApiBufferFree(Some(buf as *const _)) };
             }
             return out;
         }
-        let items = unsafe { std::slice::from_raw_parts(buf as *const LOCALGROUP_INFO_0, read as usize) };
+        let items =
+            unsafe { std::slice::from_raw_parts(buf as *const LOCALGROUP_INFO_0, read as usize) };
         out.extend(items.iter().filter_map(|i| pwstr(i.lgrpi0_name)));
         unsafe { NetApiBufferFree(Some(buf as *const _)) };
         if rc != ERROR_MORE_DATA {

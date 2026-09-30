@@ -75,7 +75,12 @@ impl Judged {
 /// ([`crate::learn::allowlist`]). It takes effect **before** the learning
 /// phase: an allowed process should also not create pairs that turn up
 /// later in the confirmation dialog.
-pub fn judge(learner: &mut Learner, allow: &BTreeSet<String>, outcome: Outcome, now: DateTime<Utc>) -> Option<(Judged, bool)> {
+pub fn judge(
+    learner: &mut Learner,
+    allow: &BTreeSet<String>,
+    outcome: Outcome,
+    now: DateTime<Utc>,
+) -> Option<(Judged, bool)> {
     // Before `into_alert()`: after that, `outcome` is consumed.
     let is_new = outcome.is_new();
     let mut a = outcome.into_alert();
@@ -144,7 +149,12 @@ pub struct Learned {
 /// The alert id is the one of this device; the pair (process, destination
 /// network) is held only at the agent. The caller therefore passes in the
 /// alerts it still knows.
-pub fn apply_learn(learner: &mut Learner, alerts: &[Alert], cmds: &[LearnCommand], already: &[i64]) -> Learned {
+pub fn apply_learn(
+    learner: &mut Learner,
+    alerts: &[Alert],
+    cmds: &[LearnCommand],
+    already: &[i64],
+) -> Learned {
     let mut out = Learned::default();
     for c in cmds {
         if already.contains(&c.id) || out.done.contains(&c.id) {
@@ -158,10 +168,15 @@ pub fn apply_learn(learner: &mut Learner, alerts: &[Alert], cmds: &[LearnCommand
                 };
                 match key {
                     Some(k) => out.learned.push((c.action, k)),
-                    None => tracing::info!("central: alert #{} is unsigned, never learned", c.alert_id),
+                    None => {
+                        tracing::info!("central: alert #{} is unsigned, never learned", c.alert_id)
+                    }
                 }
             }
-            None => tracing::info!("central: alert #{} no longer known, learn instruction dropped", c.alert_id),
+            None => tracing::info!(
+                "central: alert #{} no longer known, learn instruction dropped",
+                c.alert_id
+            ),
         }
         out.done.push(c.id);
     }
@@ -194,7 +209,9 @@ mod tests {
             id: 1,
             at: Utc::now(),
             pid: 4242,
-            identity: ProcessIdentity::Unknown { path: "/usr/bin/curl".into() },
+            identity: ProcessIdentity::Unknown {
+                path: "/usr/bin/curl".into(),
+            },
             files: vec![PathBuf::from("/GL/x.txt")],
             remote: Some(IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9))),
             remote_port: Some(443),
@@ -212,7 +229,11 @@ mod tests {
 
     fn strict_cfg(enforce: bool) -> Config {
         Config {
-            strict: vec![Strict { path: PathBuf::from("/GL"), allow: vec![], enforce }],
+            strict: vec![Strict {
+                path: PathBuf::from("/GL"),
+                allow: vec![],
+                enforce,
+            }],
             ..Default::default()
         }
     }
@@ -227,7 +248,11 @@ mod tests {
             let spy = Spy::default();
             enforce(&strict_cfg(enforce_on), &mut j, &spy);
             assert_eq!(spy.copies.get(), 0);
-            assert_eq!(j.alert().reason.as_deref(), Some("denied"), "enforce={enforce_on}");
+            assert_eq!(
+                j.alert().reason.as_deref(),
+                Some("denied"),
+                "enforce={enforce_on}"
+            );
         }
     }
 
@@ -263,18 +288,29 @@ mod tests {
         let mut j = Judged(a);
         let spy = Spy::default();
         enforce(&strict_cfg(true), &mut j, &spy);
-        assert_eq!(spy.copies.get(), 0, "ohne Urteil darf kein Eingriff stattfinden");
+        assert_eq!(
+            spy.copies.get(),
+            0,
+            "ohne Urteil darf kein Eingriff stattfinden"
+        );
     }
     /// An allowed process produces no alert.
     #[test]
     fn a_listed_process_produces_no_alert() {
         let mut a = denied_alert();
-        a.identity = ProcessIdentity::Signed { team_id: "Microsoft".into(), signing_id: "TEAMS.EXE.MUI".into() };
+        a.identity = ProcessIdentity::Signed {
+            team_id: "Microsoft".into(),
+            signing_id: "TEAMS.EXE.MUI".into(),
+        };
         a.verdict = Verdict::New;
         let allow = crate::learn::parse_allowlist("# Kommentar\n\n  teams.exe  \n");
         let mut l = Learner::new(0, Utc::now());
         assert!(judge(&mut l, &allow, Outcome::New(a), Utc::now()).is_none());
-        assert_eq!(l.pair_count(), 0, "freigegeben heisst auch: kein Paar in der Lernphase");
+        assert_eq!(
+            l.pair_count(),
+            0,
+            "freigegeben heisst auch: kein Paar in der Lernphase"
+        );
     }
 
     /// But a forbidden destination outranks the list: otherwise one entry
@@ -282,10 +318,14 @@ mod tests {
     #[test]
     fn the_list_does_not_silence_a_denied_target() {
         let mut a = denied_alert();
-        a.identity = ProcessIdentity::Signed { team_id: "Microsoft".into(), signing_id: "teams.exe".into() };
+        a.identity = ProcessIdentity::Signed {
+            team_id: "Microsoft".into(),
+            signing_id: "teams.exe".into(),
+        };
         let allow = crate::learn::parse_allowlist("teams.exe\n");
         let mut l = Learner::new(0, Utc::now());
-        let (j, _) = judge(&mut l, &allow, Outcome::New(a), Utc::now()).expect("verbotenes Ziel bleibt eine Warnung");
+        let (j, _) = judge(&mut l, &allow, Outcome::New(a), Utc::now())
+            .expect("verbotenes Ziel bleibt eine Warnung");
         assert_eq!(j.alert().verdict, Verdict::Denied);
     }
 
@@ -298,9 +338,14 @@ mod tests {
             at: t,
             pid: 10,
             identity: if signed {
-                ProcessIdentity::Signed { signing_id: "com.example.app".into(), team_id: "TEAM1".into() }
+                ProcessIdentity::Signed {
+                    signing_id: "com.example.app".into(),
+                    team_id: "TEAM1".into(),
+                }
             } else {
-                ProcessIdentity::Unknown { path: "/tmp/x".into() }
+                ProcessIdentity::Unknown {
+                    path: "/tmp/x".into(),
+                }
             },
             files: vec![],
             remote: Some("1.2.3.4".parse().unwrap()),
@@ -318,7 +363,11 @@ mod tests {
     }
 
     fn cmd(id: i64, alert_id: u64, action: LearnAction) -> LearnCommand {
-        LearnCommand { id, alert_id, action }
+        LearnCommand {
+            id,
+            alert_id,
+            action,
+        }
     }
 
     /// After remembering, the same pair is silent — exactly what ends the
@@ -329,15 +378,28 @@ mod tests {
         let mut l = Learner::new(0, now);
         l.confirm();
         let a = learn_alert(1, true);
-        assert!(matches!(l.judge(&a, true, now), crate::learn::Decision::Store { verdict: Verdict::New, .. }));
+        assert!(matches!(
+            l.judge(&a, true, now),
+            crate::learn::Decision::Store {
+                verdict: Verdict::New,
+                ..
+            }
+        ));
 
         let out = apply_learn(&mut l, &[a], &[cmd(7, 1, LearnAction::Remember)], &[]);
         assert_eq!(out.done, vec![7]);
-        assert_eq!(out.learned.len(), 1, "ein gemerktes Paar gehoert ins Protokoll des Aufrufers");
+        assert_eq!(
+            out.learned.len(),
+            1,
+            "ein gemerktes Paar gehoert ins Protokoll des Aufrufers"
+        );
 
         let mut next = learn_alert(2, true);
         next.id = 2;
-        assert!(matches!(l.judge(&next, true, now), crate::learn::Decision::Drop), "bekanntes Paar muss still sein");
+        assert!(
+            matches!(l.judge(&next, true, now), crate::learn::Decision::Drop),
+            "bekanntes Paar muss still sein"
+        );
     }
 
     /// What cannot take effect still counts as done: otherwise the central
@@ -348,12 +410,31 @@ mod tests {
         let mut l = Learner::new(0, now);
         l.confirm();
         // Alert has rolled out of the log.
-        assert_eq!(apply_learn(&mut l, &[], &[cmd(1, 99, LearnAction::Remember)], &[]).done, vec![1]);
+        assert_eq!(
+            apply_learn(&mut l, &[], &[cmd(1, 99, LearnAction::Remember)], &[]).done,
+            vec![1]
+        );
         // An unsigned process is never learned.
-        assert_eq!(apply_learn(&mut l, &[learn_alert(2, false)], &[cmd(2, 2, LearnAction::Remember)], &[]).done, vec![2]);
+        assert_eq!(
+            apply_learn(
+                &mut l,
+                &[learn_alert(2, false)],
+                &[cmd(2, 2, LearnAction::Remember)],
+                &[]
+            )
+            .done,
+            vec![2]
+        );
         // Ones already reported stay put, even if the central server
         // repeats them before it has processed the report.
-        assert!(apply_learn(&mut l, &[learn_alert(3, true)], &[cmd(3, 3, LearnAction::Flag)], &[3]).done.is_empty());
+        assert!(apply_learn(
+            &mut l,
+            &[learn_alert(3, true)],
+            &[cmd(3, 3, LearnAction::Flag)],
+            &[3]
+        )
+        .done
+        .is_empty());
     }
 
     /// "Always report" stays loud, even if the pair were known.
@@ -363,10 +444,24 @@ mod tests {
         let mut l = Learner::new(0, now);
         l.confirm();
         let a = learn_alert(1, true);
-        assert_eq!(apply_learn(&mut l, &[a.clone()], &[cmd(5, 1, LearnAction::Flag)], &[]).done, vec![5]);
+        assert_eq!(
+            apply_learn(
+                &mut l,
+                std::slice::from_ref(&a),
+                &[cmd(5, 1, LearnAction::Flag)],
+                &[]
+            )
+            .done,
+            vec![5]
+        );
         let mut next = a;
         next.id = 2;
-        assert!(matches!(l.judge(&next, true, now), crate::learn::Decision::Store { verdict: Verdict::Flagged, .. }));
+        assert!(matches!(
+            l.judge(&next, true, now),
+            crate::learn::Decision::Store {
+                verdict: Verdict::Flagged,
+                ..
+            }
+        ));
     }
-
 }

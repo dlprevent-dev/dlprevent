@@ -29,7 +29,10 @@ pub struct RawEvent {
 
 impl RawEvent {
     pub fn get(&self, k: &str) -> Option<&str> {
-        self.data.get(k).map(|s| s.as_str()).filter(|s| !s.is_empty() && *s != "-")
+        self.data
+            .get(k)
+            .map(|s| s.as_str())
+            .filter(|s| !s.is_empty() && *s != "-")
     }
 }
 
@@ -45,7 +48,8 @@ pub fn read_since(_after: u64, _limit: usize) -> Result<Vec<RawEvent>> {
 pub fn read_since(after: u64, limit: usize) -> Result<Vec<RawEvent>> {
     use windows::core::{HSTRING, PCWSTR};
     use windows::Win32::System::EventLog::{
-        EvtClose, EvtNext, EvtQuery, EvtQueryChannelPath, EvtQueryForwardDirection, EvtRender, EvtRenderEventXml, EVT_HANDLE,
+        EvtClose, EvtNext, EvtQuery, EvtQueryChannelPath, EvtQueryForwardDirection, EvtRender,
+        EvtRenderEventXml, EVT_HANDLE,
     };
 
     let query = format!("*[System[(EventID=4663 or EventID=5145) and (EventRecordID>{after})]]");
@@ -53,7 +57,9 @@ pub fn read_since(after: u64, limit: usize) -> Result<Vec<RawEvent>> {
     let q = HSTRING::from(query.as_str());
     let flags = EvtQueryChannelPath.0 | EvtQueryForwardDirection.0;
     let h = unsafe { EvtQuery(None, PCWSTR(channel.as_ptr()), PCWSTR(q.as_ptr()), flags) }
-        .context("query the security event log (account needs \"Event Log Readers\" or administrator)")?;
+        .context(
+            "query the security event log (account needs \"Event Log Readers\" or administrator)",
+        )?;
 
     let mut out = Vec::new();
     let mut buf = vec![0u16; 64 * 1024];
@@ -87,13 +93,17 @@ pub fn read_since(after: u64, limit: usize) -> Result<Vec<RawEvent>> {
                     Err(e) => tracing::debug!("event not understood: {e:#}"),
                 }
             }
-            unsafe { let _ = EvtClose(e); }
+            unsafe {
+                let _ = EvtClose(e);
+            }
         }
         if out.len() >= limit {
             break;
         }
     }
-    unsafe { let _ = EvtClose(h); }
+    unsafe {
+        let _ = EvtClose(h);
+    }
     out.sort_by_key(|e| e.record_id);
     Ok(out)
 }
@@ -127,7 +137,9 @@ pub fn parse_event(xml: &str) -> Result<RawEvent> {
                 _ => {}
             },
             Event::Text(t) => {
-                let v = quick_xml::escape::unescape(&t.xml10_content()).context("XML entities")?.into_owned();
+                let v = quick_xml::escape::unescape(&t.xml10_content())
+                    .context("XML entities")?
+                    .into_owned();
                 match in_system_field.take() {
                     Some("EventID") => event_id = v.trim().parse().unwrap_or(0),
                     Some("EventRecordID") => record_id = v.trim().parse().unwrap_or(0),
@@ -154,7 +166,11 @@ pub fn parse_event(xml: &str) -> Result<RawEvent> {
     if event_id == 0 {
         bail!("no EventID");
     }
-    Ok(RawEvent { event_id, record_id, data })
+    Ok(RawEvent {
+        event_id,
+        record_id,
+        data,
+    })
 }
 
 /// Access mask from the log (`0x1`, `0x20089`, occasionally decimal).
@@ -191,7 +207,8 @@ pub fn strip_stream(path: &str) -> &str {
     // If there is no backslash in front of it, the first colon is the drive
     // letter and not a data stream.
     let b = path.as_bytes();
-    let skip = usize::from(cut == 0 && b.len() >= 2 && b[1] == b':' && b[0].is_ascii_alphabetic()) * 2;
+    let skip =
+        usize::from(cut == 0 && b.len() >= 2 && b[1] == b':' && b[0].is_ascii_alphabetic()) * 2;
     match path[cut + skip..].find(':') {
         // Stream on the folder itself: what is meant is the folder.
         Some(0) if cut > 0 => path[..cut - 1].trim_end_matches('\\'),
@@ -203,7 +220,9 @@ pub fn strip_stream(path: &str) -> &str {
 /// Full local path out of a 5145: `ShareLocalPath` carries the NT prefix
 /// `\??\`, `RelativeTargetName` the rest.
 pub fn share_path(share_local: &str, relative: &str) -> String {
-    let base = share_local.trim_start_matches(r"\??\").trim_end_matches('\\');
+    let base = share_local
+        .trim_start_matches(r"\??\")
+        .trim_end_matches('\\');
     let rel = relative.trim_start_matches('\\');
     if rel.is_empty() {
         base.to_string()
@@ -235,22 +254,40 @@ mod tests {
         assert_eq!(e.event_id, 4663);
         assert_eq!(e.record_id, 4711);
         assert_eq!(e.get("SubjectUserName"), Some("dl-anna"));
-        assert_eq!(e.get("ObjectName"), Some(r"C:\Freigaben\GL\Zahlen\Zahlen-001.dat"));
-        assert_eq!(parse_mask(e.get("AccessMask").unwrap()) & FILE_READ_DATA, FILE_READ_DATA);
+        assert_eq!(
+            e.get("ObjectName"),
+            Some(r"C:\Freigaben\GL\Zahlen\Zahlen-001.dat")
+        );
+        assert_eq!(
+            parse_mask(e.get("AccessMask").unwrap()) & FILE_READ_DATA,
+            FILE_READ_DATA
+        );
     }
 
     #[test]
     fn dash_counts_as_absent() {
-        let xml = E4663.replace("<Data Name=\"SubjectDomainName\">CORP</Data>", "<Data Name=\"SubjectDomainName\">-</Data>");
+        let xml = E4663.replace(
+            "<Data Name=\"SubjectDomainName\">CORP</Data>",
+            "<Data Name=\"SubjectDomainName\">-</Data>",
+        );
         assert_eq!(parse_event(&xml).unwrap().get("SubjectDomainName"), None);
     }
 
     #[test]
     fn strips_alternate_data_streams() {
-        assert_eq!(strip_stream(r"C:\Freigaben\GL\Zahlen\a.dat:AFP_AfpInfo"), r"C:\Freigaben\GL\Zahlen\a.dat");
-        assert_eq!(strip_stream(r"C:\Freigaben\GL\a.dat:Zone.Identifier:$DATA"), r"C:\Freigaben\GL\a.dat");
+        assert_eq!(
+            strip_stream(r"C:\Freigaben\GL\Zahlen\a.dat:AFP_AfpInfo"),
+            r"C:\Freigaben\GL\Zahlen\a.dat"
+        );
+        assert_eq!(
+            strip_stream(r"C:\Freigaben\GL\a.dat:Zone.Identifier:$DATA"),
+            r"C:\Freigaben\GL\a.dat"
+        );
         // Stream on the folder itself — observed with macOS clients.
-        assert_eq!(strip_stream(r"C:\Freigaben\GL\:AFP_AfpInfo"), r"C:\Freigaben\GL");
+        assert_eq!(
+            strip_stream(r"C:\Freigaben\GL\:AFP_AfpInfo"),
+            r"C:\Freigaben\GL"
+        );
         // The drive colon must not count as a data stream.
         assert_eq!(strip_stream(r"C:\Freigaben\GL"), r"C:\Freigaben\GL");
         assert_eq!(strip_stream("C:"), "C:");

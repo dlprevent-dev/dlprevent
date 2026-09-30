@@ -86,7 +86,13 @@ fn unc(rest: &str) -> String {
 
 /// UTF-16 string from raw bytes, up to the first null.
 pub fn utf16_from_bytes(b: &[u8]) -> String {
-    let units: Vec<u16> = b.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).take_while(|u| *u != 0).collect();
+    let units: Vec<u16> = b
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| u16::from_le_bytes(*c))
+        .take_while(|u| *u != 0)
+        .collect();
     String::from_utf16_lossy(&units)
 }
 
@@ -126,48 +132,98 @@ mod tests {
 
     #[test]
     fn share_paths_become_unc() {
-        assert_eq!(to_user_path(r"\Device\Mup\srv01\GL\zahlen.xlsx", &vols()), r"\\srv01\GL\zahlen.xlsx");
-        assert_eq!(to_user_path(r"\Device\LanmanRedirector\srv01\GL\a.docx", &vols()), r"\\srv01\GL\a.docx");
+        assert_eq!(
+            to_user_path(r"\Device\Mup\srv01\GL\zahlen.xlsx", &vols()),
+            r"\\srv01\GL\zahlen.xlsx"
+        );
+        assert_eq!(
+            to_user_path(r"\Device\LanmanRedirector\srv01\GL\a.docx", &vols()),
+            r"\\srv01\GL\a.docx"
+        );
         // Casing arrives differently depending on the version.
-        assert_eq!(to_user_path(r"\DEVICE\MUP\srv01\GL\a", &vols()), r"\\srv01\GL\a");
+        assert_eq!(
+            to_user_path(r"\DEVICE\MUP\srv01\GL\a", &vols()),
+            r"\\srv01\GL\a"
+        );
     }
 
     #[test]
     fn a_mapped_drive_is_still_the_share_it_points_at() {
-        // Measured on 2026-09-08 on DESKTOP-EXAMPLE, share on X:.
+        // Measured on 2026-09-08 on a Windows 11 client, share on X:.
         assert_eq!(
-            to_user_path(r"\Device\Mup\;LanmanRedirector\;X:000000000285daa0\127.0.0.1\c$\dlptest\a.txt", &vols()),
+            to_user_path(
+                r"\Device\Mup\;LanmanRedirector\;X:000000000285daa0\127.0.0.1\c$\dlptest\a.txt",
+                &vols()
+            ),
             r"\\127.0.0.1\c$\dlptest\a.txt"
         );
-        assert_eq!(to_user_path(r"\Device\LanmanRedirector\;G:0000000000012345\srv01\GL\zahlen.xlsx", &vols()), r"\\srv01\GL\zahlen.xlsx");
+        assert_eq!(
+            to_user_path(
+                r"\Device\LanmanRedirector\;G:0000000000012345\srv01\GL\zahlen.xlsx",
+                &vols()
+            ),
+            r"\\srv01\GL\zahlen.xlsx"
+        );
         // Also without a device name in front.
-        assert_eq!(to_user_path(r"\\;LanmanRedirector\;X:000000000285daa0\srv01\GL\a", &vols()), r"\\srv01\GL\a");
+        assert_eq!(
+            to_user_path(
+                r"\\;LanmanRedirector\;X:000000000285daa0\srv01\GL\a",
+                &vols()
+            ),
+            r"\\srv01\GL\a"
+        );
         // Without a drive letter it stays as it was.
-        assert_eq!(to_user_path(r"\Device\Mup\srv01\GL\a", &vols()), r"\\srv01\GL\a");
+        assert_eq!(
+            to_user_path(r"\Device\Mup\srv01\GL\a", &vols()),
+            r"\\srv01\GL\a"
+        );
     }
 
     #[test]
     fn volumes_use_the_longest_match() {
-        assert_eq!(to_user_path(r"\Device\HarddiskVolume1\Users\hans\a.txt", &vols()), r"C:\Users\hans\a.txt");
+        assert_eq!(
+            to_user_path(r"\Device\HarddiskVolume1\Users\hans\a.txt", &vols()),
+            r"C:\Users\hans\a.txt"
+        );
         // Without "longest first" this one ended up on C: instead of D:.
-        assert_eq!(to_user_path(r"\Device\HarddiskVolume11\Daten\b.txt", &vols()), r"D:\Daten\b.txt");
+        assert_eq!(
+            to_user_path(r"\Device\HarddiskVolume11\Daten\b.txt", &vols()),
+            r"D:\Daten\b.txt"
+        );
         // No partial match in the middle of a name.
-        assert_eq!(to_user_path(r"\Device\HarddiskVolume1Extra\x", &vols()), r"\Device\HarddiskVolume1Extra\x");
+        assert_eq!(
+            to_user_path(r"\Device\HarddiskVolume1Extra\x", &vols()),
+            r"\Device\HarddiskVolume1Extra\x"
+        );
     }
 
     #[test]
     fn unknown_paths_survive_unchanged() {
-        assert_eq!(to_user_path(r"\Device\Something\x", &vols()), r"\Device\Something\x");
+        assert_eq!(
+            to_user_path(r"\Device\Something\x", &vols()),
+            r"\Device\Something\x"
+        );
         assert_eq!(to_user_path("", &vols()), "");
     }
 
     #[test]
     fn payload_decoding() {
-        let utf16: Vec<u8> = "GL\0".encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+        let utf16: Vec<u8> = "GL\0"
+            .encode_utf16()
+            .flat_map(|u| u.to_le_bytes())
+            .collect();
         assert_eq!(utf16_from_bytes(&utf16), "GL");
         assert_eq!(utf16_from_bytes(&[]), "");
-        assert_eq!(ip_from_bytes(&[10, 0, 0, 7]).unwrap().to_string(), "10.0.0.7");
-        assert_eq!(ip_from_bytes(&[0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]).unwrap().to_string(), "2001:db8::1");
+        assert_eq!(
+            ip_from_bytes(&[10, 0, 0, 7]).unwrap().to_string(),
+            "10.0.0.7"
+        );
+        assert_eq!(
+            ip_from_bytes(&[0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1])
+                .unwrap()
+                .to_string(),
+            "2001:db8::1"
+        );
         assert!(ip_from_bytes(&[1, 2, 3]).is_none());
         // 443 = 0x01BB, big endian.
         assert_eq!(port_from_bytes(&[0x01, 0xBB]).unwrap(), 443);

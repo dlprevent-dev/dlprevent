@@ -72,7 +72,9 @@ impl Sensor for OpenGuard {
         let fan = init()?;
         // Its own thread, not the reactor: `poll` and `read` block, and so
         // does every open under a mark until this thread gets to it.
-        tokio::task::spawn_blocking(move || listen(fan, tx)).await.context("open guard thread")?
+        tokio::task::spawn_blocking(move || listen(fan, tx))
+            .await
+            .context("open guard thread")?
     }
 }
 
@@ -80,7 +82,12 @@ fn init() -> Result<OwnedFd> {
     // CONTENT: the class that may answer. Blocking reads, the thread is its
     // own; `poll` with a timeout lets it re-mark and notice the end.
     let flags = libc::FAN_CLASS_CONTENT | libc::FAN_CLOEXEC;
-    let fd = unsafe { libc::fanotify_init(flags, (libc::O_RDONLY | libc::O_LARGEFILE | libc::O_CLOEXEC) as u32) };
+    let fd = unsafe {
+        libc::fanotify_init(
+            flags,
+            (libc::O_RDONLY | libc::O_LARGEFILE | libc::O_CLOEXEC) as u32,
+        )
+    };
     if fd < 0 {
         let e = std::io::Error::last_os_error();
         bail!("fanotify_init (permission class): {e} (the kernel needs CONFIG_FANOTIFY_ACCESS_PERMISSIONS, the service root)");
@@ -105,12 +112,20 @@ fn listen(fan: OwnedFd, tx: mpsc::Sender<Event>) -> Result<()> {
             remark(fd, &mut marked);
             next_mark = Instant::now() + REMARK;
         }
-        let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+        let mut pfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
         let rc = unsafe { libc::poll(&mut pfd, 1, 1_000) };
         if rc == 0 {
             continue;
         }
-        let n = if rc > 0 { unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) } } else { -1 };
+        let n = if rc > 0 {
+            unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) }
+        } else {
+            -1
+        };
         if n < 0 {
             let e = std::io::Error::last_os_error();
             if matches!(e.raw_os_error(), Some(libc::EINTR | libc::EAGAIN)) {
@@ -122,13 +137,18 @@ fn listen(fan: OwnedFd, tx: mpsc::Sender<Event>) -> Result<()> {
         let mut off = 0usize;
         let mut blocked = Vec::new();
         while off + meta_len <= n {
-            let meta = unsafe { std::ptr::read_unaligned(buf[off..].as_ptr() as *const libc::fanotify_event_metadata) };
+            let meta = unsafe {
+                std::ptr::read_unaligned(buf[off..].as_ptr() as *const libc::fanotify_event_metadata)
+            };
             let len = meta.event_len as usize;
             let efd = (meta.fd >= 0).then(|| unsafe { OwnedFd::from_raw_fd(meta.fd) });
             if meta.vers != libc::FANOTIFY_METADATA_VERSION || len < meta_len {
                 // Whatever is left in the buffer was read and not answered;
                 // dropping `fan` on the way out allows it.
-                bail!("fanotify: metadata version {} or length {len} does not fit this build", meta.vers);
+                bail!(
+                    "fanotify: metadata version {} or length {len} does not fit this build",
+                    meta.vers
+                );
             }
             off += len;
             let Some(efd) = efd else { continue };
@@ -136,7 +156,11 @@ fn listen(fan: OwnedFd, tx: mpsc::Sender<Event>) -> Result<()> {
             // alone — no open that could wait on ourselves.
             let path = readlink(&format!("/proc/self/fd/{}", efd.as_raw_fd()));
             let pid = meta.pid as u32;
-            let deny = meta.mask & libc::FAN_OPEN_PERM != 0 && pid != own && path.as_deref().is_some_and(|p| crate::filter::refuses(p, || chain(pid)));
+            let deny = meta.mask & libc::FAN_OPEN_PERM != 0
+                && pid != own
+                && path
+                    .as_deref()
+                    .is_some_and(|p| crate::filter::refuses(p, || chain(pid)));
             // Who it was, before the answer: a refused `cat` exits at once,
             // and afterwards `/proc/<pid>` is gone. Two readlinks, no open.
             let who = deny.then(|| (readlink(&format!("/proc/{pid}/exe")), ppid_of(pid)));
@@ -150,7 +174,16 @@ fn listen(fan: OwnedFd, tx: mpsc::Sender<Event>) -> Result<()> {
         for (pid, (exe, ppid), path) in blocked {
             tracing::warn!("open guard: refused {path} to PID {pid}");
             let process = name(&mut ctx, pid, exe, ppid);
-            let ev = Event::Blocked(FileEvent { at: Utc::now(), process, path: path.into(), action: FileAction::Open, target: None, inode: None, nlink: None, argv: None });
+            let ev = Event::Blocked(FileEvent {
+                at: Utc::now(),
+                process,
+                path: path.into(),
+                action: FileAction::Open,
+                target: None,
+                inode: None,
+                nlink: None,
+                argv: None,
+            });
             match tx.try_send(ev) {
                 Ok(()) => {}
                 Err(mpsc::error::TrySendError::Full(_)) => crate::filter::note_dropped(),
@@ -161,13 +194,29 @@ fn listen(fan: OwnedFd, tx: mpsc::Sender<Event>) -> Result<()> {
 }
 
 fn respond(fan: RawFd, event_fd: RawFd, allow: bool) {
-    let r = libc::fanotify_response { fd: event_fd, response: if allow { libc::FAN_ALLOW } else { libc::FAN_DENY } };
-    let n = unsafe { libc::write(fan, (&r as *const libc::fanotify_response).cast(), std::mem::size_of::<libc::fanotify_response>()) };
+    let r = libc::fanotify_response {
+        fd: event_fd,
+        response: if allow {
+            libc::FAN_ALLOW
+        } else {
+            libc::FAN_DENY
+        },
+    };
+    let n = unsafe {
+        libc::write(
+            fan,
+            (&r as *const libc::fanotify_response).cast(),
+            std::mem::size_of::<libc::fanotify_response>(),
+        )
+    };
     if n < 0 {
         // Nothing to retry with: the kernel either has the answer or the
         // process is gone. Closing the group would allow it; one lost
         // answer is not worth that.
-        tracing::warn!("open guard: answer not written: {}", std::io::Error::last_os_error());
+        tracing::warn!(
+            "open guard: answer not written: {}",
+            std::io::Error::last_os_error()
+        );
     }
 }
 
@@ -188,8 +237,18 @@ fn chain(mut pid: u32) -> Vec<String> {
 /// not hashed: hashing opens it, and that open would wait on this thread.
 fn name(ctx: &mut Ctx, pid: u32, exe: Option<String>, ppid: Option<u32>) -> ProcessRef {
     let exe = exe.unwrap_or_else(|| format!("pid {pid}"));
-    let identity = if exe.starts_with('/') && !crate::filter::is_guarded(&exe) { identity_of(ctx, exe.clone()) } else { ProcessIdentity::Unknown { path: exe.clone() } };
-    ProcessRef { pid, ppid, responsible: None, path: PathBuf::from(exe), identity }
+    let identity = if exe.starts_with('/') && !crate::filter::is_guarded(&exe) {
+        identity_of(ctx, exe.clone())
+    } else {
+        ProcessIdentity::Unknown { path: exe.clone() }
+    };
+    ProcessRef {
+        pid,
+        ppid,
+        responsible: None,
+        path: PathBuf::from(exe),
+        identity,
+    }
 }
 
 /// Mark every directory under the guarded folders, unmark what fell out.
@@ -232,21 +291,38 @@ fn walk(root: &Path, out: &mut HashMap<(u64, u64), PathBuf>) {
             tracing::warn!("open guard: more than {MAX_DIRS} folders, the rest stays unguarded");
             return;
         }
-        let Ok(md) = std::fs::symlink_metadata(&dir) else { continue };
+        let Ok(md) = std::fs::symlink_metadata(&dir) else {
+            continue;
+        };
         if !md.is_dir() {
             continue;
         }
         out.insert((md.dev(), md.ino()), dir.clone());
         // Listing a folder raises no event: no FAN_ONDIR in the mask.
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
-        stack.extend(entries.flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_dir())).map(|e| e.path()));
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        stack.extend(
+            entries
+                .flatten()
+                .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+                .map(|e| e.path()),
+        );
     }
 }
 
 fn mark(fan: RawFd, op: libc::c_uint, dir: &Path) -> Result<()> {
     let path = CString::new(dir.as_os_str().as_bytes()).context("folder with a null byte")?;
     // No FAN_MARK_MOUNT, no FAN_MARK_FILESYSTEM: the directory's inode alone.
-    let rc = unsafe { libc::fanotify_mark(fan, op | libc::FAN_MARK_ONLYDIR, MASK, libc::AT_FDCWD, path.as_ptr()) };
+    let rc = unsafe {
+        libc::fanotify_mark(
+            fan,
+            op | libc::FAN_MARK_ONLYDIR,
+            MASK,
+            libc::AT_FDCWD,
+            path.as_ptr(),
+        )
+    };
     if rc < 0 {
         return Err(std::io::Error::last_os_error().into());
     }

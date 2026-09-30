@@ -125,7 +125,10 @@ pub struct LearnStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
-    Store { verdict: Verdict, reason: Option<String> },
+    Store {
+        verdict: Verdict,
+        reason: Option<String>,
+    },
     Drop,
 }
 
@@ -141,7 +144,12 @@ pub struct Learner {
 
 impl Learner {
     pub fn new(learn_days: u32, now: DateTime<Utc>) -> Self {
-        Self { until: now + Duration::days(learn_days as i64), confirmed: false, pairs: BTreeMap::new(), reported: HashMap::new() }
+        Self {
+            until: now + Duration::days(learn_days as i64),
+            confirmed: false,
+            pairs: BTreeMap::new(),
+            reported: HashMap::new(),
+        }
     }
 
     /// First start with an existing log: alerts from the last `learn_days`
@@ -150,7 +158,10 @@ impl Learner {
     pub fn seed(&mut self, alerts: &[Alert], learn_days: u32, now: DateTime<Utc>) {
         let since = now - Duration::days(learn_days as i64);
         let mut oldest = now;
-        for a in alerts.iter().filter(|a| a.at >= since && a.identity.is_trusted_form()) {
+        for a in alerts
+            .iter()
+            .filter(|a| a.at >= since && a.identity.is_trusted_form())
+        {
             oldest = oldest.min(a.at);
             self.observe(a, PairState::Candidate);
         }
@@ -171,7 +182,11 @@ impl Learner {
         let phase = self.phase(now);
         LearnStatus {
             phase,
-            until: if phase == Phase::Active { None } else { Some(self.until) },
+            until: if phase == Phase::Active {
+                None
+            } else {
+                Some(self.until)
+            },
             pairs: self.pairs.values().cloned().collect(),
         }
     }
@@ -182,7 +197,10 @@ impl Learner {
         // A forbidden destination outranks everything: no learning phase
         // and no known pair silences it.
         if a.verdict == Verdict::Denied {
-            return Decision::Store { verdict: Verdict::Denied, reason: a.reason.clone() };
+            return Decision::Store {
+                verdict: Verdict::Denied,
+                reason: a.reason.clone(),
+            };
         }
         // An arrival goes past the learning phase for the same reason as
         // the strict folder, only the other way round: there is no pair to
@@ -190,32 +208,54 @@ impl Learner {
         // allow list — that question is asked one layer up, in
         // `pipeline::judge`, and this fast path deliberately sits behind it.
         if a.verdict == Verdict::Inbound {
-            return Decision::Store { verdict: Verdict::Inbound, reason: a.reason.clone() };
+            return Decision::Store {
+                verdict: Verdict::Inbound,
+                reason: a.reason.clone(),
+            };
         }
         if !a.identity.is_trusted_form() {
             // The correlator's reason stays: the LLM guard's findings come
             // with no nameable sender, and their reason is the finding.
-            return Decision::Store { verdict: Verdict::New, reason: a.reason.clone() };
+            return Decision::Store {
+                verdict: Verdict::New,
+                reason: a.reason.clone(),
+            };
         }
         let key = pair_key(a);
         match self.phase(now) {
             Phase::Learning | Phase::Review => {
                 self.observe(a, PairState::Candidate);
-                Decision::Store { verdict: Verdict::Learning, reason: None }
+                Decision::Store {
+                    verdict: Verdict::Learning,
+                    reason: None,
+                }
             }
             Phase::Active => match self.pairs.get(&key).map(|p| p.state) {
-                None => Decision::Store { verdict: Verdict::New, reason: None },
+                None => Decision::Store {
+                    verdict: Verdict::New,
+                    reason: None,
+                },
                 Some(PairState::Flagged) => {
                     self.observe(a, PairState::Flagged);
-                    Decision::Store { verdict: Verdict::Flagged, reason: None }
+                    Decision::Store {
+                        verdict: Verdict::Flagged,
+                        reason: None,
+                    }
                 }
                 Some(PairState::Candidate) | Some(PairState::Known) => {
-                    let reason = self.reported.get(&a.id).cloned().or_else(|| deviation(&self.pairs[&key], a, is_new));
+                    let reason = self
+                        .reported
+                        .get(&a.id)
+                        .cloned()
+                        .or_else(|| deviation(&self.pairs[&key], a, is_new));
                     self.observe(a, PairState::Known);
                     match reason {
                         Some(r) => {
                             self.reported.insert(a.id, r.clone());
-                            Decision::Store { verdict: Verdict::Deviation, reason: Some(r) }
+                            Decision::Store {
+                                verdict: Verdict::Deviation,
+                                reason: Some(r),
+                            }
                         }
                         None => Decision::Drop,
                     }
@@ -316,16 +356,27 @@ impl Learner {
 /// itself.
 fn deviation(p: &Pair, a: &Alert, is_new: bool) -> Option<String> {
     let same_flow = p.last_id == a.id && !is_new;
-    let samples = if same_flow { p.count.saturating_sub(1) } else { p.count };
+    let samples = if same_flow {
+        p.count.saturating_sub(1)
+    } else {
+        p.count
+    };
     let base = if same_flow { p.prev_max } else { p.bytes_max };
     if samples >= MIN_SAMPLES_BYTES && base > 0 && a.bytes_out > base.saturating_mul(BYTES_FACTOR) {
-        return Some(format!("amount {} is over {}× the usual maximum of {}", human_bytes(a.bytes_out), BYTES_FACTOR, human_bytes(base)));
+        return Some(format!(
+            "amount {} is over {}× the usual maximum of {}",
+            human_bytes(a.bytes_out),
+            BYTES_FACTOR,
+            human_bytes(base)
+        ));
     }
     if samples >= MIN_SAMPLES_HOUR && p.hours.len() == 24 {
         let h = local_hour(a.at);
         let seen = [23 + h, h, h + 1].iter().any(|i| p.hours[i % 24] > 0);
         if !seen {
-            return Some(format!("unusual time: never sent around {h:02}:00 in {samples} observations"));
+            return Some(format!(
+                "unusual time: never sent around {h:02}:00 in {samples} observations"
+            ));
         }
     }
     None
@@ -352,8 +403,13 @@ pub fn dest_net(ip: Option<IpAddr>) -> String {
 
 fn identity_key(id: &ProcessIdentity) -> String {
     match id {
-        ProcessIdentity::Signed { team_id, signing_id } => format!("{team_id}/{signing_id}"),
-        ProcessIdentity::Hashed { path, sha256 } => format!("hash:{path}:{}", &sha256[..12.min(sha256.len())]),
+        ProcessIdentity::Signed {
+            team_id,
+            signing_id,
+        } => format!("{team_id}/{signing_id}"),
+        ProcessIdentity::Hashed { path, sha256 } => {
+            format!("hash:{path}:{}", &sha256[..12.min(sha256.len())])
+        }
         ProcessIdentity::Unknown { path } => format!("unsigned:{path}"),
     }
 }
@@ -372,7 +428,11 @@ fn dest_of(a: &Alert) -> String {
     match a.target() {
         Target::Volume(v) => format!("volume:{}", v.display()),
         Target::Copy(d) => format!("copy:{}", d.display()),
-        Target::Net { port, .. } => format!("{}:{}", dest_net(a.remote), port.map(|p| p.to_string()).unwrap_or_else(|| "?".into())),
+        Target::Net { port, .. } => format!(
+            "{}:{}",
+            dest_net(a.remote),
+            port.map(|p| p.to_string()).unwrap_or_else(|| "?".into())
+        ),
         Target::Upload(u) => format!("upload:{u}"),
         Target::Unknown => format!("{}:{}", dest_net(None), "?"),
     }
@@ -387,7 +447,11 @@ pub fn human_bytes(b: u64) -> String {
         v /= 1024.0;
         i += 1;
     }
-    if i == 0 { format!("{b} B") } else { format!("{v:.1} {}", U[i]) }
+    if i == 0 {
+        format!("{b} B")
+    } else {
+        format!("{v:.1} {}", U[i])
+    }
 }
 
 #[cfg(test)]
@@ -399,7 +463,10 @@ mod tests {
             id,
             at,
             pid: 1,
-            identity: ProcessIdentity::Signed { team_id: "APPLE".into(), signing_id: "com.apple.curl".into() },
+            identity: ProcessIdentity::Signed {
+                team_id: "APPLE".into(),
+                signing_id: "com.apple.curl".into(),
+            },
             files: vec![],
             remote: Some(ip.parse().unwrap()),
             remote_port: Some(443),
@@ -416,7 +483,10 @@ mod tests {
     }
 
     fn store(v: Verdict) -> Decision {
-        Decision::Store { verdict: v, reason: None }
+        Decision::Store {
+            verdict: v,
+            reason: None,
+        }
     }
 
     #[test]
@@ -427,12 +497,22 @@ mod tests {
         l.judge(&alert(1, "1.2.3.4", 5000, t0), true, t0);
         l.confirm();
         let later = t0 + Duration::days(8);
-        assert_eq!(l.judge(&alert(2, "1.2.3.4", 5000, later), true, later), Decision::Drop, "bekannt, also still");
+        assert_eq!(
+            l.judge(&alert(2, "1.2.3.4", 5000, later), true, later),
+            Decision::Drop,
+            "bekannt, also still"
+        );
         // The same connection out of a strict folder: reported anyway.
         let mut a = alert(3, "1.2.3.4", 5000, later);
         a.verdict = Verdict::Denied;
         a.reason = Some("destination is not on the allowlist of /w/GL".into());
-        assert_eq!(l.judge(&a, true, later), Decision::Store { verdict: Verdict::Denied, reason: a.reason.clone() });
+        assert_eq!(
+            l.judge(&a, true, later),
+            Decision::Store {
+                verdict: Verdict::Denied,
+                reason: a.reason.clone()
+            }
+        );
         assert_eq!(l.pair_count(), 1, "verbotene Flüsse werden nicht zu Paaren");
     }
 
@@ -441,15 +521,30 @@ mod tests {
         let t0 = Utc::now();
         let mut l = Learner::new(7, t0);
         assert_eq!(l.phase(t0), Phase::Learning);
-        assert_eq!(l.judge(&alert(1, "1.2.3.4", 5000, t0), true, t0), store(Verdict::Learning));
+        assert_eq!(
+            l.judge(&alert(1, "1.2.3.4", 5000, t0), true, t0),
+            store(Verdict::Learning)
+        );
         let later = t0 + Duration::days(8);
         assert_eq!(l.phase(later), Phase::Review);
-        assert_eq!(l.judge(&alert(2, "1.2.3.9", 5000, later), true, later), store(Verdict::Learning), "gleiches /24, weiter Kandidat");
+        assert_eq!(
+            l.judge(&alert(2, "1.2.3.9", 5000, later), true, later),
+            store(Verdict::Learning),
+            "gleiches /24, weiter Kandidat"
+        );
         assert_eq!(l.pair_count(), 1);
         l.confirm();
         assert_eq!(l.phase(later), Phase::Active);
-        assert_eq!(l.judge(&alert(3, "1.2.3.7", 5000, later), true, later), Decision::Drop, "bekanntes Paar ist still");
-        assert_eq!(l.judge(&alert(4, "9.9.9.9", 5000, later), true, later), store(Verdict::New), "neues Ziel");
+        assert_eq!(
+            l.judge(&alert(3, "1.2.3.7", 5000, later), true, later),
+            Decision::Drop,
+            "bekanntes Paar ist still"
+        );
+        assert_eq!(
+            l.judge(&alert(4, "9.9.9.9", 5000, later), true, later),
+            store(Verdict::New),
+            "neues Ziel"
+        );
         let st = l.status(later);
         assert_eq!(st.phase, Phase::Active);
         assert_eq!(st.until, None);
@@ -462,7 +557,9 @@ mod tests {
         let t0 = Utc::now();
         let mut l = Learner::new(7, t0);
         let mut a = alert(1, "1.2.3.4", 5000, t0);
-        a.identity = ProcessIdentity::Unknown { path: "/tmp/evil".into() };
+        a.identity = ProcessIdentity::Unknown {
+            path: "/tmp/evil".into(),
+        };
         assert_eq!(l.judge(&a, true, t0), store(Verdict::New));
         assert_eq!(l.pair_count(), 0);
         assert!(l.remember(&a).is_none());
@@ -478,14 +575,29 @@ mod tests {
         l.confirm();
         // If a flow grows beyond four times, it reports; carry-forwards
         // stay visible.
-        assert_eq!(l.judge(&alert(4, "1.2.3.4", 20_000, t0), true, t0), Decision::Drop);
+        assert_eq!(
+            l.judge(&alert(4, "1.2.3.4", 20_000, t0), true, t0),
+            Decision::Drop
+        );
         match l.judge(&alert(4, "1.2.3.4", 50_000, t0), false, t0) {
-            Decision::Store { verdict: Verdict::Deviation, reason: Some(r) } => assert!(r.contains("4×"), "{r}"),
+            Decision::Store {
+                verdict: Verdict::Deviation,
+                reason: Some(r),
+            } => assert!(r.contains("4×"), "{r}"),
             other => panic!("{other:?}"),
         }
-        assert!(matches!(l.judge(&alert(4, "1.2.3.4", 60_000, t0), false, t0), Decision::Store { verdict: Verdict::Deviation, .. }));
+        assert!(matches!(
+            l.judge(&alert(4, "1.2.3.4", 60_000, t0), false, t0),
+            Decision::Store {
+                verdict: Verdict::Deviation,
+                ..
+            }
+        ));
         // After that 60 000 is the maximum: 100 000 is no longer a deviation.
-        assert_eq!(l.judge(&alert(5, "1.2.3.4", 100_000, t0), true, t0), Decision::Drop);
+        assert_eq!(
+            l.judge(&alert(5, "1.2.3.4", 100_000, t0), true, t0),
+            Decision::Drop
+        );
     }
 
     #[test]
@@ -498,10 +610,21 @@ mod tests {
         l.confirm();
         let odd = t0 + Duration::hours(12);
         match l.judge(&alert(21, "1.2.3.4", 1000, odd), true, odd) {
-            Decision::Store { verdict: Verdict::Deviation, reason: Some(r) } => assert!(r.contains("unusual time"), "{r}"),
+            Decision::Store {
+                verdict: Verdict::Deviation,
+                reason: Some(r),
+            } => assert!(r.contains("unusual time"), "{r}"),
             other => panic!("{other:?}"),
         }
-        assert_eq!(l.judge(&alert(22, "1.2.3.4", 1000, t0 + Duration::minutes(30)), true, t0), Decision::Drop, "±1 h ist gewohnt");
+        assert_eq!(
+            l.judge(
+                &alert(22, "1.2.3.4", 1000, t0 + Duration::minutes(30)),
+                true,
+                t0
+            ),
+            Decision::Drop,
+            "±1 h ist gewohnt"
+        );
     }
 
     #[test]
@@ -512,12 +635,21 @@ mod tests {
         let a = alert(1, "1.2.3.4", 5000, t0);
         assert_eq!(l.judge(&a, true, t0), store(Verdict::New));
         let key = l.remember(&a).unwrap();
-        assert_eq!(l.judge(&alert(2, "1.2.3.5", 5000, t0), true, t0), Decision::Drop);
+        assert_eq!(
+            l.judge(&alert(2, "1.2.3.5", 5000, t0), true, t0),
+            Decision::Drop
+        );
         l.flag(&a);
-        assert_eq!(l.judge(&alert(3, "1.2.3.5", 5000, t0), true, t0), store(Verdict::Flagged));
+        assert_eq!(
+            l.judge(&alert(3, "1.2.3.5", 5000, t0), true, t0),
+            store(Verdict::Flagged)
+        );
         assert!(l.forget(&key));
         assert!(!l.forget(&key));
-        assert_eq!(l.judge(&alert(4, "1.2.3.5", 5000, t0), true, t0), store(Verdict::New));
+        assert_eq!(
+            l.judge(&alert(4, "1.2.3.5", 5000, t0), true, t0),
+            store(Verdict::New)
+        );
         l.restart(7, t0);
         assert_eq!(l.phase(t0), Phase::Learning);
         assert_eq!(l.pair_count(), 0);
@@ -527,23 +659,49 @@ mod tests {
     fn seed_from_history_shortens_learning() {
         let now = Utc::now();
         let mut l = Learner::new(7, now);
-        let old = vec![alert(1, "1.2.3.4", 100, now - Duration::days(2)), alert(2, "1.2.3.4", 200, now - Duration::days(30))];
+        let old = vec![
+            alert(1, "1.2.3.4", 100, now - Duration::days(2)),
+            alert(2, "1.2.3.4", 200, now - Duration::days(30)),
+        ];
         l.seed(&old, 7, now);
         assert_eq!(l.pair_count(), 1);
         assert_eq!(l.status(now).pairs[0].count, 1, "30 Tage alt zählt nicht");
-        assert_eq!(l.phase(now + Duration::days(5) + Duration::hours(1)), Phase::Review, "endet 7 Tage nach der ältesten Warnung");
+        assert_eq!(
+            l.phase(now + Duration::days(5) + Duration::hours(1)),
+            Phase::Review,
+            "endet 7 Tage nach der ältesten Warnung"
+        );
         assert_eq!(l.phase(now + Duration::days(4)), Phase::Learning);
     }
 
     #[test]
     fn keys_and_nets() {
-        assert_eq!(dest_net(Some("10.20.30.40".parse().unwrap())), "10.20.30.0/24");
-        assert_eq!(dest_net(Some("2a00:1450:4001:82f::200e".parse().unwrap())), "2a00:1450:4001::/48");
+        assert_eq!(
+            dest_net(Some("10.20.30.40".parse().unwrap())),
+            "10.20.30.0/24"
+        );
+        assert_eq!(
+            dest_net(Some("2a00:1450:4001:82f::200e".parse().unwrap())),
+            "2a00:1450:4001::/48"
+        );
         assert_eq!(dest_net(None), "?");
-        assert_eq!(pair_key(&alert(1, "1.2.3.4", 1, Utc::now())), "APPLE/com.apple.curl→1.2.3.0/24:443");
-        let usb = Alert { volume: Some("/Volumes/USB".into()), remote: None, remote_port: None, ..alert(1, "1.2.3.4", 1, Utc::now()) };
+        assert_eq!(
+            pair_key(&alert(1, "1.2.3.4", 1, Utc::now())),
+            "APPLE/com.apple.curl→1.2.3.0/24:443"
+        );
+        let usb = Alert {
+            volume: Some("/Volumes/USB".into()),
+            remote: None,
+            remote_port: None,
+            ..alert(1, "1.2.3.4", 1, Utc::now())
+        };
         assert_eq!(pair_key(&usb), "APPLE/com.apple.curl→volume:/Volumes/USB");
-        let cp = Alert { copy_to: Some("/Users/me/Desktop".into()), remote: None, remote_port: None, ..alert(1, "1.2.3.4", 1, Utc::now()) };
+        let cp = Alert {
+            copy_to: Some("/Users/me/Desktop".into()),
+            remote: None,
+            remote_port: None,
+            ..alert(1, "1.2.3.4", 1, Utc::now())
+        };
         assert_eq!(pair_key(&cp), "APPLE/com.apple.curl→copy:/Users/me/Desktop");
         let json = serde_json::to_string(&Learner::new(1, Utc::now())).unwrap();
         let back: Learner = serde_json::from_str(&json).unwrap();
@@ -565,18 +723,39 @@ mod tests {
         let base = alert(1, "1.2.3.4", 1, Utc::now());
 
         let hashed = Alert {
-            identity: ProcessIdentity::Hashed { path: "/usr/bin/tool".into(), sha256: "0123456789abcdefdeadbeef".into() },
+            identity: ProcessIdentity::Hashed {
+                path: "/usr/bin/tool".into(),
+                sha256: "0123456789abcdefdeadbeef".into(),
+            },
             ..base.clone()
         };
-        assert_eq!(pair_key(&hashed), "hash:/usr/bin/tool:0123456789ab→1.2.3.0/24:443");
+        assert_eq!(
+            pair_key(&hashed),
+            "hash:/usr/bin/tool:0123456789ab→1.2.3.0/24:443"
+        );
 
-        let unsigned = Alert { identity: ProcessIdentity::Unknown { path: "/tmp/x".into() }, ..base.clone() };
+        let unsigned = Alert {
+            identity: ProcessIdentity::Unknown {
+                path: "/tmp/x".into(),
+            },
+            ..base.clone()
+        };
         assert_eq!(pair_key(&unsigned), "unsigned:/tmp/x→1.2.3.0/24:443");
 
-        let upload = Alert { upload_url: Some("https://ai.example.com/v1".into()), ..base.clone() };
-        assert_eq!(pair_key(&upload), "APPLE/com.apple.curl→upload:https://ai.example.com/v1");
+        let upload = Alert {
+            upload_url: Some("https://ai.example.com/v1".into()),
+            ..base.clone()
+        };
+        assert_eq!(
+            pair_key(&upload),
+            "APPLE/com.apple.curl→upload:https://ai.example.com/v1"
+        );
 
-        let nowhere = Alert { remote: None, remote_port: None, ..base };
+        let nowhere = Alert {
+            remote: None,
+            remote_port: None,
+            ..base
+        };
         assert_eq!(pair_key(&nowhere), "APPLE/com.apple.curl→?:?");
     }
 
@@ -597,7 +776,10 @@ mod tests {
         let json = serde_json::to_string(&l).expect("Lerner schreibt sich");
         // The key sits on disk as a field name -- a change of format shows
         // up here, not only at the next flood of alerts.
-        assert!(json.contains("APPLE/com.apple.curl→1.2.3.0/24:443"), "{json}");
+        assert!(
+            json.contains("APPLE/com.apple.curl→1.2.3.0/24:443"),
+            "{json}"
+        );
 
         let mut back: Learner = serde_json::from_str(&json).expect("und liest sich wieder");
         assert_eq!(back.pair_count(), 1);

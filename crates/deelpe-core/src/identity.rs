@@ -49,10 +49,15 @@ impl ProcessIdentity {
 impl fmt::Display for ProcessIdentity {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ProcessIdentity::Signed { team_id, signing_id } => {
+            ProcessIdentity::Signed {
+                team_id,
+                signing_id,
+            } => {
                 write!(f, "{signing_id} (Team {team_id})")
             }
-            ProcessIdentity::Hashed { path, sha256 } => write!(f, "{path} [{}]", &sha256[..12.min(sha256.len())]),
+            ProcessIdentity::Hashed { path, sha256 } => {
+                write!(f, "{path} [{}]", &sha256[..12.min(sha256.len())])
+            }
             ProcessIdentity::Unknown { path } => write!(f, "{path} [unsigned]"),
         }
     }
@@ -64,12 +69,19 @@ mod tests {
 
     #[test]
     fn short_names_on_both_platforms() {
-        let mac = ProcessIdentity::Unknown { path: "/usr/bin/curl".into() };
+        let mac = ProcessIdentity::Unknown {
+            path: "/usr/bin/curl".into(),
+        };
         assert_eq!(mac.short(), "curl");
-        let win = ProcessIdentity::Unknown { path: r"C:\Program Files\Google\Chrome\chrome.exe".into() };
+        let win = ProcessIdentity::Unknown {
+            path: r"C:\Program Files\Google\Chrome\chrome.exe".into(),
+        };
         assert_eq!(win.short(), "chrome.exe");
         // Signed programs carry their ID, not the path.
-        let signed = ProcessIdentity::Signed { team_id: "Google LLC".into(), signing_id: "chrome.exe".into() };
+        let signed = ProcessIdentity::Signed {
+            team_id: "Google LLC".into(),
+            signing_id: "chrome.exe".into(),
+        };
         assert_eq!(signed.short(), "chrome.exe");
         assert_eq!(signed.to_string(), "chrome.exe (Team Google LLC)");
         assert!(signed.is_trusted_form());

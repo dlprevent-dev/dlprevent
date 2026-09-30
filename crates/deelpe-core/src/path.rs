@@ -46,7 +46,13 @@ pub fn norm(p: &str) -> String {
     if s.is_ascii() {
         s.make_ascii_lowercase();
     } else {
-        s = s.nfc().collect::<String>().to_uppercase().to_lowercase().nfc().collect();
+        s = s
+            .nfc()
+            .collect::<String>()
+            .to_uppercase()
+            .to_lowercase()
+            .nfc()
+            .collect();
     }
     // One folder, several spellings: Win32 silently drops trailing dots and
     // spaces from a path component, so `GL.` and `GL ` are the very folder
@@ -55,7 +61,11 @@ pub fn norm(p: &str) -> String {
     // of its own; a rule then covers it too — as with case above, too much
     // protection, not too little.
     if s.split('/').any(|c| strip_win_tail(c).len() != c.len()) {
-        s = s.split('/').map(strip_win_tail).collect::<Vec<_>>().join("/");
+        s = s
+            .split('/')
+            .map(strip_win_tail)
+            .collect::<Vec<_>>()
+            .join("/");
     }
     while s.ends_with('/') && s.len() > 1 {
         s.pop();
@@ -109,7 +119,10 @@ pub fn under_norm(file: &str, base: &str) -> bool {
 }
 
 fn prefix_of(file: &str, base: &str) -> bool {
-    file == base || (file.len() > base.len() && file.starts_with(base) && file.as_bytes()[base.len()] == b'/')
+    file == base
+        || (file.len() > base.len()
+            && file.starts_with(base)
+            && file.as_bytes()[base.len()] == b'/')
 }
 
 /// `//srv01.example.int/gl/a` → `//srv01/gl/a`. `None` if there is nothing
@@ -138,10 +151,19 @@ mod tests {
     #[test]
     fn separators_and_case_do_not_matter() {
         assert!(under(r"\\srv01\GL\zahlen.xlsx", r"\\srv01\GL"));
-        assert!(under(r"\\SRV01\gl\Zahlen.xlsx", r"\\srv01\GL"), "Freigaben schreibt jeder anders");
+        assert!(
+            under(r"\\SRV01\gl\Zahlen.xlsx", r"\\srv01\GL"),
+            "Freigaben schreibt jeder anders"
+        );
         assert!(under(r"\\srv01\GL", r"\\srv01\GL"));
-        assert!(under("//srv01/gl/a.txt", r"\\srv01\GL"), "Ereignis mit / auf Regel mit \\");
-        assert!(under(r"C:\Freigaben\GL\a.dat", "c:/freigaben/gl/"), "Schlusstrenner zaehlt nicht");
+        assert!(
+            under("//srv01/gl/a.txt", r"\\srv01\GL"),
+            "Ereignis mit / auf Regel mit \\"
+        );
+        assert!(
+            under(r"C:\Freigaben\GL\a.dat", "c:/freigaben/gl/"),
+            "Schlusstrenner zaehlt nicht"
+        );
     }
 
     #[test]
@@ -149,7 +171,10 @@ mod tests {
         assert!(under(r"\\srv01.example.int\GL\zahlen.xlsx", r"\\srv01\GL"));
         assert!(under(r"\\SRV01.Example.INT\gl", r"\\srv01\GL"));
         // The other way round does no harm: the rule may carry the long name.
-        assert!(under(r"\\srv01.example.int\GL\a", r"\\srv01.example.int\GL"));
+        assert!(under(
+            r"\\srv01.example.int\GL\a",
+            r"\\srv01.example.int\GL"
+        ));
         // A different server stays a different server.
         assert!(!under(r"\\srv02.example.int\GL\a", r"\\srv01\GL"));
         assert!(!under(r"\\srv01x.example.int\GL\a", r"\\srv01\GL"));
@@ -160,12 +185,18 @@ mod tests {
         // own, not by this shortening.
         assert!(!under(r"\\192.0.2.201\GL\a", r"\\192\GL"));
         assert!(!under(r"\\192.0.2.201\GL\a", r"\\fs-01\GL"));
-        assert!(under(r"\\192.0.2.201\GL\a", r"\\192.0.2.201\GL"), "die Adresse als Regel trifft sich selbst");
+        assert!(
+            under(r"\\192.0.2.201\GL\a", r"\\192.0.2.201\GL"),
+            "die Adresse als Regel trifft sich selbst"
+        );
     }
 
     #[test]
     fn only_whole_components_count() {
-        assert!(!under(r"\\srv01\GL2\a.txt", r"\\srv01\GL"), "kein Treffer mitten im Namen");
+        assert!(
+            !under(r"\\srv01\GL2\a.txt", r"\\srv01\GL"),
+            "kein Treffer mitten im Namen"
+        );
         assert!(!under("/srv/gl2/a", "/srv/gl"));
         assert!(!under("/srv/g", "/srv/gl"));
         assert!(!under("/srv/andere/a.txt", "/srv/gl"));
@@ -178,8 +209,8 @@ mod tests {
     /// does not protect.
     #[test]
     fn a_name_is_the_same_in_both_normalisation_forms() {
-        let nfc = "/Users/eva/\u{00dc}";        // what an operator types
-        let nfd = "/Users/eva/U\u{0308}";       // what the kernel reports
+        let nfc = "/Users/eva/\u{00dc}"; // what an operator types
+        let nfd = "/Users/eva/U\u{0308}"; // what the kernel reports
         assert!(under(nfc, nfd), "NFC event against an NFD rule");
         assert!(under(nfd, nfc), "NFD event against an NFC rule");
         // The other direction matters too, or a rule written in the form the
@@ -194,9 +225,18 @@ mod tests {
     /// `ΠΕΛΑΤΕΣ`, and a caller picks the spelling ETW reports.
     #[test]
     fn letters_with_one_upper_case_are_one_letter() {
-        assert!(under(r"C:\Freigaben\ΠΕΛΑΤΕσ\a.xlsx", r"C:\Freigaben\ΠΕΛΑΤΕΣ"), "final sigma");
-        assert!(under(r"C:\Freigaben\ΠΕΛΑΤΕΣ\a.xlsx", r"C:\Freigaben\πελατεσ"));
-        assert!(under("C:\\Freigaben\\F\u{131}nance\\a", r"C:\Freigaben\Finance"), "dotless i");
+        assert!(
+            under(r"C:\Freigaben\ΠΕΛΑΤΕσ\a.xlsx", r"C:\Freigaben\ΠΕΛΑΤΕΣ"),
+            "final sigma"
+        );
+        assert!(under(
+            r"C:\Freigaben\ΠΕΛΑΤΕΣ\a.xlsx",
+            r"C:\Freigaben\πελατεσ"
+        ));
+        assert!(
+            under("C:\\Freigaben\\F\u{131}nance\\a", r"C:\Freigaben\Finance"),
+            "dotless i"
+        );
         assert!(under("/srv/Ka\u{17f}\u{17f}e/a", "/srv/Kasse"), "long s");
         assert!(under("/srv/\u{b5}C/a", "/srv/\u{3bc}C"), "micro sign");
         assert!(!under("/srv/GLx/a", "/srv/GL"));
@@ -208,12 +248,19 @@ mod tests {
     /// folder and the opened one are two different strings.
     #[test]
     fn trailing_dots_and_spaces_are_not_part_of_a_name() {
-        for spelling in [r"C:\Freigaben\GL.", r"C:\Freigaben\GL ", r"C:\Freigaben\GL . "]
-            .iter()
-            .map(|s| s.replace('\\', "/"))
+        for spelling in [
+            r"C:\Freigaben\GL.",
+            r"C:\Freigaben\GL ",
+            r"C:\Freigaben\GL . ",
+        ]
+        .iter()
+        .map(|s| s.replace('\\', "/"))
         {
             assert!(under(&spelling, r"C:\Freigaben\GL"), "{spelling}");
-            assert!(under(r"C:\Freigaben\GL\a.txt", &spelling), "rule written with the tail: {spelling}");
+            assert!(
+                under(r"C:\Freigaben\GL\a.txt", &spelling),
+                "rule written with the tail: {spelling}"
+            );
         }
         // Only the tail of a component goes — a name that merely *starts*
         // with a dot is a different folder and stays one.
@@ -222,7 +269,11 @@ mod tests {
         // The current-directory designator keeps its dot: `/` and `C:.` are
         // not a folder called the empty string, and `..` is not `.`.
         assert_eq!(norm("/"), "/");
-        assert_eq!(norm("C:\\."), "c:/.", "the designator is not stripped to nothing");
+        assert_eq!(
+            norm("C:\\."),
+            "c:/.",
+            "the designator is not stripped to nothing"
+        );
         assert_eq!(norm("/srv/GL/../HR"), "/srv/gl/../hr");
         assert_eq!(norm("/a/b/"), "/a/b");
     }
@@ -230,7 +281,10 @@ mod tests {
     #[test]
     fn nothing_is_under_an_empty_rule_or_the_root() {
         assert!(!under("/a/b", ""));
-        assert!(!under("/a/b", "   "), "Leerzeichen sind ein Pfad, aber keiner, der passt");
+        assert!(
+            !under("/a/b", "   "),
+            "Leerzeichen sind ein Pfad, aber keiner, der passt"
+        );
         assert!(!under("/a/b", "/"), "die Wurzel schuetzt nicht alles");
         assert!(!under("", "/srv/gl"));
     }

@@ -20,7 +20,9 @@ pub struct NetTop {
 
 impl NetTop {
     pub fn new(secs: u64) -> Self {
-        Self { interval: Duration::from_secs(secs.max(1)) }
+        Self {
+            interval: Duration::from_secs(secs.max(1)),
+        }
     }
 }
 
@@ -37,7 +39,15 @@ impl Sensor for NetTop {
         loop {
             tick.tick().await;
             let out = Command::new("/usr/bin/nettop")
-                .args(["-x", "-L", "1", "-J", "bytes_in,bytes_out", "-t", "external"])
+                .args([
+                    "-x",
+                    "-L",
+                    "1",
+                    "-J",
+                    "bytes_in,bytes_out",
+                    "-t",
+                    "external",
+                ])
                 .output()
                 .await
                 .context("run nettop")?;
@@ -106,12 +116,24 @@ pub fn parse(text: &str) -> Vec<Sample> {
             cur = Some((name, pid));
             continue;
         }
-        let Some((name, pid)) = cur.clone() else { continue };
-        let Some((_, rhs)) = label.split_once("<->") else { continue };
+        let Some((name, pid)) = cur.clone() else {
+            continue;
+        };
+        let Some((_, rhs)) = label.split_once("<->") else {
+            continue;
+        };
         let (ip, port) = split_addr(rhs);
         let bytes_in = cols[1].trim().parse().unwrap_or(0);
         let bytes_out = cols[2].trim().parse().unwrap_or(0);
-        out.push(Sample { name, pid, remote_raw: rhs.to_string(), remote_ip: ip, remote_port: port, bytes_in, bytes_out });
+        out.push(Sample {
+            name,
+            pid,
+            remote_raw: rhs.to_string(),
+            remote_ip: ip,
+            remote_port: port,
+            bytes_in,
+            bytes_out,
+        });
     }
     out
 }
@@ -129,7 +151,10 @@ fn split_addr(s: &str) -> (Option<IpAddr>, Option<u16>) {
         Some((h, p)) => (h, p.parse().ok()),
         None => (s, None),
     };
-    (host.trim_matches(|c| c == '[' || c == ']').parse().ok(), port)
+    (
+        host.trim_matches(|c| c == '[' || c == ']').parse().ok(),
+        port,
+    )
 }
 
 #[cfg(test)]

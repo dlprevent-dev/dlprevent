@@ -10,7 +10,10 @@ use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use chrono::Utc;
-use deelpe_core::central::{AgentConfig, EnrollRequest, EnrollResponse, RenewRequest, RenewResponse, Report, ReportResponse, API_VERSION};
+use deelpe_core::central::{
+    AgentConfig, EnrollRequest, EnrollResponse, RenewRequest, RenewResponse, Report,
+    ReportResponse, API_VERSION,
+};
 use serde_json::json;
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -52,7 +55,11 @@ async fn ca(State(st): State<Shared>) -> String {
     st.pki.ca_pem.clone()
 }
 
-async fn enroll(State(st): State<Shared>, Extension(peer): Extension<PeerAddr>, Json(req): Json<EnrollRequest>) -> Result<Json<EnrollResponse>, ApiError> {
+async fn enroll(
+    State(st): State<Shared>,
+    Extension(peer): Extension<PeerAddr>,
+    Json(req): Json<EnrollRequest>,
+) -> Result<Json<EnrollResponse>, ApiError> {
     if req.api_version != API_VERSION {
         return Err(bad(format!("expects API version {}", API_VERSION)));
     }
@@ -67,7 +74,10 @@ async fn enroll(State(st): State<Shared>, Extension(peer): Extension<PeerAddr>, 
         return Err(ApiError(StatusCode::UNAUTHORIZED, "unknown token".into()));
     };
     if spent {
-        return Err(ApiError(StatusCode::UNAUTHORIZED, "token already used".into()));
+        return Err(ApiError(
+            StatusCode::UNAUTHORIZED,
+            "token already used".into(),
+        ));
     }
     if expires_at < Utc::now() {
         return Err(ApiError(StatusCode::UNAUTHORIZED, "token expired".into()));
@@ -78,15 +88,24 @@ async fn enroll(State(st): State<Shared>, Extension(peer): Extension<PeerAddr>, 
     // server enrols one; a leaked rollout token for laptops does not.
     if matches!(req.kind, deelpe_core::central::AgentKind::WindowsServer) && !file_server {
         warn!(peer = %peer.0, token = label, "file server enrollment with a token not made for one");
-        return Err(ApiError(StatusCode::FORBIDDEN, "this token does not enrol file servers".into()));
+        return Err(ApiError(
+            StatusCode::FORBIDDEN,
+            "this token does not enrol file servers".into(),
+        ));
     }
     let hostname = req.hostname.trim();
     if hostname.is_empty() || hostname.len() > 253 {
         return Err(bad("host name is missing"));
     }
     let agent_id = Uuid::new_v4();
-    let (cert_pem, fp, not_after) = st.pki.sign_agent(&req.csr_pem, agent_id).map_err(|e| bad(format!("CSR: {e}")))?;
-    let kind = serde_json::to_value(req.kind).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_else(|| "mac".into());
+    let (cert_pem, fp, not_after) = st
+        .pki
+        .sign_agent(&req.csr_pem, agent_id)
+        .map_err(|e| bad(format!("CSR: {e}")))?;
+    let kind = serde_json::to_value(req.kind)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_else(|| "mac".into());
     let mut tx = st.pool.begin().await?;
     // Count the use atomically: the row lock makes simultaneous enrollments
     // queue up, so a token for N devices ends with at most N agents. Without
@@ -98,7 +117,10 @@ async fn enroll(State(st): State<Shared>, Extension(peer): Extension<PeerAddr>, 
         .await?
         .rows_affected();
     if burned == 0 {
-        return Err(ApiError(StatusCode::UNAUTHORIZED, "token already used".into()));
+        return Err(ApiError(
+            StatusCode::UNAUTHORIZED,
+            "token already used".into(),
+        ));
     }
     sqlx::query("INSERT INTO agents (id, name, kind, version, cert_fingerprint, cert_not_after, last_addr) VALUES ($1, $2, $3, $4, $5, $6, $7)")
         .bind(agent_id)
@@ -113,7 +135,11 @@ async fn enroll(State(st): State<Shared>, Extension(peer): Extension<PeerAddr>, 
     tx.commit().await?;
     db::audit(&st.pool, db::Actor::SYSTEM, "agent_enroll", json!({ "id": agent_id, "name": hostname, "kind": kind, "token": label, "ip": peer.0.ip().to_string() })).await;
     info!(%agent_id, hostname, kind, "agent enrolled");
-    Ok(Json(EnrollResponse { agent_id: agent_id.to_string(), cert_pem, ca_pem: st.pki.ca_pem.clone() }))
+    Ok(Json(EnrollResponse {
+        agent_id: agent_id.to_string(),
+        cert_pem,
+        ca_pem: st.pki.ca_pem.clone(),
+    }))
 }
 
 /// Identify the agent by its client certificate. Applies to report and
@@ -122,12 +148,21 @@ async fn enroll(State(st): State<Shared>, Extension(peer): Extension<PeerAddr>, 
 /// The agent and the fingerprint it came in with. That can be the current
 /// one or — during the grace period — the previous one; when renewing that
 /// makes the difference.
-async fn authenticated_agent(st: &Shared, peer_cert: Option<Extension<PeerCert>>) -> Result<(db::AgentRow, String), ApiError> {
+async fn authenticated_agent(
+    st: &Shared,
+    peer_cert: Option<Extension<PeerCert>>,
+) -> Result<(db::AgentRow, String), ApiError> {
     let Some(Extension(PeerCert(fp))) = peer_cert else {
-        return Err(ApiError(StatusCode::UNAUTHORIZED, "client certificate is missing".into()));
+        return Err(ApiError(
+            StatusCode::UNAUTHORIZED,
+            "client certificate is missing".into(),
+        ));
     };
     let Some(agent) = db::agent_by_fingerprint(&st.pool, &fp).await? else {
-        return Err(ApiError(StatusCode::UNAUTHORIZED, "unknown certificate".into()));
+        return Err(ApiError(
+            StatusCode::UNAUTHORIZED,
+            "unknown certificate".into(),
+        ));
     };
     if agent.revoked_at.is_some() {
         return Err(ApiError(StatusCode::FORBIDDEN, "agent revoked".into()));
@@ -146,10 +181,16 @@ async fn renew(
     Json(req): Json<RenewRequest>,
 ) -> Result<Json<RenewResponse>, ApiError> {
     if req.api_version != API_VERSION {
-        return Err(bad(format!("expects API version {API_VERSION}, agent speaks {}", req.api_version)));
+        return Err(bad(format!(
+            "expects API version {API_VERSION}, agent speaks {}",
+            req.api_version
+        )));
     }
     let (agent, presented) = authenticated_agent(&st, peer_cert).await?;
-    let (cert_pem, fp, not_after) = st.pki.sign_agent(&req.csr_pem, agent.id).map_err(|e| bad(format!("CSR: {e}")))?;
+    let (cert_pem, fp, not_after) = st
+        .pki
+        .sign_agent(&req.csr_pem, agent.id)
+        .map_err(|e| bad(format!("CSR: {e}")))?;
     // The fingerprint the agent just presented stays valid for a while: if
     // it loses the answer, it comes back in with that one and tries again.
     //
@@ -173,7 +214,10 @@ async fn renew(
     .await?;
     db::audit(&st.pool, db::Actor::SYSTEM, "agent_cert_renew", json!({ "id": agent.id, "name": agent.name, "not_after": not_after, "ip": peer.0.ip().to_string() })).await;
     info!(agent_id = %agent.id, name = agent.name, %not_after, "Agentenzertifikat erneuert");
-    Ok(Json(RenewResponse { cert_pem, not_after }))
+    Ok(Json(RenewResponse {
+        cert_pem,
+        not_after,
+    }))
 }
 
 /// The only agent that gets rules in their raw form: it sits on the folder
@@ -202,19 +246,33 @@ const FILE_SERVER: &str = "windows_server";
 fn endpoint_rules(r: &db::RuleRow, servers: &[db::FileServer]) -> Vec<deelpe_core::central::Rule> {
     use deelpe_core::rules::endpoint_rule_path;
     let w = r.to_wire();
-    let mut paths: Vec<String> = if let Some(sv) = r.agent_id.and_then(|id| servers.iter().find(|s| s.id == id)) {
-        sv.hosts().filter_map(|h| endpoint_rule_path(&r.path, Some((h, &sv.shares)))).collect()
+    let mut paths: Vec<String> = if let Some(sv) = r
+        .agent_id
+        .and_then(|id| servers.iter().find(|s| s.id == id))
+    {
+        sv.hosts()
+            .filter_map(|h| endpoint_rule_path(&r.path, Some((h, &sv.shares))))
+            .collect()
     } else if let Some(path) = endpoint_rule_path(&r.path, None) {
         vec![path]
     } else {
-        servers.iter().flat_map(|s| s.hosts().filter_map(|h| endpoint_rule_path(&r.path, Some((h, &s.shares))))).collect()
+        servers
+            .iter()
+            .flat_map(|s| {
+                s.hosts()
+                    .filter_map(|h| endpoint_rule_path(&r.path, Some((h, &s.shares))))
+            })
+            .collect()
     };
     // If the rule already reads as UNC, `endpoint_rule_path` returns it
     // unchanged for every name — then the same path would be in the answer
     // several times. The repeats sit next to each other because the names of
     // one server sit next to each other.
     paths.dedup_by(|a, b| deelpe_core::path::norm(a) == deelpe_core::path::norm(b));
-    paths.into_iter().map(|path| deelpe_core::central::Rule { path, ..w.clone() }).collect()
+    paths
+        .into_iter()
+        .map(|path| deelpe_core::central::Rule { path, ..w.clone() })
+        .collect()
 }
 
 /// Upper bound for an agent's acknowledgements; at most 100 instructions go
@@ -239,30 +297,50 @@ async fn binary(
 ) -> Result<axum::response::Response, ApiError> {
     let (agent, _) = authenticated_agent(&st, peer_cert).await?;
     let arch = q.get("arch").map(String::as_str).unwrap_or_default();
-    let platform = crate::binaries::program_for(&agent.kind, arch)
-        .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "no agent program for this kind of agent".into()))?;
-    let (name, bytes) = crate::binaries::read(&st, platform).ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "no agent program uploaded".into()))?;
+    let platform = crate::binaries::program_for(&agent.kind, arch).ok_or_else(|| {
+        ApiError(
+            StatusCode::NOT_FOUND,
+            "no agent program for this kind of agent".into(),
+        )
+    })?;
+    let (name, bytes) = crate::binaries::read(&st, platform)
+        .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "no agent program uploaded".into()))?;
     info!(agent = %agent.name, platform, bytes = bytes.len(), "agent fetches its program");
     let mut resp = crate::binaries::as_download(name, bytes);
     // The release statement along with it, base64 because it spans lines.
     // An agent built with the release key swaps only when it holds.
     if let Some(stmt) = crate::binaries::release_statement(&st, platform) {
         use base64::Engine;
-        if let Ok(v) = base64::engine::general_purpose::STANDARD.encode(stmt).parse() {
-            resp.headers_mut().insert(deelpe_core::central::RELEASE_HEADER, v);
+        if let Ok(v) = base64::engine::general_purpose::STANDARD
+            .encode(stmt)
+            .parse()
+        {
+            resp.headers_mut()
+                .insert(deelpe_core::central::RELEASE_HEADER, v);
         }
     }
     Ok(resp)
 }
 
-async fn report(State(st): State<Shared>, peer_cert: Option<Extension<PeerCert>>, Extension(peer): Extension<PeerAddr>, Json(r): Json<Report>) -> Result<Json<ReportResponse>, ApiError> {
+async fn report(
+    State(st): State<Shared>,
+    peer_cert: Option<Extension<PeerCert>>,
+    Extension(peer): Extension<PeerAddr>,
+    Json(r): Json<Report>,
+) -> Result<Json<ReportResponse>, ApiError> {
     let (agent, _) = authenticated_agent(&st, peer_cert).await?;
     if let Some(v) = r.api_version {
         if v != API_VERSION {
-            return Err(bad(format!("expects API version {API_VERSION}, agent speaks {v}")));
+            return Err(bad(format!(
+                "expects API version {API_VERSION}, agent speaks {v}"
+            )));
         }
     }
-    let version = r.status.as_ref().map(|s| s.version.clone()).unwrap_or(agent.version.clone());
+    let version = r
+        .status
+        .as_ref()
+        .map(|s| s.version.clone())
+        .unwrap_or(agent.version.clone());
     sqlx::query("UPDATE agents SET last_seen = now(), last_addr = $2, version = $3, status = COALESCE($4, status) WHERE id = $1")
         .bind(agent.id)
         .bind(peer.0.ip().to_string())
@@ -293,7 +371,9 @@ async fn report(State(st): State<Shared>, peer_cert: Option<Extension<PeerCert>>
     // buffer and send it again with every report — and the alerts would
     // never get through again. Alerts matter more than the log, so they win.
     if !r.log.is_empty() {
-        if let Err(e) = db::insert_agent_log(&st.pool, agent.id, &r.log[..r.log.len().min(LOG_LINES_MAX)]).await {
+        if let Err(e) =
+            db::insert_agent_log(&st.pool, agent.id, &r.log[..r.log.len().min(LOG_LINES_MAX)]).await
+        {
             warn!(agent = %agent.name, "could not store agent log lines: {e:#}");
         }
     }
@@ -313,7 +393,9 @@ async fn report(State(st): State<Shared>, peer_cert: Option<Extension<PeerCert>>
         // without carrying them out only harms themselves — they stay
         // noisy. The limit merely caps the packet; we deliver at most 100.
         if r.learn_done.len() > LEARN_DONE_MAX {
-            return Err(bad(format!("at most {LEARN_DONE_MAX} learning instructions per report")));
+            return Err(bad(format!(
+                "at most {LEARN_DONE_MAX} learning instructions per report"
+            )));
         }
         let n = db::mark_learn_applied(&st.pool, agent.id, &r.learn_done).await?;
         if n > 0 {
@@ -344,10 +426,18 @@ async fn report(State(st): State<Shared>, peer_cert: Option<Extension<PeerCert>>
     let rules = if r.generation == Some(settings.generation) {
         Vec::new()
     } else if agent.kind == FILE_SERVER {
-        db::rules_for_agent(&st.pool, agent.id).await?.iter().map(|r| r.to_wire()).collect()
+        db::rules_for_agent(&st.pool, agent.id)
+            .await?
+            .iter()
+            .map(|r| r.to_wire())
+            .collect()
     } else {
         let servers = db::file_servers(&st.pool).await?;
-        db::rules_for_endpoint(&st.pool, agent.id).await?.iter().flat_map(|r| endpoint_rules(r, &servers)).collect()
+        db::rules_for_endpoint(&st.pool, agent.id)
+            .await?
+            .iter()
+            .flat_map(|r| endpoint_rules(r, &servers))
+            .collect()
     };
     // An update goes to whoever can use one and had one ordered: either via
     // the master switch (applies to all) or via the button on this one
@@ -357,10 +447,19 @@ async fn report(State(st): State<Shared>, peer_cert: Option<Extension<PeerCert>>
     // The comparison is the file itself, not a version number: see
     // `update_due`. Without a reported fingerprint it falls back to `false`,
     // and then nothing goes out even at the press of the button.
-    let running = r.status.as_ref().map(|s| s.build.as_str()).unwrap_or_default();
-    let arch = r.status.as_ref().map(|s| s.arch.as_str()).unwrap_or_default();
+    let running = r
+        .status
+        .as_ref()
+        .map(|s| s.build.as_str())
+        .unwrap_or_default();
+    let arch = r
+        .status
+        .as_ref()
+        .map(|s| s.arch.as_str())
+        .unwrap_or_default();
     let wanted = if settings.agent_update_enabled || agent.update_requested.is_some() {
-        crate::binaries::self_replacing_platform(&agent.kind, arch).and_then(|p| crate::binaries::sha256_of(&st, p))
+        crate::binaries::self_replacing_platform(&agent.kind, arch)
+            .and_then(|p| crate::binaries::sha256_of(&st, p))
     } else {
         None
     };
@@ -369,16 +468,29 @@ async fn report(State(st): State<Shared>, peer_cert: Option<Extension<PeerCert>>
     // withdrawn — and at the next upload this one machine would help itself
     // to that too, unasked.
     if agent.update_requested.is_some() && update_order.is_none() {
-        if let Err(e) = sqlx::query("UPDATE agents SET update_requested = NULL WHERE id = $1").bind(agent.id).execute(&st.pool).await {
+        if let Err(e) = sqlx::query("UPDATE agents SET update_requested = NULL WHERE id = $1")
+            .bind(agent.id)
+            .execute(&st.pool)
+            .await
+        {
             warn!(agent = %agent.name, "could not clear the update order: {e:#}");
         }
     }
     // The same shape as the update order: stands until the agent reports
     // the phase it was asked for, then clears itself.
-    let phase = r.status.as_ref().map(|s| s.learn_phase.as_str()).unwrap_or_default();
+    let phase = r
+        .status
+        .as_ref()
+        .map(|s| s.learn_phase.as_str())
+        .unwrap_or_default();
     let finish_learning = agent.learn_confirm_requested.is_some() && phase != "active";
     if agent.learn_confirm_requested.is_some() && phase == "active" {
-        if let Err(e) = sqlx::query("UPDATE agents SET learn_confirm_requested = NULL WHERE id = $1").bind(agent.id).execute(&st.pool).await {
+        if let Err(e) =
+            sqlx::query("UPDATE agents SET learn_confirm_requested = NULL WHERE id = $1")
+                .bind(agent.id)
+                .execute(&st.pool)
+                .await
+        {
             warn!(agent = %agent.name, "could not clear the learning order: {e:#}");
         }
     }
@@ -390,11 +502,19 @@ async fn report(State(st): State<Shared>, peer_cert: Option<Extension<PeerCert>>
         rules,
         // Split with the same parser as in the agent: otherwise one side
         // splits at comments and the other does not.
-        allow_processes: deelpe_core::learn::parse_allowlist(&settings.allow_processes).into_iter().collect(),
+        allow_processes: deelpe_core::learn::parse_allowlist(&settings.allow_processes)
+            .into_iter()
+            .collect(),
         update_to_sha256: update_order,
         finish_learning,
     };
-    Ok(Json(ReportResponse { accepted_alerts, accepted_access_alerts, accepted_counts, config, learn }))
+    Ok(Json(ReportResponse {
+        accepted_alerts,
+        accepted_access_alerts,
+        accepted_counts,
+        config,
+        learn,
+    }))
 }
 
 #[cfg(test)]
@@ -407,7 +527,11 @@ mod tests {
             id: Uuid::nil(),
             name: "R".into(),
             path: path.into(),
-            scope: if agent_id.is_some() { "agent".into() } else { "all".into() },
+            scope: if agent_id.is_some() {
+                "agent".into()
+            } else {
+                "all".into()
+            },
             agent_id,
             source_id: None,
             allowed_groups: vec![],
@@ -428,7 +552,12 @@ mod tests {
         db::FileServer {
             id,
             name: name.into(),
-            shares: vec![ShareInfo { name: "GL".into(), path: Some(r"C:\Freigaben\GL".into()), remark: None, path_from: None }],
+            shares: vec![ShareInfo {
+                name: "GL".into(),
+                path: Some(r"C:\Freigaben\GL".into()),
+                remark: None,
+                path_from: None,
+            }],
             addrs: vec![addr.into()],
             fqdn: format!("{}.corp.example", name.to_lowercase()),
         }
@@ -446,13 +575,22 @@ mod tests {
         // whoever types `\\192.0.2.201\GL` into the address bar bypasses
         // the rule, and silently at that.
         assert_eq!(
-            paths(endpoint_rules(&rule(r"C:\Freigaben\GL", Some(id)), &servers)),
-            vec![r"\\FS-01\GL", r"\\fs-01.corp.example\GL", r"\\192.0.2.201\GL"]
+            paths(endpoint_rules(
+                &rule(r"C:\Freigaben\GL", Some(id)),
+                &servers
+            )),
+            vec![
+                r"\\FS-01\GL",
+                r"\\fs-01.corp.example\GL",
+                r"\\192.0.2.201\GL"
+            ]
         );
         // The remaining fields of the rule stay as they were — in every
         // copy, not just the first.
         let out = endpoint_rules(&rule(r"C:\Freigaben\GL", Some(id)), &servers);
-        assert!(out.iter().all(|r| r.strict && r.enforce && r.id == out[0].id));
+        assert!(out
+            .iter()
+            .all(|r| r.strict && r.enforce && r.id == out[0].id));
         // Not a folder of a share: do not deliver, rather than point at nothing.
         assert!(endpoint_rules(&rule(r"C:\Windows\Temp", Some(id)), &servers).is_empty());
     }
@@ -465,33 +603,61 @@ mod tests {
         let mut sv = dc(id, "FS-01", "192.0.2.201");
         sv.addrs.clear();
         sv.fqdn.clear();
-        assert_eq!(paths(endpoint_rules(&rule(r"C:\Freigaben\GL", Some(id)), &[sv])), vec![r"\\FS-01\GL"]);
+        assert_eq!(
+            paths(endpoint_rules(&rule(r"C:\Freigaben\GL", Some(id)), &[sv])),
+            vec![r"\\FS-01\GL"]
+        );
         // A server without a domain reports nothing as its long name; were
         // it to report the short name after all, the duplicate path drops
         // out again.
         let mut same = dc(id, "SRV", "10.0.0.1");
         same.fqdn = "srv".into();
         same.addrs.clear();
-        assert_eq!(paths(endpoint_rules(&rule(r"C:\Freigaben\GL", Some(id)), &[same])), vec![r"\\SRV\GL"]);
+        assert_eq!(
+            paths(endpoint_rules(&rule(r"C:\Freigaben\GL", Some(id)), &[same])),
+            vec![r"\\SRV\GL"]
+        );
         let servers = vec![dc(id, "FS-01", "192.0.2.201")];
-        assert_eq!(paths(endpoint_rules(&rule(r"\\FS-01\GL", Some(id)), &servers)), vec![r"\\FS-01\GL"]);
+        assert_eq!(
+            paths(endpoint_rules(&rule(r"\\FS-01\GL", Some(id)), &servers)),
+            vec![r"\\FS-01\GL"]
+        );
     }
 
     #[test]
     fn local_rules_and_share_names_keep_working() {
-        let servers = vec![dc(Uuid::from_u128(1), "SRV1", "10.0.0.1"), dc(Uuid::from_u128(2), "SRV2", "10.0.0.2")];
+        let servers = vec![
+            dc(Uuid::from_u128(1), "SRV1", "10.0.0.1"),
+            dc(Uuid::from_u128(2), "SRV2", "10.0.0.2"),
+        ];
         // A folder on the machine itself.
-        assert_eq!(paths(endpoint_rules(&rule(r"C:\Users\Public", None), &servers)), vec![r"C:\Users\Public"]);
+        assert_eq!(
+            paths(endpoint_rules(&rule(r"C:\Users\Public", None), &servers)),
+            vec![r"C:\Users\Public"]
+        );
         // Share name with scope "all": every file server that has it —
         // each of them under name and address.
         assert_eq!(
             paths(endpoint_rules(&rule("GL", None), &servers)),
-            vec![r"\\SRV1\GL", r"\\srv1.corp.example\GL", r"\\10.0.0.1\GL", r"\\SRV2\GL", r"\\srv2.corp.example\GL", r"\\10.0.0.2\GL"]
+            vec![
+                r"\\SRV1\GL",
+                r"\\srv1.corp.example\GL",
+                r"\\10.0.0.1\GL",
+                r"\\SRV2\GL",
+                r"\\srv2.corp.example\GL",
+                r"\\10.0.0.2\GL"
+            ]
         );
         // Nobody knows it: nothing.
         assert!(endpoint_rules(&rule("Personal", None), &servers).is_empty());
         // A rule of this workstation itself (not a file server) stays.
-        assert_eq!(paths(endpoint_rules(&rule(r"D:\Daten", Some(Uuid::from_u128(9))), &servers)), vec![r"D:\Daten"]);
+        assert_eq!(
+            paths(endpoint_rules(
+                &rule(r"D:\Daten", Some(Uuid::from_u128(9))),
+                &servers
+            )),
+            vec![r"D:\Daten"]
+        );
     }
 }
 
@@ -504,11 +670,20 @@ mod report_tests {
     use sqlx::PgPool;
 
     fn state(pool: PgPool) -> Shared {
-        rustls::crypto::ring::default_provider().install_default().ok();
+        rustls::crypto::ring::default_provider()
+            .install_default()
+            .ok();
         let dir = std::env::temp_dir().join(format!("deelpe-agent-test-{}", Uuid::new_v4()));
         let pki = crate::pki::Pki::load_or_create(&dir, &["localhost".into()]).unwrap();
         std::fs::remove_dir_all(&dir).ok();
-        std::sync::Arc::new(crate::state::AppState::new(pool, std::sync::Arc::new(pki), false, 8444, false, dir))
+        std::sync::Arc::new(crate::state::AppState::new(
+            pool,
+            std::sync::Arc::new(pki),
+            false,
+            8444,
+            false,
+            dir,
+        ))
     }
 
     /// An enrolled endpoint with a rule that reaches it.
@@ -523,16 +698,30 @@ mod report_tests {
         .execute(pool)
         .await
         .unwrap();
-        sqlx::query("INSERT INTO rules (name, path, scope) VALUES ('R', 'C:\\Daten', 'all')").execute(pool).await.unwrap();
+        sqlx::query("INSERT INTO rules (name, path, scope) VALUES ('R', 'C:\\Daten', 'all')")
+            .execute(pool)
+            .await
+            .unwrap();
         fp
     }
 
     async fn report_with(st: &Shared, fp: &str, generation: Option<i64>) -> ReportResponse {
         let peer = PeerAddr("10.0.0.9:1".parse().unwrap());
-        let r = Report { api_version: Some(API_VERSION), generation, ..Default::default() };
+        let r = Report {
+            api_version: Some(API_VERSION),
+            generation,
+            ..Default::default()
+        };
         // `ApiError` is not `Debug` (it carries a message for the client,
         // not one for the developer); so unpack it by hand.
-        match report(State(st.clone()), Some(Extension(PeerCert(fp.into()))), Extension(peer), Json(r)).await {
+        match report(
+            State(st.clone()),
+            Some(Extension(PeerCert(fp.into()))),
+            Extension(peer),
+            Json(r),
+        )
+        .await
+        {
             Ok(Json(resp)) => resp,
             Err(ApiError(code, msg)) => panic!("Bericht abgelehnt: {code} {msg}"),
         }
@@ -549,7 +738,13 @@ mod report_tests {
     }
 
     /// A report naming the agent's learning phase.
-    async fn report_status(st: &Shared, fp: &str, build: &str, arch: &str, learn_phase: &str) -> ReportResponse {
+    async fn report_status(
+        st: &Shared,
+        fp: &str,
+        build: &str,
+        arch: &str,
+        learn_phase: &str,
+    ) -> ReportResponse {
         let peer = PeerAddr("10.0.0.9:1".parse().unwrap());
         let status = deelpe_core::central::AgentStatus {
             version: "0.1.0".into(),
@@ -565,8 +760,19 @@ mod report_tests {
             arch: arch.into(),
             learn_until: None,
         };
-        let r = Report { api_version: Some(API_VERSION), status: Some(status), ..Default::default() };
-        match report(State(st.clone()), Some(Extension(PeerCert(fp.into()))), Extension(peer), Json(r)).await {
+        let r = Report {
+            api_version: Some(API_VERSION),
+            status: Some(status),
+            ..Default::default()
+        };
+        match report(
+            State(st.clone()),
+            Some(Extension(PeerCert(fp.into()))),
+            Extension(peer),
+            Json(r),
+        )
+        .await
+        {
             Ok(Json(resp)) => resp,
             Err(ApiError(code, msg)) => panic!("Bericht abgelehnt: {code} {msg}"),
         }
@@ -586,31 +792,59 @@ mod report_tests {
     /// conditions on its own — strike one of them and you swap the program
     /// on every machine in the company without anyone having ordered it.
     #[sqlx::test(migrations = "./migrations")]
-    async fn an_update_is_ordered_only_when_it_was_switched_on_and_something_else_is_running(pool: PgPool) {
+    async fn an_update_is_ordered_only_when_it_was_switched_on_and_something_else_is_running(
+        pool: PgPool,
+    ) {
         let fp = endpoint_with_a_rule(&pool).await;
         let st = state(pool.clone());
         let sha = upload(&st, b"MZ ein neues Programm");
 
         // Switch off: the dashboard says "outdated" at most, nothing is
         // sent.
-        assert_eq!(report_running(&st, &fp, "0123456789ab").await.config.update_to_sha256, None);
+        assert_eq!(
+            report_running(&st, &fp, "0123456789ab")
+                .await
+                .config
+                .update_to_sha256,
+            None
+        );
 
-        db::set_setting(&pool, "agent_update_enabled", serde_json::json!(true)).await.unwrap();
+        db::set_setting(&pool, "agent_update_enabled", serde_json::json!(true))
+            .await
+            .unwrap();
         // The settings hang in memory for `AGENT_SETTINGS_TTL`.
-        tokio::time::sleep(crate::state::AGENT_SETTINGS_TTL + std::time::Duration::from_millis(200)).await;
+        tokio::time::sleep(
+            crate::state::AGENT_SETTINGS_TTL + std::time::Duration::from_millis(200),
+        )
+        .await;
 
         // Switch on, a different program: an order with the full checksum —
         // the agent has to be able to verify what it gets.
-        assert_eq!(report_running(&st, &fp, "0123456789ab").await.config.update_to_sha256, Some(sha.clone()));
+        assert_eq!(
+            report_running(&st, &fp, "0123456789ab")
+                .await
+                .config
+                .update_to_sha256,
+            Some(sha.clone())
+        );
 
         // The same agent, already running the staged program: nothing to
         // do. Without this it downloads anew with every report.
-        assert_eq!(report_running(&st, &fp, &sha[..12]).await.config.update_to_sha256, None);
+        assert_eq!(
+            report_running(&st, &fp, &sha[..12])
+                .await
+                .config
+                .update_to_sha256,
+            None
+        );
 
         // An agent that does not report its fingerprint gets no program
         // sent — otherwise every older agent downloads the same four and a
         // half megabytes with every report.
-        assert_eq!(report_running(&st, &fp, "").await.config.update_to_sha256, None);
+        assert_eq!(
+            report_running(&st, &fp, "").await.config.update_to_sha256,
+            None
+        );
 
         std::fs::remove_dir_all(&st.data_dir).ok();
     }
@@ -624,14 +858,29 @@ mod report_tests {
         let st = state(pool.clone());
         let finish = |r: ReportResponse| r.config.finish_learning;
 
-        assert!(!finish(report_status(&st, &fp, "", "amd64", "review").await), "no order, nothing asked");
+        assert!(
+            !finish(report_status(&st, &fp, "", "amd64", "review").await),
+            "no order, nothing asked"
+        );
 
-        sqlx::query("UPDATE agents SET learn_confirm_requested = now()").execute(&pool).await.unwrap();
+        sqlx::query("UPDATE agents SET learn_confirm_requested = now()")
+            .execute(&pool)
+            .await
+            .unwrap();
         assert!(finish(report_status(&st, &fp, "", "amd64", "review").await));
-        assert!(finish(report_status(&st, &fp, "", "amd64", "learning").await), "also cuts the phase short");
+        assert!(
+            finish(report_status(&st, &fp, "", "amd64", "learning").await),
+            "also cuts the phase short"
+        );
 
-        assert!(!finish(report_status(&st, &fp, "", "amd64", "active").await));
-        let (open,): (Option<chrono::DateTime<Utc>>,) = sqlx::query_as("SELECT learn_confirm_requested FROM agents").fetch_one(&pool).await.unwrap();
+        assert!(!finish(
+            report_status(&st, &fp, "", "amd64", "active").await
+        ));
+        let (open,): (Option<chrono::DateTime<Utc>>,) =
+            sqlx::query_as("SELECT learn_confirm_requested FROM agents")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert!(open.is_none(), "fulfilled orders clear themselves");
         std::fs::remove_dir_all(&st.data_dir).ok();
     }
@@ -656,12 +905,41 @@ mod report_tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("deelpe-linux-amd64"), b"\x7fELF amd64").unwrap();
         let sha = crate::binaries::sha256_of(&st, "linux-amd64").unwrap();
-        db::set_setting(&pool, "agent_update_enabled", serde_json::json!(true)).await.unwrap();
+        db::set_setting(&pool, "agent_update_enabled", serde_json::json!(true))
+            .await
+            .unwrap();
 
-        assert_eq!(report_running_on(&st, &fp, "0123456789ab", "amd64").await.config.update_to_sha256, Some(sha.clone()));
-        assert_eq!(report_running_on(&st, &fp, &sha[..12], "amd64").await.config.update_to_sha256, None, "already runs it");
-        assert_eq!(report_running_on(&st, &fp, "0123456789ab", "arm64").await.config.update_to_sha256, None, "no arm64 program staged");
-        assert_eq!(report_running_on(&st, &fp, "0123456789ab", "").await.config.update_to_sha256, None, "too old to say");
+        assert_eq!(
+            report_running_on(&st, &fp, "0123456789ab", "amd64")
+                .await
+                .config
+                .update_to_sha256,
+            Some(sha.clone())
+        );
+        assert_eq!(
+            report_running_on(&st, &fp, &sha[..12], "amd64")
+                .await
+                .config
+                .update_to_sha256,
+            None,
+            "already runs it"
+        );
+        assert_eq!(
+            report_running_on(&st, &fp, "0123456789ab", "arm64")
+                .await
+                .config
+                .update_to_sha256,
+            None,
+            "no arm64 program staged"
+        );
+        assert_eq!(
+            report_running_on(&st, &fp, "0123456789ab", "")
+                .await
+                .config
+                .update_to_sha256,
+            None,
+            "too old to say"
+        );
 
         std::fs::remove_dir_all(&st.data_dir).ok();
     }
@@ -679,23 +957,50 @@ mod report_tests {
         let sha = upload(&st, b"MZ ein neues Programm");
 
         // Master switch off, no order: nothing.
-        assert_eq!(report_running(&st, &fp, "0123456789ab").await.config.update_to_sha256, None);
-
-        sqlx::query("UPDATE agents SET update_requested = now()").execute(&pool).await.unwrap();
         assert_eq!(
-            report_running(&st, &fp, "0123456789ab").await.config.update_to_sha256,
+            report_running(&st, &fp, "0123456789ab")
+                .await
+                .config
+                .update_to_sha256,
+            None
+        );
+
+        sqlx::query("UPDATE agents SET update_requested = now()")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            report_running(&st, &fp, "0123456789ab")
+                .await
+                .config
+                .update_to_sha256,
             Some(sha.clone()),
             "der Knopf wirkt auch ohne Hauptschalter"
         );
 
         // The agent runs it now: order fulfilled, flag gone.
-        assert_eq!(report_running(&st, &fp, &sha[..12]).await.config.update_to_sha256, None);
+        assert_eq!(
+            report_running(&st, &fp, &sha[..12])
+                .await
+                .config
+                .update_to_sha256,
+            None
+        );
         let open: Option<(Option<chrono::DateTime<Utc>>,)> =
-            sqlx::query_as("SELECT update_requested FROM agents").fetch_optional(&pool).await.unwrap();
+            sqlx::query_as("SELECT update_requested FROM agents")
+                .fetch_optional(&pool)
+                .await
+                .unwrap();
         assert_eq!(open.unwrap().0, None, "die Marke raeumt sich selbst weg");
 
         // And afterwards it stays quiet, even with reports still coming.
-        assert_eq!(report_running(&st, &fp, &sha[..12]).await.config.update_to_sha256, None);
+        assert_eq!(
+            report_running(&st, &fp, &sha[..12])
+                .await
+                .config
+                .update_to_sha256,
+            None
+        );
 
         std::fs::remove_dir_all(&st.data_dir).ok();
     }
@@ -722,9 +1027,17 @@ mod report_tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("DLPrevent.zip"), b"PK ein Bundle").unwrap();
         std::fs::write(dir.join("deelpe-winagent.exe"), b"MZ ein Programm").unwrap();
-        db::set_setting(&pool, "agent_update_enabled", serde_json::json!(true)).await.unwrap();
+        db::set_setting(&pool, "agent_update_enabled", serde_json::json!(true))
+            .await
+            .unwrap();
 
-        assert_eq!(report_running(&st, &fp, "0123456789ab").await.config.update_to_sha256, None);
+        assert_eq!(
+            report_running(&st, &fp, "0123456789ab")
+                .await
+                .config
+                .update_to_sha256,
+            None
+        );
 
         // And the role → file mapping does not know Linux: before, it fell
         // into the same branch as macOS and could have downloaded a Mac
@@ -732,13 +1045,28 @@ mod report_tests {
         assert_eq!(crate::binaries::platform_for(Some("linux")), None);
         assert_eq!(crate::binaries::platform_for(Some("mac")), Some("mac"));
         assert_eq!(crate::binaries::platform_for(None), Some("mac"));
-        assert_eq!(crate::binaries::self_replacing_platform("mac", "arm64"), None);
-        assert_eq!(crate::binaries::self_replacing_platform("windows_server", ""), Some("windows"));
+        assert_eq!(
+            crate::binaries::self_replacing_platform("mac", "arm64"),
+            None
+        );
+        assert_eq!(
+            crate::binaries::self_replacing_platform("windows_server", ""),
+            Some("windows")
+        );
         // Linux by architecture — and not without one.
-        assert_eq!(crate::binaries::self_replacing_platform("linux", "amd64"), Some("linux-amd64"));
-        assert_eq!(crate::binaries::self_replacing_platform("linux", "arm64"), Some("linux-arm64"));
+        assert_eq!(
+            crate::binaries::self_replacing_platform("linux", "amd64"),
+            Some("linux-amd64")
+        );
+        assert_eq!(
+            crate::binaries::self_replacing_platform("linux", "arm64"),
+            Some("linux-arm64")
+        );
         assert_eq!(crate::binaries::self_replacing_platform("linux", ""), None);
-        assert_eq!(crate::binaries::program_for("linux", "amd64"), Some("linux-amd64"));
+        assert_eq!(
+            crate::binaries::program_for("linux", "amd64"),
+            Some("linux-amd64")
+        );
         assert_eq!(crate::binaries::program_for("mac", "arm64"), Some("mac"));
 
         std::fs::remove_dir_all(&st.data_dir).ok();
@@ -753,17 +1081,31 @@ mod report_tests {
         // one, or one without a copy of the rules. That one gets them.
         let resp = report_with(&st, &fp, None).await;
         let g = resp.config.generation;
-        assert_eq!(resp.config.rules.len(), 1, "ohne gemeldete Generation muessen die Regeln mit");
+        assert_eq!(
+            resp.config.rules.len(),
+            1,
+            "ohne gemeldete Generation muessen die Regeln mit"
+        );
 
         // If it runs the current generation, they stay home -- it would
         // discard them anyway.
         let resp = report_with(&st, &fp, Some(g)).await;
-        assert!(resp.config.rules.is_empty(), "gleiche Generation: nichts schicken");
-        assert_eq!(resp.config.generation, g, "die Generation selbst geht immer mit");
+        assert!(
+            resp.config.rules.is_empty(),
+            "gleiche Generation: nichts schicken"
+        );
+        assert_eq!(
+            resp.config.generation, g,
+            "die Generation selbst geht immer mit"
+        );
 
         // An older generation means: it missed something.
         let resp = report_with(&st, &fp, Some(g - 1)).await;
-        assert_eq!(resp.config.rules.len(), 1, "veraltete Generation: nachliefern");
+        assert_eq!(
+            resp.config.rules.len(),
+            1,
+            "veraltete Generation: nachliefern"
+        );
 
         // And after a rule change it grows, so deliver again -- even to
         // the one that was up to date a moment ago.
@@ -777,7 +1119,11 @@ mod report_tests {
         let st = state(pool.clone());
         let resp = report_with(&st, &fp, Some(g)).await;
         assert_eq!(resp.config.generation, g + 1);
-        assert_eq!(resp.config.rules.len(), 1, "nach der Aenderung muss er sie bekommen");
+        assert_eq!(
+            resp.config.rules.len(),
+            1,
+            "nach der Aenderung muss er sie bekommen"
+        );
     }
 
     async fn token_with_uses(pool: &PgPool, token: &str, max_uses: Option<i32>) {
@@ -794,12 +1140,28 @@ mod report_tests {
     }
 
     async fn enroll_as(st: &Shared, token: &str, host: &str) -> Result<(), String> {
-        enroll_kind(st, token, host, deelpe_core::central::AgentKind::WindowsClient).await
+        enroll_kind(
+            st,
+            token,
+            host,
+            deelpe_core::central::AgentKind::WindowsClient,
+        )
+        .await
     }
 
-    async fn enroll_kind(st: &Shared, token: &str, host: &str, kind: deelpe_core::central::AgentKind) -> Result<(), String> {
+    async fn enroll_kind(
+        st: &Shared,
+        token: &str,
+        host: &str,
+        kind: deelpe_core::central::AgentKind,
+    ) -> Result<(), String> {
         let key = rcgen::KeyPair::generate().unwrap();
-        let csr_pem = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap().serialize_request(&key).unwrap().pem().unwrap();
+        let csr_pem = rcgen::CertificateParams::new(Vec::<String>::new())
+            .unwrap()
+            .serialize_request(&key)
+            .unwrap()
+            .pem()
+            .unwrap();
         let req = EnrollRequest {
             api_version: API_VERSION,
             token: token.into(),
@@ -808,7 +1170,13 @@ mod report_tests {
             version: "0.1.0".into(),
             csr_pem,
         };
-        match enroll(State(st.clone()), Extension(PeerAddr("10.0.0.9:1".parse().unwrap())), Json(req)).await {
+        match enroll(
+            State(st.clone()),
+            Extension(PeerAddr("10.0.0.9:1".parse().unwrap())),
+            Json(req),
+        )
+        .await
+        {
             Ok(_) => Ok(()),
             Err(ApiError(_, msg)) => Err(msg),
         }
@@ -825,21 +1193,49 @@ mod report_tests {
 
         assert_eq!(enroll_as(&st, "fleet", "PC-1").await, Ok(()));
         assert_eq!(enroll_as(&st, "fleet", "PC-2").await, Ok(()));
-        assert_eq!(enroll_as(&st, "fleet", "PC-3").await, Err("token already used".into()), "the third is one too many");
+        assert_eq!(
+            enroll_as(&st, "fleet", "PC-3").await,
+            Err("token already used".into()),
+            "the third is one too many"
+        );
 
         for i in 0..5 {
-            assert_eq!(enroll_as(&st, "rollout", &format!("R-{i}")).await, Ok(()), "no count means no limit");
+            assert_eq!(
+                enroll_as(&st, "rollout", &format!("R-{i}")).await,
+                Ok(()),
+                "no count means no limit"
+            );
         }
-        let (uses, used_by): (i32, Option<Uuid>) =
-            sqlx::query_as("SELECT uses, used_by FROM enroll_tokens WHERE label = 'T' AND max_uses = 2").fetch_one(&pool).await.unwrap();
+        let (uses, used_by): (i32, Option<Uuid>) = sqlx::query_as(
+            "SELECT uses, used_by FROM enroll_tokens WHERE label = 'T' AND max_uses = 2",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         assert_eq!(uses, 2);
-        let last: Uuid = sqlx::query_scalar("SELECT id FROM agents WHERE name = 'PC-2'").fetch_one(&pool).await.unwrap();
+        let last: Uuid = sqlx::query_scalar("SELECT id FROM agents WHERE name = 'PC-2'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
         assert_eq!(used_by, Some(last), "used_by names the latest agent");
 
-        sqlx::query("DELETE FROM enroll_tokens WHERE max_uses IS NULL").execute(&pool).await.unwrap();
-        assert_eq!(enroll_as(&st, "rollout", "R-late").await, Err("unknown token".into()), "revoked means revoked");
-        let agents: i64 = sqlx::query_scalar("SELECT count(*) FROM agents").fetch_one(&pool).await.unwrap();
-        assert_eq!(agents, 7, "revoking the token leaves the enrolled agents alone");
+        sqlx::query("DELETE FROM enroll_tokens WHERE max_uses IS NULL")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            enroll_as(&st, "rollout", "R-late").await,
+            Err("unknown token".into()),
+            "revoked means revoked"
+        );
+        let agents: i64 = sqlx::query_scalar("SELECT count(*) FROM agents")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            agents, 7,
+            "revoking the token leaves the enrolled agents alone"
+        );
     }
 
     /// A file server's share table ends up in every endpoint's rules, so
@@ -857,12 +1253,28 @@ mod report_tests {
             .await
             .unwrap();
 
-        assert_eq!(enroll_kind(&st, "laptops", "ROGUE", AgentKind::WindowsServer).await, Err("this token does not enrol file servers".into()));
-        let uses: i32 = sqlx::query_scalar("SELECT uses FROM enroll_tokens WHERE label = 'T'").fetch_one(&pool).await.unwrap();
+        assert_eq!(
+            enroll_kind(&st, "laptops", "ROGUE", AgentKind::WindowsServer).await,
+            Err("this token does not enrol file servers".into())
+        );
+        let uses: i32 = sqlx::query_scalar("SELECT uses FROM enroll_tokens WHERE label = 'T'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
         assert_eq!(uses, 0);
-        assert_eq!(enroll_kind(&st, "laptops", "PC-1", AgentKind::Mac).await, Ok(()));
-        assert_eq!(enroll_kind(&st, "servers", "FS-01", AgentKind::WindowsServer).await, Ok(()));
-        let servers: Vec<String> = sqlx::query_scalar("SELECT name FROM agents WHERE kind = 'windows_server'").fetch_all(&pool).await.unwrap();
+        assert_eq!(
+            enroll_kind(&st, "laptops", "PC-1", AgentKind::Mac).await,
+            Ok(())
+        );
+        assert_eq!(
+            enroll_kind(&st, "servers", "FS-01", AgentKind::WindowsServer).await,
+            Ok(())
+        );
+        let servers: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM agents WHERE kind = 'windows_server'")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
         assert_eq!(servers, vec!["FS-01"]);
     }
 }

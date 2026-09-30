@@ -21,7 +21,10 @@ pub const COOKIE: &str = "deelpe_session";
 pub const SESSION_HOURS: i64 = 12;
 
 pub fn hash_password(pw: &str) -> Result<String> {
-    Ok(Argon2::default().hash_password(pw.as_bytes()).map_err(|e| anyhow!("{e}"))?.to_string())
+    Ok(Argon2::default()
+        .hash_password(pw.as_bytes())
+        .map_err(|e| anyhow!("{e}"))?
+        .to_string())
 }
 
 pub fn verify_password(pw: &str, hash: &str) -> bool {
@@ -96,7 +99,16 @@ pub fn base32(bytes: &[u8]) -> String {
 }
 
 pub fn otpauth_url(user: &str, secret: &[u8]) -> String {
-    let label: String = user.bytes().map(|b| if b.is_ascii_alphanumeric() || b == b'.' || b == b'-' || b == b'_' { (b as char).to_string() } else { format!("%{b:02X}") }).collect();
+    let label: String = user
+        .bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() || b == b'.' || b == b'-' || b == b'_' {
+                (b as char).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
+        .collect();
     format!("otpauth://totp/DLPrevent:{label}?secret={}&issuer=DLPrevent&algorithm=SHA1&digits={TOTP_DIGITS}&period={TOTP_STEP_SECS}", base32(secret))
 }
 
@@ -104,7 +116,11 @@ pub fn otpauth_url(user: &str, secret: &[u8]) -> String {
 /// the setup.
 pub fn qr_svg(text: &str) -> Result<String> {
     let code = qrcode::QrCode::new(text.as_bytes()).map_err(|e| anyhow!("{e}"))?;
-    Ok(code.render::<qrcode::render::svg::Color>().min_dimensions(180, 180).quiet_zone(false).build())
+    Ok(code
+        .render::<qrcode::render::svg::Color>()
+        .min_dimensions(180, 180)
+        .quiet_zone(false)
+        .build())
 }
 
 // ---------- Second factor: passkeys (WebAuthn) ----------
@@ -122,14 +138,34 @@ pub fn qr_svg(text: &str) -> Result<String> {
 ///
 /// An IP address does not work: WebAuthn demands a name. The error says so,
 /// instead of the browser refusing in silence.
-pub fn webauthn(state: &crate::state::AppState, headers: &axum::http::HeaderMap) -> Result<Webauthn, ApiError> {
-    let host = state.public_host(headers).ok_or_else(|| bad("host header missing"))?;
-    let scheme = if state.public_https() { "https" } else { "http" };
-    let origin = Url::parse(&format!("{scheme}://{host}")).map_err(|_| bad("host header unusable"))?;
-    let rp_id = origin.domain().ok_or_else(|| bad("passkeys need a host name, not an IP address: open the dashboard by name"))?.to_string();
+pub fn webauthn(
+    state: &crate::state::AppState,
+    headers: &axum::http::HeaderMap,
+) -> Result<Webauthn, ApiError> {
+    let host = state
+        .public_host(headers)
+        .ok_or_else(|| bad("host header missing"))?;
+    let scheme = if state.public_https() {
+        "https"
+    } else {
+        "http"
+    };
+    let origin =
+        Url::parse(&format!("{scheme}://{host}")).map_err(|_| bad("host header unusable"))?;
+    let rp_id = origin
+        .domain()
+        .ok_or_else(|| {
+            bad("passkeys need a host name, not an IP address: open the dashboard by name")
+        })?
+        .to_string();
     WebauthnBuilder::new(&rp_id, &origin)
         .and_then(|b| b.rp_name("DLPrevent").build())
-        .map_err(|e| ApiError(StatusCode::BAD_REQUEST, format!("passkeys unavailable for this host: {e}")))
+        .map_err(|e| {
+            ApiError(
+                StatusCode::BAD_REQUEST,
+                format!("passkeys unavailable for this host: {e}"),
+            )
+        })
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -153,7 +189,8 @@ pub struct User {
 /// factor" and "has to have one" mean is written down once each here: the
 /// extractor builds it into its session query (one query per request stays
 /// one), the sign-in and the settings ask the same thing.
-pub const HAS_SECOND_FACTOR: &str = "(u.totp_secret IS NOT NULL OR EXISTS (SELECT 1 FROM passkeys p WHERE p.user_id = u.id))";
+pub const HAS_SECOND_FACTOR: &str =
+    "(u.totp_secret IS NOT NULL OR EXISTS (SELECT 1 FROM passkeys p WHERE p.user_id = u.id))";
 /// The setting is called `require_2fa_<rolle>`. Accounts from an identity
 /// provider (`external`) bring their second factor from there.
 pub const SECOND_FACTOR_DEMANDED: &str = "(NOT u.external AND COALESCE((SELECT value = 'true'::jsonb FROM settings WHERE key = 'require_2fa_' || u.role), false))";
@@ -164,7 +201,13 @@ pub fn second_factor_missing_sql() -> String {
 }
 
 pub async fn second_factor_required(pool: &sqlx::PgPool, id: Uuid) -> sqlx::Result<bool> {
-    sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT {} FROM users u WHERE u.id = $1", second_factor_missing_sql()))).bind(id).fetch_one(pool).await
+    sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "SELECT {} FROM users u WHERE u.id = $1",
+        second_factor_missing_sql()
+    )))
+    .bind(id)
+    .fetch_one(pool)
+    .await
 }
 
 /// A new session for an account; back comes the value for the cookie
@@ -178,17 +221,30 @@ pub async fn new_session(pool: &sqlx::PgPool, id: Uuid) -> sqlx::Result<String> 
         .bind(chrono::Utc::now() + chrono::Duration::hours(SESSION_HOURS))
         .execute(pool)
         .await?;
-    sqlx::query("UPDATE users SET last_login = now() WHERE id = $1").bind(id).execute(pool).await?;
+    sqlx::query("UPDATE users SET last_login = now() WHERE id = $1")
+        .bind(id)
+        .execute(pool)
+        .await?;
     Ok(sid)
 }
 
 /// One's own password once more — above all for what would let a foreign
 /// session into the account for good (new password, new passkey).
-pub async fn verify_current_password(pool: &sqlx::PgPool, id: Uuid, password: &str) -> Result<(), ApiError> {
-    let hash: Option<(String,)> = sqlx::query_as("SELECT pw_hash FROM users WHERE id = $1").bind(id).fetch_optional(pool).await?;
+pub async fn verify_current_password(
+    pool: &sqlx::PgPool,
+    id: Uuid,
+    password: &str,
+) -> Result<(), ApiError> {
+    let hash: Option<(String,)> = sqlx::query_as("SELECT pw_hash FROM users WHERE id = $1")
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
     let (hash,) = hash.ok_or_else(not_found)?;
     if !verify_password(password, &hash) {
-        return Err(ApiError(StatusCode::FORBIDDEN, "current password is wrong".into()));
+        return Err(ApiError(
+            StatusCode::FORBIDDEN,
+            "current password is wrong".into(),
+        ));
     }
     Ok(())
 }
@@ -196,7 +252,10 @@ pub async fn verify_current_password(pool: &sqlx::PgPool, id: Uuid, password: &s
 /// What an account without the demanded second factor may still do: look at
 /// itself, sign out, change its own password, and set the factor up.
 fn open_without_second_factor(path: &str, id: Uuid) -> bool {
-    path == "/api/me" || path == "/api/logout" || path.starts_with("/api/account") || path == format!("/api/users/{id}/password")
+    path == "/api/me"
+        || path == "/api/logout"
+        || path.starts_with("/api/account")
+        || path == format!("/api/users/{id}/password")
 }
 
 impl User {
@@ -251,12 +310,21 @@ pub fn new_api_key() -> String {
 
 fn cookie_value(parts: &Parts) -> Option<String> {
     let raw = parts.headers.get(header::COOKIE)?.to_str().ok()?;
-    raw.split(';').map(str::trim).find_map(|kv| kv.strip_prefix(COOKIE).and_then(|r| r.strip_prefix('=')).map(str::to_string))
+    raw.split(';').map(str::trim).find_map(|kv| {
+        kv.strip_prefix(COOKIE)
+            .and_then(|r| r.strip_prefix('='))
+            .map(str::to_string)
+    })
 }
 
 fn bearer(parts: &Parts) -> Option<&str> {
     let v = parts.headers.get(header::AUTHORIZATION)?.to_str().ok()?;
-    Some(v.strip_prefix("Bearer ").or_else(|| v.strip_prefix("bearer "))?.trim()).filter(|t| !t.is_empty())
+    Some(
+        v.strip_prefix("Bearer ")
+            .or_else(|| v.strip_prefix("bearer "))?
+            .trim(),
+    )
+    .filter(|t| !t.is_empty())
 }
 
 /// How far an API key reaches — the monitoring views, nothing else.
@@ -295,20 +363,35 @@ async fn user_from_api_key(state: &Shared, token: &str) -> Result<Option<User>, 
     // none. That holds because a key only reads — writing routes demand
     // `Admin`, and only those write into the audit log, whose `user_id`
     // points at `users`.
-    Ok(row.map(|(id, label)| User { id, name: format!("api:{label}"), role: API_KEY_ROLE.into(), refreshed_cookie: None, second_factor_required: false }))
+    Ok(row.map(|(id, label)| User {
+        id,
+        name: format!("api:{label}"),
+        role: API_KEY_ROLE.into(),
+        refreshed_cookie: None,
+        second_factor_required: false,
+    }))
 }
 
 impl FromRequestParts<Shared> for User {
     type Rejection = ApiError;
-    async fn from_request_parts(parts: &mut Parts, state: &Shared) -> std::result::Result<Self, Self::Rejection> {
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &Shared,
+    ) -> std::result::Result<Self, Self::Rejection> {
         let Some(sid) = cookie_value(parts) else {
             if let Some(token) = bearer(parts) {
                 if !API_KEY_PATHS.contains(&parts.uri.path()) {
-                    return Err(ApiError(StatusCode::FORBIDDEN, "an API key may only read the monitoring views".into()));
+                    return Err(ApiError(
+                        StatusCode::FORBIDDEN,
+                        "an API key may only read the monitoring views".into(),
+                    ));
                 }
                 return match user_from_api_key(state, token).await? {
                     Some(u) => Ok(u),
-                    None => Err(ApiError(StatusCode::UNAUTHORIZED, "unknown, expired or switched-off API key".into())),
+                    None => Err(ApiError(
+                        StatusCode::UNAUTHORIZED,
+                        "unknown, expired or switched-off API key".into(),
+                    )),
                 };
             }
             return Err(ApiError(StatusCode::UNAUTHORIZED, "not signed in".into()));
@@ -325,9 +408,14 @@ impl FromRequestParts<Shared> for User {
         .fetch_optional(&state.pool)
         .await?;
         match row {
-            Some((id, name, role, disabled, exp, second_factor_required)) if !disabled && exp > now => {
+            Some((id, name, role, disabled, exp, second_factor_required))
+                if !disabled && exp > now =>
+            {
                 if second_factor_required && !open_without_second_factor(parts.uri.path(), id) {
-                    return Err(ApiError(StatusCode::FORBIDDEN, "set up a second factor first (Account)".into()));
+                    return Err(ApiError(
+                        StatusCode::FORBIDDEN,
+                        "set up a second factor first (Account)".into(),
+                    ));
                 }
                 // Extend, but do not write on every request.
                 let mut refreshed_cookie = None;
@@ -339,7 +427,13 @@ impl FromRequestParts<Shared> for User {
                         .await;
                     refreshed_cookie = Some(session_cookie(&sid, state.public_https()));
                 }
-                Ok(User { id, name, role, refreshed_cookie, second_factor_required })
+                Ok(User {
+                    id,
+                    name,
+                    role,
+                    refreshed_cookie,
+                    second_factor_required,
+                })
             }
             _ => Err(ApiError(StatusCode::UNAUTHORIZED, "session expired".into())),
         }
@@ -348,18 +442,27 @@ impl FromRequestParts<Shared> for User {
 
 impl FromRequestParts<Shared> for Admin {
     type Rejection = ApiError;
-    async fn from_request_parts(parts: &mut Parts, state: &Shared) -> std::result::Result<Self, Self::Rejection> {
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &Shared,
+    ) -> std::result::Result<Self, Self::Rejection> {
         let u = User::from_request_parts(parts, state).await?;
         if u.is_admin() {
             Ok(Admin(u))
         } else {
-            Err(ApiError(StatusCode::FORBIDDEN, "administrators only".into()))
+            Err(ApiError(
+                StatusCode::FORBIDDEN,
+                "administrators only".into(),
+            ))
         }
     }
 }
 
 pub fn session_cookie(id: &str, secure: bool) -> String {
-    let mut c = format!("{COOKIE}={id}; Path=/; HttpOnly; SameSite=Strict; Max-Age={}", SESSION_HOURS * 3600);
+    let mut c = format!(
+        "{COOKIE}={id}; Path=/; HttpOnly; SameSite=Strict; Max-Age={}",
+        SESSION_HOURS * 3600
+    );
     if secure {
         c.push_str("; Secure");
     }
@@ -377,7 +480,10 @@ pub fn clear_cookie() -> String {
 /// [`crate::db::Actor`].
 impl<'a> From<&'a User> for crate::db::Actor<'a> {
     fn from(u: &'a User) -> Self {
-        crate::db::Actor { id: Some(u.id), name: &u.name }
+        crate::db::Actor {
+            id: Some(u.id),
+            name: &u.name,
+        }
     }
 }
 
@@ -399,22 +505,47 @@ mod tests {
         assert_eq!(k.len(), API_KEY_PREFIX.len() + 64);
         assert_ne!(k, new_api_key());
         // Were the role "admin", every key would open the administration.
-        assert!(!User { id: Uuid::nil(), name: "api:x".into(), role: API_KEY_ROLE.into(), refreshed_cookie: None, second_factor_required: false }.is_admin());
+        assert!(!User {
+            id: Uuid::nil(),
+            name: "api:x".into(),
+            role: API_KEY_ROLE.into(),
+            refreshed_cookie: None,
+            second_factor_required: false
+        }
+        .is_admin());
     }
 
     /// The vectors from RFC 6238, appendix B (SHA-1, six digits instead of eight).
     #[test]
     fn totp_matches_rfc_6238() {
         let secret = b"12345678901234567890";
-        for (t, code) in [(59, 287082), (1111111109, 81804), (1234567890, 5924), (2000000000, 279037), (20000000000, 353130)] {
+        for (t, code) in [
+            (59, 287082),
+            (1111111109, 81804),
+            (1234567890, 5924),
+            (2000000000, 279037),
+            (20000000000, 353130),
+        ] {
             assert_eq!(totp_code(secret, t / TOTP_STEP_SECS), code, "t={t}");
         }
         // One step of offset in either direction counts, two do not; a step
         // that has been accepted once does not count a second time.
         assert_eq!(totp_verify(secret, "287082", 59, 0), Some(1));
-        assert_eq!(totp_verify(secret, "287 082", 59 + 30, 0), Some(1), "Leerzeichen und ein Schritt spaeter");
-        assert_eq!(totp_verify(secret, "287082", 59 - 30, 0), Some(1), "ein Schritt frueher");
-        assert_eq!(totp_verify(secret, "287082", 59 + 60, 0), None, "zwei Schritte spaeter");
+        assert_eq!(
+            totp_verify(secret, "287 082", 59 + 30, 0),
+            Some(1),
+            "Leerzeichen und ein Schritt spaeter"
+        );
+        assert_eq!(
+            totp_verify(secret, "287082", 59 - 30, 0),
+            Some(1),
+            "ein Schritt frueher"
+        );
+        assert_eq!(
+            totp_verify(secret, "287082", 59 + 60, 0),
+            None,
+            "zwei Schritte spaeter"
+        );
         assert_eq!(totp_verify(secret, "287082", 59, 1), None, "Wiederholung");
         assert_eq!(totp_verify(secret, "abc", 59, 0), None);
         assert_eq!(totp_verify(b"anderes geheimnis", "287082", 59, 0), None);
@@ -422,7 +553,10 @@ mod tests {
 
     #[test]
     fn base32_and_otpauth_are_what_authenticator_apps_expect() {
-        assert_eq!(base32(b"12345678901234567890"), "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ");
+        assert_eq!(
+            base32(b"12345678901234567890"),
+            "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
+        );
         assert_eq!(base32(b"f"), "MY");
         assert_eq!(base32(b"fooba"), "MZXW6YTB");
         assert_eq!(base32(b""), "");
@@ -439,6 +573,9 @@ mod tests {
         let b = random_token();
         assert_eq!(a.len(), 64);
         assert_ne!(a, b);
-        assert_eq!(sha256_hex("abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        assert_eq!(
+            sha256_hex("abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
     }
 }

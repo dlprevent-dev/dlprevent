@@ -155,7 +155,11 @@ impl Session {
     /// grew up to five minutes: the agent had long been reachable again
     /// and still stood there as "offline".
     pub fn wait(&self) -> Duration {
-        Duration::from_secs(if self.failures > 0 { self.backoff.min(self.interval) } else { self.interval })
+        Duration::from_secs(if self.failures > 0 {
+            self.backoff.min(self.interval)
+        } else {
+            self.interval
+        })
     }
 
     /// Fetch the agent program that lies ready. Over the same connection
@@ -207,7 +211,8 @@ impl Session {
     /// cadence, reset the pause.
     fn accepted(&mut self, resp: &ReportResponse, log_next: u64) {
         self.log_seq = log_next;
-        self.interval = (resp.config.report_interval_secs as u64).clamp(MIN_INTERVAL_SECS, MAX_INTERVAL_SECS);
+        self.interval =
+            (resp.config.report_interval_secs as u64).clamp(MIN_INTERVAL_SECS, MAX_INTERVAL_SECS);
         self.backoff = BACKOFF_START_SECS;
         self.failures = 0;
     }
@@ -272,10 +277,22 @@ mod tally_tests {
         // And back again: the same four keys at the same level, no nested
         // "tally".
         let back: serde_json::Value = serde_json::to_value(&st).unwrap();
-        for k in ["generation", "reports", "last_ok", "last_error", "last_error_at"] {
-            assert!(back.get(k).is_some(), "{k} fehlt auf oberster Ebene: {back}");
+        for k in [
+            "generation",
+            "reports",
+            "last_ok",
+            "last_error",
+            "last_error_at",
+        ] {
+            assert!(
+                back.get(k).is_some(),
+                "{k} fehlt auf oberster Ebene: {back}"
+            );
         }
-        assert!(back.get("tally").is_none(), "die Zahlen duerfen nicht verschachtelt werden: {back}");
+        assert!(
+            back.get("tally").is_none(),
+            "die Zahlen duerfen nicht verschachtelt werden: {back}"
+        );
     }
 
     /// A file from a time before the counters stays readable.
@@ -337,7 +354,16 @@ mod tests {
             accepted_alerts: 0,
             accepted_access_alerts: 0,
             accepted_counts: 0,
-            config: AgentConfig { api_version: API_VERSION, generation: 1, report_interval_secs: interval, learn_days: 7, rules: Vec::new(), allow_processes: Vec::new(), update_to_sha256: None, finish_learning: false },
+            config: AgentConfig {
+                api_version: API_VERSION,
+                generation: 1,
+                report_interval_secs: interval,
+                learn_days: 7,
+                rules: Vec::new(),
+                allow_processes: Vec::new(),
+                update_to_sha256: None,
+                finish_learning: false,
+            },
             learn: Vec::new(),
         }
     }
@@ -399,7 +425,10 @@ mod tests {
     fn a_returning_link_is_picked_up_quickly() {
         for outage in [5, 30, 60, 120, 300, 600, 3600] {
             let d = recovery_delay_secs(outage);
-            assert!(d <= DEFAULT_INTERVAL_SECS, "Stoerung {outage}s: erst {d}s nach Rueckkehr der Leitung wieder da");
+            assert!(
+                d <= DEFAULT_INTERVAL_SECS,
+                "Stoerung {outage}s: erst {d}s nach Rueckkehr der Leitung wieder da"
+            );
         }
     }
 
