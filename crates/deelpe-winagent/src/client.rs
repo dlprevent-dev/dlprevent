@@ -630,26 +630,26 @@ impl deelpe_core::pipeline::Enforcer for EndpointEnforcer<'_> {
             // to ten seconds while `delete_copy_later` tries in vain.
             Some(path) => {
                 // The spelling is not enough (pentest 8840/0004): through a
-                // junction a path outside can lead into the share, and the
-                // service would delete — as SYSTEM — the real file there.
-                // Where the path really leads decides, and from here on only
-                // that resolved path is touched.
-                let path = match crate::enforce::resolved(path) {
-                    Ok(real) if !self.cfg.is_watched(&real) => real,
-                    Ok(real) => return format!("copy NOT deleted: it leads into the protected folder ({})", real.display()),
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => return "copy already gone".into(),
-                    Err(e) => return format!("copy NOT deleted: cannot tell where it leads ({e})"),
+                // junction a path outside can lead into the share. Lock and
+                // delete decide on where the file really lies, see `enforce`.
+                let cfg = self.cfg.clone();
+                let protected: crate::enforce::Protected = std::sync::Arc::new(move |p: &std::path::Path| cfg.is_watched(p));
+                use crate::enforce::Outcome;
+                let locked = match crate::enforce::lock_copy(path, &protected) {
+                    Ok(Outcome::Refused(real)) => return format!("copy NOT deleted: it leads into the protected folder ({})", real.display()),
+                    Ok(Outcome::Gone) => return "copy already gone".into(),
+                    other => other,
                 };
-                let path = path.as_path();
-                let locked = crate::enforce::lock_copy(path);
-                match crate::enforce::delete_copy(path) {
-                    Ok(_) => "copy deleted".into(),
+                match crate::enforce::delete_copy(path, &protected) {
+                    Ok(Outcome::Refused(real)) => format!("copy NOT deleted: it leads into the protected folder ({})", real.display()),
+                    Ok(Outcome::Gone) => "copy already gone".into(),
+                    Ok(Outcome::Done) => "copy deleted".into(),
                     // The copier still holds the file open; keep trying in
                     // the background. Until then nobody gets at it any more.
                     Err(e) => {
-                        crate::enforce::delete_copy_later(path.to_path_buf());
+                        crate::enforce::delete_copy_later(path.to_path_buf(), protected);
                         match locked {
-                            Ok(()) => format!("copy locked, deletion pending ({e})"),
+                            Ok(_) => format!("copy locked, deletion pending ({e})"),
                             Err(le) => format!("copy NOT deleted ({e}) and NOT locked ({le}), retrying"),
                         }
                     }
