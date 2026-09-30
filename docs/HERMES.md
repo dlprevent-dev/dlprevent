@@ -445,7 +445,7 @@ read the folder from your own SSH session.
 | Hermes: `custom rejected your API key … HTTP 403: Blocked by dlprevent-guard (…)` | not a key problem: Hermes words every 403 that way. The guard refused the request; the rules follow the colon | nothing to fix if the refusal is right; the same chat goes on with the next message |
 | `HTTP 403: Blocked by dlprevent-guard (input): cipher_payload, adversarial_suffix` on an ordinary message | a false positive: IDs, hashes or code in your own message (a pasted log with a session ID) read as leetspeak and an attack suffix | send it without the IDs; the refused message is withheld from then on, the chat goes on |
 | `GUARD_MODE=block` in `.env`, but nothing is refused | `docker compose restart` keeps the old environment | `docker compose up -d`; `docker compose logs guard \| grep 'mode '` |
-| `git pull` of the guard: `Permission denied (publickey)` | the repository is private and the host has no key for it | a read-only deploy key, see the guard's README under *Deploy* |
+| `git pull` of the guard: `Permission denied (publickey)` | the checkout was cloned over SSH with a deploy key from when the repository was private | `git remote set-url origin https://github.com/dlprevent-dev/dlprevent-guard.git` |
 
 ## Limits
 

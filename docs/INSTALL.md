@@ -307,6 +307,11 @@ sudo apt install ./deelpe-server_<new>.deb && sudo systemctl restart deelpe-serv
 Agents do not have to be updated at the same time; the wire format carries a
 version and older agents keep reporting.
 
+The dashboard's footer names the version that is running. If it still shows
+the old one — or `git pull` stops with *divergent branches* on a checkout from
+before 2026-09-30 — see
+[TROUBLESHOOTING.md → Central server](TROUBLESHOOTING.md#central-server).
+
 ### Admin password lost
 
 There is no reset command. If no second admin is left: delete all users and
