@@ -29,6 +29,21 @@ pub const MIN_PROFILE_DAYS: usize = 3;
 const KEEP_DAYS: i64 = 60;
 /// Upper bound per window, so that mass access does not blow up memory.
 const MAX_WINDOW_ENTRIES: usize = 20_000;
+/// The same bound for one user's distinct files of a day. Past it the day
+/// counts as "at least this many" — far above any deviation threshold.
+const MAX_DAY_FILES: usize = 20_000;
+
+/// The meter only counts distinct files, so it keeps a fixed-size
+/// fingerprint instead of the name: a forged syslog line may carry a path of
+/// 16 KiB, and the meter is kept in memory and in the database. FNV-1a,
+/// because the fingerprint is stored and has to stay the same across builds.
+/// The type stays a string, so meters stored before still load.
+// ponytail: memory is bounded per user (2 × 20k entries), not per source; a
+// global budget if 50k forged users ever matter.
+fn fingerprint(file: &str) -> String {
+    let h = file.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x0100_0000_01b3));
+    format!("{h:016x}")
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
@@ -151,7 +166,8 @@ impl AccessMeter {
         if w.entries.len() >= MAX_WINDOW_ENTRIES {
             w.entries.pop_front();
         }
-        w.entries.push_back((now, file.to_string(), bytes));
+        let file = fingerprint(file);
+        w.entries.push_back((now, file.clone(), bytes));
         let window_files = w.entries.iter().map(|(_, f, _)| f.as_str()).collect::<HashSet<_>>().len() as u32;
         // Sum over the window, not over all time: otherwise it grows
         // without bound per user and the alert names a wrong amount.
@@ -171,7 +187,9 @@ impl AccessMeter {
             let cutoff = day - Duration::days(KEEP_DAYS);
             prof.days.retain(|d, _| *d >= cutoff);
         }
-        prof.today_files.insert(file.to_string());
+        if prof.today_files.len() < MAX_DAY_FILES {
+            prof.today_files.insert(file);
+        }
         let day_files = prof.today_files.len() as u32;
 
         // Emergency brake first: it always applies, even in the learning phase.
@@ -484,6 +502,25 @@ mod tests {
         let o6 = m.observe("srv\\hans", "g9", 1, &p, base + Duration::seconds(130));
         assert!(matches!(o6.verdict, AccessVerdict::HardLimit { .. }));
         assert_ne!(o6.episode, Some(ep));
+    }
+
+    /// A forged syslog line can carry a 16 KiB path. The meter is kept in
+    /// memory and stored as JSON, so it keeps fingerprints, not names, and a
+    /// day of distinct files stops growing at its bound.
+    #[test]
+    fn long_paths_and_endless_files_do_not_grow_the_meter() {
+        let p = AccessParams { hard_max_files: u32::MAX, window_secs: 1, learn_days: 0 };
+        let base = t("2026-09-06T10:00:00Z");
+        let mut m = AccessMeter::new(base);
+        let long = "x".repeat(16 * 1024);
+        for i in 0..MAX_DAY_FILES + 500 {
+            m.observe("srv\\hans", &format!("{long}{i}"), 1, &p, base + Duration::seconds(i as i64));
+        }
+        let o = m.observe("srv\\hans", "another", 1, &p, base + Duration::seconds(30_000));
+        assert_eq!(o.day_files, MAX_DAY_FILES as u32);
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(json.len() < 2 * MAX_DAY_FILES * 40, "{} bytes", json.len());
+        assert!(!json.contains(&long[..64]), "no names in the stored meter");
     }
 
     #[test]
