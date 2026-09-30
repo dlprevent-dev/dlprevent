@@ -1415,6 +1415,10 @@ that slot** — a genuinely signed old build with a known hole is still an old
 build, and deleting the program does not reset that. A bare signature over the
 file, as written before 0.1.8, is no longer accepted: sign again.
 
+**Update the central server before the agents.** A server older than 0.1.8
+cannot read the new `.sig` and refuses every 0.1.8 program, from the release
+and from the upload form alike.
+
 The agents check the same statement once more before they replace
 themselves, so the central server alone cannot hand the fleet a program: an
 agent built by the release scripts carries the public key and swaps only to a

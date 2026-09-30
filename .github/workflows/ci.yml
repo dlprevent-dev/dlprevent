@@ -9,6 +9,11 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# Read only: once the repository is public, a pull request from a fork runs
+# here too, and needs nothing more.
+permissions:
+  contents: read
+
 jobs:
   rust:
     runs-on: ubuntu-latest

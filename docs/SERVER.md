@@ -91,7 +91,10 @@ offers "Sign in with single sign-on".
   lets in nobody but the administrator group; `*` lets in everyone the
   provider lets through, as read only — for Entra ID that is the whole
   tenant, guests and B2B accounts included. An empty administrator group
-  makes nobody an administrator this way.
+  makes nobody an administrator this way. Before 0.1.8 an empty allowed group
+  let everyone in: accounts created that way stay, and so do their sessions
+  while they are used — review the read-only accounts marked as signing in
+  through the provider under Users after the update.
 - **The role follows the groups on every sign-in.** Moving someone to the
   other group changes the role at their next sign-in.
 - **These accounts sign in at the provider only.** A password, code or

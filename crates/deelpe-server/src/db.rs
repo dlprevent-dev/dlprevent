@@ -578,12 +578,25 @@ macro_rules! verdict_rank {
 // `first_reason`/`first_detail` the moment they are replaced, and never again.
 // ponytail: first and latest, not every step between; a history table if the
 // steps matter.
+/// File names an alert keeps. A re-report adds the names it has not seen,
+/// so a forged one cannot erase what came first — but past this it adds
+/// none: a mass read over syslog upserts once per file, and an unbounded list
+/// was rewritten, and searched name by name, on every one of them.
+macro_rules! max_alert_files {
+    () => {
+        "200"
+    };
+}
+
 const ALERT_UPSERT: &str = concat!(
     "INSERT INTO alerts (kind, agent_id, source_id, origin_name, external_id, at, last_at, user_key, user_display, rule_id, path, process, files, file_count, bytes, remote, verdict, reason, detail, acknowledged_at) \
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, CASE WHEN $20 THEN now() ELSE NULL END) \
      ON CONFLICT (COALESCE(agent_id, source_id), external_id) DO UPDATE SET \
        last_at = GREATEST(alerts.last_at, EXCLUDED.last_at), \
-       files = alerts.files || COALESCE((SELECT jsonb_agg(f) FROM jsonb_array_elements(EXCLUDED.files) f WHERE NOT alerts.files @> jsonb_build_array(f)), '[]'), \
+       files = CASE WHEN jsonb_array_length(alerts.files) >= ", max_alert_files!(), " THEN alerts.files \
+                    ELSE alerts.files || COALESCE((SELECT jsonb_agg(n.f) FROM (SELECT f FROM jsonb_array_elements(EXCLUDED.files) f \
+                                                   WHERE NOT alerts.files @> jsonb_build_array(f) \
+                                                   LIMIT ", max_alert_files!(), " - jsonb_array_length(alerts.files)) n), '[]') END, \
        file_count = GREATEST(alerts.file_count, EXCLUDED.file_count), bytes = GREATEST(alerts.bytes, EXCLUDED.bytes), \
        verdict = CASE WHEN ", verdict_rank!("EXCLUDED.verdict"), " > ", verdict_rank!("alerts.verdict"), " THEN EXCLUDED.verdict ELSE alerts.verdict END, \
        reason = CASE WHEN ", verdict_rank!("EXCLUDED.verdict"), " >= ", verdict_rank!("alerts.verdict"), " THEN EXCLUDED.reason ELSE alerts.reason END, \
@@ -1058,6 +1071,17 @@ mod tests {
         assert_eq!(f, serde_json::json!(["a.docx", "b.docx", "decoy.txt"]), "files are added to, not replaced");
         assert_eq!(r.as_deref(), Some("101 files"), "a lower verdict does not bring its own reason");
         assert_eq!(last, Some(t0 + chrono::Duration::seconds(20)), "last_at does not go back");
+
+        // The list stops growing at its bound; what it holds stays.
+        for i in 0..3 {
+            let names: Vec<String> = (0..100).map(|j| format!("mass-{i}-{j}.docx")).collect();
+            let names: Vec<&str> = names.iter().map(String::as_str).collect();
+            upsert_access_alert(&pool, o, "srv", &alert(AccessVerdict::HardLimit { files: 101, limit: 100 }, 101, 2048, &names, 30)).await.unwrap();
+        }
+        let (.., f, _, _) = stored().await.unwrap();
+        let f = f.as_array().unwrap();
+        assert_eq!(f.len(), 200);
+        assert_eq!(&f[..3], &[serde_json::json!("a.docx"), serde_json::json!("b.docx"), serde_json::json!("decoy.txt")]);
     }
 
     /// At an equal verdict a re-report still brings its own reason and
