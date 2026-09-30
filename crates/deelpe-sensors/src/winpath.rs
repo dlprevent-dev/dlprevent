@@ -134,7 +134,7 @@ mod tests {
 
     #[test]
     fn a_mapped_drive_is_still_the_share_it_points_at() {
-        // Measured on 2026-09-08 on DESKTOP-EXAMPLE, share on X:.
+        // Measured on 2026-09-08 on a Windows 11 client, share on X:.
         assert_eq!(
             to_user_path(r"\Device\Mup\;LanmanRedirector\;X:000000000285daa0\127.0.0.1\c$\dlptest\a.txt", &vols()),
             r"\\127.0.0.1\c$\dlptest\a.txt"
