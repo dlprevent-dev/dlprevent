@@ -629,6 +629,18 @@ impl deelpe_core::pipeline::Enforcer for EndpointEnforcer<'_> {
             // does not. Without it the copy would lie there readable for up
             // to ten seconds while `delete_copy_later` tries in vain.
             Some(path) => {
+                // The spelling is not enough (pentest 8840/0004): through a
+                // junction a path outside can lead into the share, and the
+                // service would delete — as SYSTEM — the real file there.
+                // Where the path really leads decides, and from here on only
+                // that resolved path is touched.
+                let path = match crate::enforce::resolved(path) {
+                    Ok(real) if !self.cfg.is_watched(&real) => real,
+                    Ok(real) => return format!("copy NOT deleted: it leads into the protected folder ({})", real.display()),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => return "copy already gone".into(),
+                    Err(e) => return format!("copy NOT deleted: cannot tell where it leads ({e})"),
+                };
+                let path = path.as_path();
                 let locked = crate::enforce::lock_copy(path);
                 match crate::enforce::delete_copy(path) {
                     Ok(_) => "copy deleted".into(),
@@ -667,6 +679,40 @@ mod tests {
 
     const GL_DIR: &str = r"C:\Freigaben\GL";
     const GL_FILE: &str = r"C:\Freigaben\GL\Zahlen.xlsx";
+
+    /// Pentest 8840/0004: `mklink /J %USERPROFILE%\in C:\Share\GL`, then
+    /// a tainted process writes `in\colleague.docx`. The path is spelled
+    /// outside the protected folder, so the check let it through — and the
+    /// service, as SYSTEM, deleted the real file inside the share. A symbolic
+    /// link stands in for the junction here; both are followed the same way.
+    #[cfg(unix)]
+    #[test]
+    fn a_copy_that_leads_into_the_protected_folder_is_not_deleted() {
+        let dir = std::env::temp_dir().join(format!("deelpe-junction-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let share = dir.join("GL");
+        std::fs::create_dir_all(&share).unwrap();
+        let share = std::fs::canonicalize(&share).unwrap();
+        std::fs::write(share.join("colleague.docx"), b"real").unwrap();
+        let link = dir.join("in");
+        std::os::unix::fs::symlink(&share, &link).unwrap();
+
+        let cfg = Config { watched: vec![share.clone()], ..Default::default() };
+        let ev = Event::File(deelpe_core::event::FileEvent {
+            at: Utc::now(),
+            process: deelpe_core::event::ProcessRef { pid: 4242, ppid: None, responsible: None, path: "curl.exe".into(), identity: ProcessIdentity::Unknown { path: "curl.exe".into() } },
+            path: link.join("colleague.docx"),
+            action: deelpe_core::event::FileAction::Write,
+            target: None,
+            inode: None,
+            nlink: None,
+            argv: None,
+        });
+        let said = deelpe_core::pipeline::Enforcer::delete_copy(&EndpointEnforcer { ev: &ev, cfg: &cfg }, &alert(1));
+        assert!(said.contains("NOT deleted"), "{said}");
+        assert!(share.join("colleague.docx").exists(), "the file in the share is still there");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn state() -> State {
         State {

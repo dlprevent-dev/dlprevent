@@ -143,6 +143,21 @@ pub fn lock_copy(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Where a path really leads — through junctions and symbolic links — in
+/// the spelling the rules use: without the `\\?\` that Windows puts in
+/// front of a resolved path.
+pub fn resolved(path: &Path) -> std::io::Result<PathBuf> {
+    Ok(PathBuf::from(plain(&std::fs::canonicalize(path)?.to_string_lossy())))
+}
+
+/// `\\?\C:\x` → `C:\x`, `\\?\UNC\srv\gl\x` → `\\srv\gl\x`.
+fn plain(s: &str) -> String {
+    match s.strip_prefix(r"\\?\UNC\") {
+        Some(rest) => format!(r"\\{rest}"),
+        None => s.strip_prefix(r"\\?\").unwrap_or(s).to_string(),
+    }
+}
+
 /// Second attempt in the background: the first time round the copying process
 /// often still holds the target file open, and Windows then does not let it
 /// be deleted. The callback must not stall for that, otherwise events get
@@ -152,6 +167,20 @@ pub fn delete_copy_later(path: PathBuf) {
     tokio::spawn(async move {
         for _ in 0..20 {
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            // `path` was resolved and checked once. If it leads somewhere
+            // else now, a folder on the way has been swapped for a junction
+            // since: stop rather than follow it.
+            // ponytail: check-then-delete by path; a handle-based delete
+            // (open, GetFinalPathNameByHandle, delete on the handle) if the
+            // window between the two matters.
+            match resolved(&path) {
+                Ok(now) if now == path => {}
+                Ok(now) => {
+                    tracing::error!("copy {} now leads to {}; not deleted", path.display(), now.display());
+                    return;
+                }
+                Err(_) => return,
+            }
             match delete_copy(&path) {
                 Ok(true) => return,
                 // No longer there: either done or never written.
@@ -166,6 +195,13 @@ pub fn delete_copy_later(path: PathBuf) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_resolved_windows_path_loses_its_prefix() {
+        assert_eq!(plain(r"\\?\C:\Freigaben\GL\a.docx"), r"C:\Freigaben\GL\a.docx");
+        assert_eq!(plain(r"\\?\UNC\fs-01\GL\a.docx"), r"\\fs-01\GL\a.docx");
+        assert_eq!(plain("/Users/me/a"), "/Users/me/a");
+    }
 
     /// Every entry of the list is spared, in every spelling.
     /// Until 2026-09-08 nobody checked that: the list sat in the same

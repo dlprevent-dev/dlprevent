@@ -608,9 +608,33 @@ fn asking_images() -> &'static std::sync::Mutex<std::collections::HashSet<String
     I.get_or_init(Default::default)
 }
 
+/// Browsers whose content-analysis connector may speak for their program:
+/// publisher from the signature, original file name from the version
+/// resource. Nothing else earns the exemption.
+const CONNECTOR_BROWSERS: &[(&str, &str)] = &[("Google LLC", "chrome.exe"), ("Microsoft Corporation", "msedge.exe"), ("Mozilla Corporation", "firefox.exe")];
+
+/// May a process with this identity exempt its program from the network
+/// cage by connecting to the pipe?
+///
+/// Pentest 8840/0003: the pipe has to be open to everyone (browsers run as
+/// ordinary users), and every client's image was remembered on connect,
+/// before a single message. Any tool of the monitored user connected once
+/// and was never caged again. A signature from a browser vendor under that
+/// browser's own name cannot be had by renaming a file — and a vendor name
+/// alone is not enough either: Microsoft signs `curl.exe` too.
+pub fn may_exempt_its_image(id: &ProcessIdentity) -> bool {
+    match id {
+        ProcessIdentity::Signed { team_id, signing_id } => {
+            let name = deelpe_core::identity::image_name(signing_id);
+            CONNECTOR_BROWSERS.iter().any(|(p, n)| team_id == p && name == *n)
+        }
+        _ => false,
+    }
+}
+
 /// Remember that this program asks. Without an expiry: a program does not
 /// unlearn that, and the set stays as large as the number of browsers on the
-/// machine.
+/// machine. Only for a client [`may_exempt_its_image`] lets through.
 pub fn note_image(exe: &str) {
     if exe.is_empty() {
         return;
@@ -664,15 +688,24 @@ async fn talk(
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let client = client_of(&pipe);
-    // Who the browser is, is only needed once something really gets blocked.
-    // The signature check is the most expensive step here, and the normal
-    // case is letting through — it does not belong in every connection.
+    // Who the browser is, is otherwise only needed once something really
+    // gets blocked: the signature check is the most expensive step here.
     let mut identity: Option<ProcessIdentity> = None;
     // Remember the image path **right away**, not only when blocking: the
     // network cage's exception hangs off it, and it has to be in place before
-    // the browser touches a protected folder for the first time.
+    // the browser touches a protected folder for the first time. But only for
+    // a real browser — once per program, the set remembers it after that.
     if let Some(pid) = client {
-        note_image(&image_of(pid));
+        let exe = image_of(pid);
+        if !image_asks_before_sending(&exe) {
+            let id = identity_of_pid(pid);
+            if may_exempt_its_image(&id) {
+                note_image(&exe);
+            } else {
+                tracing::warn!(pid, exe = %exe, "content analysis: a program that is not a known browser connected; it stays subject to the network cage");
+            }
+            identity = Some(id);
+        }
     }
     tracing::info!(pid = client.unwrap_or(0), "content analysis: browser connected");
     let mut buf = vec![0u8; MAX_MESSAGE];
@@ -927,6 +960,19 @@ mod tests {
     /// `New` appears in the dashboard and sets off no mail. On 2026-09-09 six
     /// files went out of a watched folder to Gemini, and there was nothing of
     /// it to see.
+    /// Pentest 8840/0003: connecting to the pipe once must not exempt just
+    /// any program from the network cage.
+    #[test]
+    fn only_a_signed_browser_exempts_its_program_from_the_cage() {
+        let signed = |p: &str, n: &str| ProcessIdentity::Signed { team_id: p.into(), signing_id: n.into() };
+        assert!(may_exempt_its_image(&signed("Google LLC", "chrome.exe")));
+        assert!(may_exempt_its_image(&signed("Microsoft Corporation", "msedge.exe")));
+        assert!(may_exempt_its_image(&signed("Mozilla Corporation", "FIREFOX.EXE.MUI")), "the name in any spelling Windows hands out");
+        assert!(!may_exempt_its_image(&ProcessIdentity::Unknown { path: r"C:\Users\me\chrome.exe".into() }), "a renamed tool is unsigned");
+        assert!(!may_exempt_its_image(&signed("Microsoft Corporation", "curl.exe")), "the vendor alone is not enough");
+        assert!(!may_exempt_its_image(&signed("Evil LLC", "chrome.exe")), "the name alone is not enough");
+    }
+
     #[test]
     fn an_allowed_upload_is_visible_but_is_not_an_alarm() {
         let allowed = Blocked { blocked: false, reason: "watched folder, no rule forbids this destination".into(), ..blocked() };
