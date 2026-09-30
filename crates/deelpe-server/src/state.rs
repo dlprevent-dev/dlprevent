@@ -192,11 +192,31 @@ impl AppState {
         }
     }
 
-    pub fn login_failed(&self, ip: IpAddr) {
+    /// An attempt begins: it counts as failed until it proves otherwise
+    /// (`login_ok`, `login_undo`). Checking and counting under one lock is
+    /// the point — counting only after the password check let a burst of
+    /// parallel requests all pass the gate before the first of them counted.
+    /// `false` when the address is locked; then nothing is counted.
+    pub fn login_begin(&self, ip: IpAddr) -> bool {
+        if self.login_locked(ip) {
+            return false;
+        }
         let mut m = self.login_fails.lock().unwrap();
         let e = m.entry(ip).or_insert((0, Instant::now()));
+        if e.0 >= LOGIN_MAX_FAILS {
+            return false;
+        }
         e.0 += 1;
         e.1 = Instant::now();
+        true
+    }
+
+    /// The attempt was no failure but opened no session either: the password
+    /// was right and the second step is still to come.
+    pub fn login_undo(&self, ip: IpAddr) {
+        if let Some(e) = self.login_fails.lock().unwrap().get_mut(&ip) {
+            e.0 = e.0.saturating_sub(1);
+        }
     }
 
     pub fn login_ok(&self, ip: IpAddr) {

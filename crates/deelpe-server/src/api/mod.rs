@@ -963,6 +963,28 @@ mod tests {
         app.layer(Extension(PeerAddr("127.0.0.1:4711".parse().unwrap())))
     }
 
+    /// The lockout counted a failure only after the password check, so a
+    /// burst of parallel attempts had all passed the gate before the first
+    /// one counted: forty guesses where ten were promised.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_burst_of_parallel_logins_gets_no_more_guesses_than_the_lockout_allows(pool: sqlx::PgPool) {
+        sqlx::query("INSERT INTO users (name, pw_hash, role) VALUES ('hans', $1, 'viewer')")
+            .bind(auth::hash_password("korrekt-und-lang-genug").unwrap()).execute(&pool).await.unwrap();
+        let app = with_peer(router(test_app(pool.clone()), Router::new()));
+        let mut burst = tokio::task::JoinSet::new();
+        for i in 0..40 {
+            let app = app.clone();
+            burst.spawn(async move { send(&app, "POST", "/api/login", ("x-test", "1"), json!({ "name": "hans", "password": format!("falsch-{i}") })).await.status() });
+        }
+        let statuses = burst.join_all().await;
+        let checked = statuses.iter().filter(|s| **s == StatusCode::UNAUTHORIZED).count();
+        assert!(checked <= crate::state::LOGIN_MAX_FAILS as usize, "{checked} guesses reached the password check");
+        assert_eq!(statuses.iter().filter(|s| **s == StatusCode::TOO_MANY_REQUESTS).count(), 40 - checked);
+        // Locked means locked: the right password does not get in either.
+        let r = send(&app, "POST", "/api/login", ("x-test", "1"), json!({ "name": "hans", "password": "korrekt-und-lang-genug" })).await;
+        assert_eq!(r.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
     /// The cookie from a sign-in answer, as the browser sends it back.
     fn cookie_of(r: &Response) -> String {
         r.headers().get(header::SET_COOKIE).expect("Set-Cookie").to_str().unwrap().split(';').next().unwrap().to_string()
