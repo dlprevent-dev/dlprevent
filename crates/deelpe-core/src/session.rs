@@ -159,8 +159,9 @@ impl Session {
     }
 
     /// Fetch the agent program that lies ready. Over the same connection
-    /// as the report, with the same certificate.
-    pub async fn binary(&self) -> Result<Vec<u8>> {
+    /// as the report, with the same certificate. With it the release
+    /// statement, when the central server has one.
+    pub async fn binary(&self) -> Result<(Vec<u8>, Option<String>)> {
         self.client.binary().await
     }
 

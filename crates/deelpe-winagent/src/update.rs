@@ -27,7 +27,7 @@ use tracing::info;
 // Checking, swapping and the attempt counter are shared with the Linux
 // service; see `deelpe_core::update`.
 pub use deelpe_core::update::{can_replace, cleanup_old, Updater};
-use deelpe_core::update::{is_sha256, short, swap, verify};
+use deelpe_core::update::{check_release, is_sha256, short, swap, verify};
 
 static RESTART: AtomicBool = AtomicBool::new(false);
 
@@ -66,8 +66,9 @@ pub async fn apply(session: &Session, want: &str, tries: &mut Updater) -> Result
     #[cfg(windows)]
     crate::service::restart_is_arranged()?;
     info!(want = short(want), "central holds a different agent program, fetching it");
-    let bytes = session.binary().await.context("downloading the agent program")?;
+    let (bytes, statement) = session.binary().await.context("downloading the agent program")?;
     verify(&bytes, want)?;
+    check_release(&bytes, statement.as_deref(), deelpe_core::signing::BUILT_IN_PUBKEY, "deelpe-winagent.exe", env!("CARGO_PKG_VERSION"))?;
     swap(&exe, &bytes)?;
     RESTART.store(true, Ordering::Relaxed);
     info!(bytes = bytes.len(), want = short(want), "agent program replaced, restarting into the new one");

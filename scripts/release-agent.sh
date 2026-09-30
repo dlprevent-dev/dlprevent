@@ -31,8 +31,12 @@ VERSION="$(awk '/^\[workspace.package\]/{f=1} f && /^version = /{gsub(/[";]/,"",
 TAG="v$VERSION"
 
 echo "== building ($TAG)"
-( cd "$ROOT" && cargo build --release --target x86_64-pc-windows-gnu -p deelpe-winagent >/dev/null )
+# The agent checks the release statement itself before it swaps; it needs
+# the public key compiled in, the same one the server image carries.
 ( cd "$ROOT" && cargo build --release -p deelpe-server --bin deelpe-sign >/dev/null )
+DEELPE_UPDATE_PUBKEY="$("$ROOT/target/release/deelpe-sign" pubkey "$KEY")"
+export DEELPE_UPDATE_PUBKEY
+( cd "$ROOT" && cargo build --release --target x86_64-pc-windows-gnu -p deelpe-winagent >/dev/null )
 [ -f "$EXE" ] || die "$EXE is missing"
 
 echo "== signing"

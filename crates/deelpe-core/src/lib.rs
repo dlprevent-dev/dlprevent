@@ -15,6 +15,8 @@ pub mod identity;
 pub mod inbound;
 pub mod learn;
 pub mod rules;
+#[cfg(feature = "signing")]
+pub mod signing;
 #[cfg(feature = "net")]
 pub mod session;
 #[cfg(feature = "net")]

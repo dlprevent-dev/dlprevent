@@ -17,6 +17,11 @@ use serde::{Deserialize, Serialize};
 /// Version of the wire format; the server rejects unknown versions.
 pub const API_VERSION: u32 = 1;
 
+/// Header on the agent program download: the release statement
+/// (`deelpe_core::signing`), base64. Missing when the program was uploaded
+/// without a signing key.
+pub const RELEASE_HEADER: &str = "x-deelpe-release";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentKind {

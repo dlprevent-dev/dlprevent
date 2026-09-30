@@ -1330,7 +1330,8 @@ mod tests {
         db::set_setting(&pool, "release_pubkey", json!(b64(kp.public_key().as_ref()))).await.unwrap();
 
         let data_dir = std::env::temp_dir().join(format!("deelpe-upload-test-{}", Uuid::new_v4()));
-        let app = router(test_app_in(pool.clone(), data_dir.clone()), Router::new());
+        let st = test_app_in(pool.clone(), data_dir.clone());
+        let app = router(st.clone(), Router::new());
         let admin = test_session(&pool, "admin").await;
         let exe: &[u8] = b"MZ ein Programm";
         let upload = |q: String| {
@@ -1341,7 +1342,7 @@ mod tests {
         // What `deelpe-sign sign <key> <file> <version>` writes: the statement
         // (file, version, checksum) and the signature over it.
         let signed = |kp: &ring::signature::Ed25519KeyPair, file: &str, version: &str, bytes: &[u8]| {
-            let st = crate::release::statement(file, version, &crate::pki::fingerprint(bytes));
+            let st = deelpe_core::signing::statement(file, version, &crate::pki::fingerprint(bytes));
             format!("{st}sig: {}\n", b64(kp.sign(st.as_bytes()).as_ref()))
         };
 
@@ -1355,6 +1356,9 @@ mod tests {
         assert!(!data_dir.join("agents/deelpe-winagent.exe").exists(), "nothing staged before a valid signature");
 
         assert_eq!(upload(format!("?sig={}", enc(&signed(&kp, "deelpe-winagent.exe", "0.1.8", exe)))).await.unwrap().status(), StatusCode::OK);
+        // The statement stays with the program: the agent checks it again
+        // before it swaps, the server alone is not enough to vouch.
+        assert_eq!(crate::binaries::release_statement(&st, "windows").as_deref(), Some(signed(&kp, "deelpe-winagent.exe", "0.1.8", exe).as_str()));
         // Rollback: an old build, genuinely signed, is still an old build.
         let r = upload(format!("?sig={}", enc(&signed(&kp, "deelpe-winagent.exe", "0.1.7", exe)))).await.unwrap();
         assert_eq!(r.status(), StatusCode::BAD_REQUEST, "an older version does not replace a newer one");

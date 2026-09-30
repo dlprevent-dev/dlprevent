@@ -41,14 +41,7 @@ const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
 /// that runs out of hand must not fill the disk.
 const MAX_ASSET: u64 = 64 * 1024 * 1024;
 
-/// The key that is checked against, when it was already fixed at compile
-/// time.
-///
-/// A compiled-in key cannot be swapped out in the database — that is the
-/// difference to one that merely sits in the settings. Whoever builds their
-/// own agents compiles with their own key; whoever does not stores it in
-/// the settings (see [`pubkey`]).
-pub const BUILT_IN_PUBKEY: Option<&str> = option_env!("DEELPE_UPDATE_PUBKEY");
+pub use deelpe_core::signing::BUILT_IN_PUBKEY;
 
 /// What the last query turned up. Kept in memory like `abuseipdb::Status`:
 /// it describes the running process, not the installation. What concerns
@@ -134,98 +127,9 @@ pub fn platforms_in(assets: &[Asset]) -> Vec<String> {
         .collect()
 }
 
-/// First line of a `.sig` file.
-const STATEMENT_HEAD: &str = "deelpe-release-v1";
-
-/// What the release key signs: not the bare file but which slot it is for,
-/// which version it is, and its checksum. A bare signature over the file
-/// said nothing about the version — whoever controlled the release could
-/// publish an old, genuinely signed, vulnerable build under a new tag, and
-/// every server took it. `deelpe-sign` writes these lines into the `.sig`
-/// file, followed by `sig: <base64>` over exactly them.
-pub fn statement(file_name: &str, version: &str, sha256_hex: &str) -> String {
-    format!("{STATEMENT_HEAD}\nfile: {file_name}\nversion: {version}\nsha256: {sha256_hex}\n")
-}
-
-/// Do these bytes really come from whoever holds the key?
-///
-/// Ed25519 over the whole file, signature and key base64. `ring` is in the
-/// tree anyway by way of rustls — no library is added for this.
-pub fn verify(bytes: &[u8], sig_b64: &str, pubkey_b64: &str) -> Result<()> {
-    let key = check_pubkey(pubkey_b64)?;
-    let sig = b64(sig_b64.trim()).context("signature is not base64")?;
-    if sig.len() != 64 {
-        bail!("signature must be 64 bytes (ed25519), got {}", sig.len());
-    }
-    ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, &key)
-        .verify(bytes, &sig)
-        .map_err(|_| anyhow::anyhow!("signature does not match this key — the file is not the one that was signed"))
-}
-
-/// Check a program against its `.sig` file ([`statement`]) and return the
-/// version it was signed as. The slot has to match (`file_name`), and so
-/// does the checksum; the signature covers both and the version.
-pub fn verify_release(bytes: &[u8], sig_file: &str, pubkey_b64: &str, file_name: &str) -> Result<String> {
-    let mut lines = sig_file.lines().map(str::trim).filter(|l| !l.is_empty());
-    if lines.next() != Some(STATEMENT_HEAD) {
-        bail!("not a signed release statement — sign it again with `deelpe-sign sign <key> <file> <version>`; a bare signature over the file does not say which version it is");
-    }
-    let mut field = |name: &str| {
-        let prefix = format!("{name}:");
-        lines.next().and_then(|l| l.strip_prefix(prefix.as_str())).map(|v| v.trim().to_string()).ok_or_else(|| anyhow::anyhow!("the signature file has no `{name}:` line where it belongs"))
-    };
-    let (file, version, sha, sig) = (field("file")?, field("version")?, field("sha256")?, field("sig")?);
-    if file != file_name {
-        bail!("signed as {file}, not as {file_name}");
-    }
-    if parse_version(&version).is_none() {
-        bail!("signed version {version:?} is not a version (digits and dots)");
-    }
-    let actual = crate::pki::fingerprint(bytes);
-    if !sha.eq_ignore_ascii_case(&actual) {
-        bail!("the file is not the one that was signed (checksum differs)");
-    }
-    verify(statement(&file, &version, &actual).as_bytes(), &sig, pubkey_b64)?;
-    Ok(version)
-}
-
-/// `0.1.8` or `v0.1.8` as numbers, for comparing. `None` for anything else.
-pub fn parse_version(v: &str) -> Option<Vec<u64>> {
-    let v = v.strip_prefix('v').unwrap_or(v);
-    v.split('.').map(|p| p.parse().ok()).collect::<Option<Vec<u64>>>().filter(|p| !p.is_empty())
-}
-
-/// Does the key even have the shape of an ed25519 key?
-///
-/// Stands on its own because two places need it: the check itself and
-/// storing it in the settings. Whoever checks in only one of them lets a
-/// typo through all the way to the point where the whole program has
-/// already been downloaded.
-pub fn check_pubkey(pubkey_b64: &str) -> Result<Vec<u8>> {
-    let key = b64(pubkey_b64.trim()).context("not base64")?;
-    if key.len() != 32 {
-        bail!("must be 32 bytes (ed25519), got {}", key.len());
-    }
-    Ok(key)
-}
-
-/// Base64 without another library. The alphabet part is a dozen lines, and
-/// the only place that needs base64 is this one.
-fn b64(s: &str) -> Result<Vec<u8>> {
-    const A: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = Vec::with_capacity(s.len() / 4 * 3);
-    let (mut acc, mut bits) = (0u32, 0u32);
-    for c in s.bytes().filter(|c| !c.is_ascii_whitespace() && *c != b'=') {
-        let v = A.iter().position(|a| *a == c).ok_or_else(|| anyhow::anyhow!("not base64: {:?}", c as char))? as u32;
-        acc = (acc << 6) | v;
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            out.push((acc >> bits) as u8);
-        }
-    }
-    Ok(out)
-}
+// The statement format and its check live in `deelpe_core::signing`, shared
+// with the agents, which check the same statement before they swap.
+pub use deelpe_core::signing::{check_pubkey, parse_version, verify_release};
 
 /// The key that is checked against.
 ///
@@ -434,7 +338,7 @@ async fn one(http: &reqwest::Client, asset: &Asset, sig: &Asset, repo: &reqwest:
     // folder and only stands out there is one that could already have been
     // delivered.
     let version = verify_release(&bytes, &sig_text, key, &asset.name).context("does not carry a valid signature from the configured key")?;
-    crate::binaries::install_signed(st, platform, &bytes, &version).await?;
+    crate::binaries::install_signed(st, platform, &bytes, &version, &sig_text).await?;
     Ok(bytes.len())
 }
 
@@ -503,6 +407,7 @@ pub async fn run(state: Shared, stop: tokio_util::sync::CancellationToken) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    use deelpe_core::signing::{statement, verify};
 
     fn asset(name: &str) -> Asset {
         Asset { name: name.into(), browser_download_url: format!("https://example.invalid/{name}"), url: String::new(), size: 10 }

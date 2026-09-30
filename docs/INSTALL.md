@@ -1415,6 +1415,15 @@ that slot** — a genuinely signed old build with a known hole is still an old
 build, and deleting the program does not reset that. A bare signature over the
 file, as written before 0.1.8, is no longer accepted: sign again.
 
+The agents check the same statement once more before they replace
+themselves, so the central server alone cannot hand the fleet a program: an
+agent built by the release scripts carries the public key and swaps only to a
+program signed for its slot, at a version not older than its own. Otherwise it
+logs why and keeps running what it has. The server passes the statement along
+with the program; an agent built without the key (your own `cargo build`,
+`scripts/publish-agent.sh`) checks the checksum only, as before — and an agent
+that has the key refuses such an unsigned build.
+
 The official image compiles the DLPrevent release key in; a key in
 *Settings → Interfaces* is then ignored, so one administrator login cannot
 swap it. If you sign your own agents, build the image with

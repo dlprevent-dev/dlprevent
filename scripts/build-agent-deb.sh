@@ -53,6 +53,7 @@ docker run --rm --platform "linux/$ARCH" \
   -v "$ROOT":/src -v "$VOLUME":/target -v "$ROOT/dist":/out \
   -w /src -e CARGO_TARGET_DIR=/target \
   -e CARGO_INSTALL_ROOT=/target/tools \
+  -e DEELPE_UPDATE_PUBKEY="${DEELPE_UPDATE_PUBKEY:-}" \
   -e PATH=/target/tools/bin:/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
   "$IMAGE" bash -euo pipefail -c "
     apt-get update -qq >/dev/null
