@@ -1403,9 +1403,23 @@ The signatures come from `deelpe-sign`, which is in this repository
 (`cargo build -p deelpe-server`):
 
 ```bash
-deelpe-sign keygen release.key                      # once; prints the public key
-deelpe-sign sign release.key deelpe-winagent.exe    # writes deelpe-winagent.exe.sig
+deelpe-sign keygen release.key                            # once; prints the public key
+deelpe-sign sign release.key deelpe-winagent.exe 0.1.8    # writes deelpe-winagent.exe.sig
+deelpe-sign pubkey release.key                            # the public key again
 ```
+
+The `.sig` file states the file name, the version and the SHA-256, and the
+signature covers all three. The server takes a program only into the slot it
+was signed for, and **never a version older than the one it already held for
+that slot** — a genuinely signed old build with a known hole is still an old
+build, and deleting the program does not reset that. A bare signature over the
+file, as written before 0.1.8, is no longer accepted: sign again.
+
+The official image compiles the DLPrevent release key in; a key in
+*Settings → Interfaces* is then ignored, so one administrator login cannot
+swap it. If you sign your own agents, build the image with
+`--build-arg DEELPE_UPDATE_PUBKEY=<your public key>`, or with an empty value
+to use the key from the settings.
 
 Both files belong to the release. The **private** key stays with whoever
 publishes — not in the repository, not on the central server; otherwise the

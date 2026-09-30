@@ -66,7 +66,7 @@ done
 echo "== signing"
 ( cd "$ROOT" && cargo build --release -p deelpe-server --bin deelpe-sign >/dev/null )
 for f in deelpe-winagent.exe DLPrevent.zip deelpe-linux-amd64 deelpe-linux-arm64; do
-  "$ROOT/target/release/deelpe-sign" sign "$KEY" "$OUT/$f" >/dev/null
+  "$ROOT/target/release/deelpe-sign" sign "$KEY" "$OUT/$f" "$VERSION" >/dev/null
 done
 ( cd "$OUT" && shasum -a 256 deelpe-winagent.exe DLPrevent.zip deelpe-linux-amd64 deelpe-linux-arm64 ./*.deb | sed 's| \./| |' > SHA256SUMS )
 

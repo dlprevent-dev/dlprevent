@@ -253,9 +253,12 @@ async fn upload(Admin(a): Admin, State(st): State<Shared>, Path(platform): Path<
     let key = crate::release::pubkey(&st).await.map_err(|e| bad(format!("{e:#}")))?;
     if let Some(key) = &key {
         let sig = q.sig.as_deref().filter(|s| !s.trim().is_empty()).ok_or_else(|| bad("a signing key is configured: upload the program together with its .sig file"))?;
-        crate::release::verify(&body, sig, key).map_err(|e| bad(format!("signature: {e:#}")))?;
+        let name = file_name(&platform).unwrap_or_default();
+        let version = crate::release::verify_release(&body, sig, key, name).map_err(|e| bad(format!("signature: {e:#}")))?;
+        install_signed(&st, &platform, &body, &version).await.map_err(|e| bad(format!("{e:#}")))?;
+    } else {
+        install(&st, &platform, &body).map_err(|e| bad(format!("{e:#}")))?;
     }
-    install(&st, &platform, &body).map_err(|e| bad(format!("{e:#}")))?;
     let sha256 = hex(&Sha256::digest(&body));
     tracing::info!(platform, bytes = body.len(), "agent binary uploaded");
     crate::db::audit(&st.pool, (&a).into(), "binary_upload", serde_json::json!({ "platform": platform, "size": body.len(), "sha256": sha256, "signed": key.is_some() })).await;
@@ -299,6 +302,27 @@ pub fn install(st: &Shared, platform: &str, bytes: &[u8]) -> anyhow::Result<()> 
         let _ = std::fs::remove_file(&tmp);
     }
     Ok(out?)
+}
+
+/// The version each slot holds, as its signature stated it.
+const VERSIONS: &str = "agent_program_versions";
+
+/// [`install`] for a program whose signature named its version, refusing
+/// one older than what the slot already held. A genuinely signed old build
+/// is still an old build: without this, whoever controlled the release (or
+/// an administrator login) could roll every endpoint back to a version with
+/// a known hole. The record outlives a deleted program for the same reason.
+pub async fn install_signed(st: &Shared, platform: &str, bytes: &[u8], version: &str) -> anyhow::Result<()> {
+    use crate::release::parse_version;
+    let mut held = crate::db::settings_map(&st.pool, &[VERSIONS]).await?.remove(VERSIONS).unwrap_or_else(|| serde_json::json!({}));
+    if let Some(have) = held.get(platform).and_then(|v| v.as_str()) {
+        if parse_version(version) < parse_version(have) {
+            anyhow::bail!("version {version} is older than the {have} this server already had for {platform} — a signed old build is still an old build");
+        }
+    }
+    install(st, platform, bytes)?;
+    held[platform] = serde_json::json!(version);
+    crate::db::set_setting(&st.pool, VERSIONS, held).await
 }
 
 /// A Windows program starts with "MZ", a zip with "PK", a Linux program with

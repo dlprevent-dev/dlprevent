@@ -12,6 +12,11 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 COPY --from=ui /src/crates/deelpe-server/ui-dist crates/deelpe-server/ui-dist
+# The DLPrevent release key, compiled in: a key that only sat in the settings
+# could be swapped by one administrator login, and with it every endpoint's
+# program. Build with your own (`deelpe-sign pubkey <key>`) if you sign your own
+# agents, or empty to fall back to the key in Settings -> Interfaces.
+ARG DEELPE_UPDATE_PUBKEY=jlcaHUvhIN+ejVGKSv0jz+MSrLvZRS3hh3yAJ1qdZUg=
 RUN cargo build --release -p deelpe-server && strip target/release/deelpe-server
 
 FROM debian:trixie-slim

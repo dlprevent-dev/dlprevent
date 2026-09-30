@@ -134,6 +134,19 @@ pub fn platforms_in(assets: &[Asset]) -> Vec<String> {
         .collect()
 }
 
+/// First line of a `.sig` file.
+const STATEMENT_HEAD: &str = "deelpe-release-v1";
+
+/// What the release key signs: not the bare file but which slot it is for,
+/// which version it is, and its checksum. A bare signature over the file
+/// said nothing about the version — whoever controlled the release could
+/// publish an old, genuinely signed, vulnerable build under a new tag, and
+/// every server took it. `deelpe-sign` writes these lines into the `.sig`
+/// file, followed by `sig: <base64>` over exactly them.
+pub fn statement(file_name: &str, version: &str, sha256_hex: &str) -> String {
+    format!("{STATEMENT_HEAD}\nfile: {file_name}\nversion: {version}\nsha256: {sha256_hex}\n")
+}
+
 /// Do these bytes really come from whoever holds the key?
 ///
 /// Ed25519 over the whole file, signature and key base64. `ring` is in the
@@ -147,6 +160,39 @@ pub fn verify(bytes: &[u8], sig_b64: &str, pubkey_b64: &str) -> Result<()> {
     ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, &key)
         .verify(bytes, &sig)
         .map_err(|_| anyhow::anyhow!("signature does not match this key — the file is not the one that was signed"))
+}
+
+/// Check a program against its `.sig` file ([`statement`]) and return the
+/// version it was signed as. The slot has to match (`file_name`), and so
+/// does the checksum; the signature covers both and the version.
+pub fn verify_release(bytes: &[u8], sig_file: &str, pubkey_b64: &str, file_name: &str) -> Result<String> {
+    let mut lines = sig_file.lines().map(str::trim).filter(|l| !l.is_empty());
+    if lines.next() != Some(STATEMENT_HEAD) {
+        bail!("not a signed release statement — sign it again with `deelpe-sign sign <key> <file> <version>`; a bare signature over the file does not say which version it is");
+    }
+    let mut field = |name: &str| {
+        let prefix = format!("{name}:");
+        lines.next().and_then(|l| l.strip_prefix(prefix.as_str())).map(|v| v.trim().to_string()).ok_or_else(|| anyhow::anyhow!("the signature file has no `{name}:` line where it belongs"))
+    };
+    let (file, version, sha, sig) = (field("file")?, field("version")?, field("sha256")?, field("sig")?);
+    if file != file_name {
+        bail!("signed as {file}, not as {file_name}");
+    }
+    if parse_version(&version).is_none() {
+        bail!("signed version {version:?} is not a version (digits and dots)");
+    }
+    let actual = crate::pki::fingerprint(bytes);
+    if !sha.eq_ignore_ascii_case(&actual) {
+        bail!("the file is not the one that was signed (checksum differs)");
+    }
+    verify(statement(&file, &version, &actual).as_bytes(), &sig, pubkey_b64)?;
+    Ok(version)
+}
+
+/// `0.1.8` or `v0.1.8` as numbers, for comparing. `None` for anything else.
+pub fn parse_version(v: &str) -> Option<Vec<u64>> {
+    let v = v.strip_prefix('v').unwrap_or(v);
+    v.split('.').map(|p| p.parse().ok()).collect::<Option<Vec<u64>>>().filter(|p| !p.is_empty())
 }
 
 /// Does the key even have the shape of an ed25519 key?
@@ -381,14 +427,14 @@ async fn one(http: &reqwest::Client, asset: &Asset, sig: &Asset, repo: &reqwest:
         bail!("announces {} bytes, more than this server accepts", asset.size);
     }
     let bytes = get(http, source_of(asset, repo)?, MAX_ASSET, token).await?;
-    // A signature is 88 characters. A kilobyte is generous and keeps a peer
-    // from sending a book here.
+    // A signed statement is a few hundred characters. A kilobyte is
+    // generous and keeps a peer from sending a book here.
     let sig_text = String::from_utf8(get(http, source_of(sig, repo)?, 1024, token).await?).context("signature file is not text")?;
     // Verify first, then write. A file that makes it into the staging
     // folder and only stands out there is one that could already have been
     // delivered.
-    verify(&bytes, &sig_text, key).context("does not carry a valid signature from the configured key")?;
-    crate::binaries::install(st, platform, &bytes)?;
+    let version = verify_release(&bytes, &sig_text, key, &asset.name).context("does not carry a valid signature from the configured key")?;
+    crate::binaries::install_signed(st, platform, &bytes, &version).await?;
     Ok(bytes.len())
 }
 
@@ -506,6 +552,30 @@ mod tests {
         // And a foreign key against the genuine signature.
         let (other_pub, _) = keypair();
         assert!(verify(bytes, &sig, &other_pub).is_err());
+    }
+
+    /// The `.sig` file states slot, version and checksum, and the signature
+    /// covers all three: an old build cannot be relabelled as a new one, nor
+    /// the Linux file passed off as the Windows one.
+    #[test]
+    fn a_signature_binds_the_file_to_its_slot_and_version() {
+        let (pubkey, kp) = keypair();
+        let bytes = b"MZ ein Programm";
+        let sha = crate::pki::fingerprint(bytes);
+        let sig_file = |file: &str, version: &str| {
+            let st = statement(file, version, &sha);
+            format!("{st}sig: {}\n", b64_encode(kp.sign(st.as_bytes()).as_ref()))
+        };
+        let good = sig_file("deelpe-winagent.exe", "0.1.8");
+        assert_eq!(verify_release(bytes, &good, &pubkey, "deelpe-winagent.exe").unwrap(), "0.1.8");
+        assert!(verify_release(bytes, &good, &pubkey, "deelpe-linux-amd64").is_err(), "another slot");
+        assert!(verify_release(b"MZ ein Programm!", &good, &pubkey, "deelpe-winagent.exe").is_err(), "another file");
+        let relabelled = good.replace("version: 0.1.8", "version: 0.2.0");
+        assert!(verify_release(bytes, &relabelled, &pubkey, "deelpe-winagent.exe").is_err(), "the version is signed too");
+        assert!(verify_release(bytes, &b64_encode(kp.sign(bytes).as_ref()), &pubkey, "deelpe-winagent.exe").is_err(), "a bare signature says no version");
+        assert!(verify_release(bytes, &sig_file("deelpe-winagent.exe", "latest"), &pubkey, "deelpe-winagent.exe").is_err(), "not a version");
+        assert!(parse_version("v0.1.10") > parse_version("0.1.9"), "numbers, not text");
+        assert_eq!(parse_version("0.1.x"), None);
     }
 
     /// Whatever does not have the right shape is refused before `ring` sees
@@ -638,20 +708,26 @@ mod tests {
 /// until a server at a customer site refuses a release that the publisher
 /// has just signed.
 ///
-/// The numbers below are therefore not made up but the output of
-/// `deelpe-sign keygen` and `deelpe-sign sign` over exactly these six bytes
-/// (2026-09-10).
+/// The values below are therefore not made up but the output of
+/// `deelpe-sign keygen` and `deelpe-sign sign <key> deelpe-winagent.exe 0.1.8`
+/// over a file holding exactly the six bytes `deelpe` (2026-09-30).
 #[cfg(test)]
 mod tool_agreement {
-    const PUBKEY: &str = "W7EX7jHl/i942+wDIe15prLf1d4uCz98EnnhxsdRsQY=";
+    const PUBKEY: &str = "AcwOjMFZHDJepHUujYO8KxgJw1LvQB15VaJBisHY5ys=";
     const MESSAGE: &[u8] = b"deelpe";
-    const SIG: &str = "6LcLKMBjQ16S/z052zUz6Du1eYSOzfUe3hVHyrD7PlXLGi/RAUkgmzbffefGb94/DacBXbfexeS5oHphq3pvCg==";
+    const SIG_FILE: &str = "deelpe-release-v1
+file: deelpe-winagent.exe
+version: 0.1.8
+sha256: c81bfc68acb0520fa25a6c2d62c96cd973aa307c6414dc919974397aff6603d8
+sig: jY4OEbOhCRrF1pbgMVTtI2cayG82obF+YzE+S/KEwwJ4CP0oJFkgDkHeg5V4itUYj0vk/2v8ndmH16UVnjklCQ==
+";
 
     #[test]
     fn a_signature_written_by_the_tool_is_one_this_module_accepts() {
-        super::verify(MESSAGE, SIG, PUBKEY).expect("was das Werkzeug schreibt, muss hier durchkommen");
+        let v = super::verify_release(MESSAGE, SIG_FILE, PUBKEY, "deelpe-winagent.exe").expect("was das Werkzeug schreibt, muss hier durchkommen");
+        assert_eq!(v, "0.1.8");
         // And the counter-check, so that the test does not simply accept
         // everything: one byte different, and it is over.
-        assert!(super::verify(b"deelp3", SIG, PUBKEY).is_err());
+        assert!(super::verify_release(b"deelp3", SIG_FILE, PUBKEY, "deelpe-winagent.exe").is_err());
     }
 }

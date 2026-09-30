@@ -1337,18 +1337,36 @@ mod tests {
             let req = Request::builder().method("POST").uri(format!("/api/binaries/windows{q}")).header(header::COOKIE, &admin).body(axum::body::Body::from(exe)).unwrap();
             app.clone().oneshot(req)
         };
-        let enc = |s: String| s.replace('+', "%2B").replace('/', "%2F").replace('=', "%3D");
+        let enc = |s: &str| s.replace('%', "%25").replace('+', "%2B").replace('/', "%2F").replace('=', "%3D").replace('\n', "%0A").replace(' ', "%20").replace(':', "%3A");
+        // What `deelpe-sign sign <key> <file> <version>` writes: the statement
+        // (file, version, checksum) and the signature over it.
+        let signed = |kp: &ring::signature::Ed25519KeyPair, file: &str, version: &str, bytes: &[u8]| {
+            let st = crate::release::statement(file, version, &crate::pki::fingerprint(bytes));
+            format!("{st}sig: {}\n", b64(kp.sign(st.as_bytes()).as_ref()))
+        };
 
         assert_eq!(upload(String::new()).await.unwrap().status(), StatusCode::BAD_REQUEST, "no signature");
         let other = ring::signature::Ed25519KeyPair::from_pkcs8(ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new()).unwrap().as_ref()).unwrap();
-        assert_eq!(upload(format!("?sig={}", enc(b64(other.sign(exe).as_ref())))).await.unwrap().status(), StatusCode::BAD_REQUEST, "someone else's key");
+        assert_eq!(upload(format!("?sig={}", enc(&signed(&other, "deelpe-winagent.exe", "0.1.8", exe)))).await.unwrap().status(), StatusCode::BAD_REQUEST, "someone else's key");
+        // The old form, a bare signature over the file, said nothing about
+        // the version: an old build signed back then passed as any version.
+        assert_eq!(upload(format!("?sig={}", enc(&b64(kp.sign(exe).as_ref())))).await.unwrap().status(), StatusCode::BAD_REQUEST, "a bare signature no longer counts");
+        assert_eq!(upload(format!("?sig={}", enc(&signed(&kp, "DLPrevent.zip", "0.1.8", exe)))).await.unwrap().status(), StatusCode::BAD_REQUEST, "signed for another slot");
         assert!(!data_dir.join("agents/deelpe-winagent.exe").exists(), "nothing staged before a valid signature");
 
-        assert_eq!(upload(format!("?sig={}", enc(b64(kp.sign(exe).as_ref())))).await.unwrap().status(), StatusCode::OK);
+        assert_eq!(upload(format!("?sig={}", enc(&signed(&kp, "deelpe-winagent.exe", "0.1.8", exe)))).await.unwrap().status(), StatusCode::OK);
+        // Rollback: an old build, genuinely signed, is still an old build.
+        let r = upload(format!("?sig={}", enc(&signed(&kp, "deelpe-winagent.exe", "0.1.7", exe)))).await.unwrap();
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST, "an older version does not replace a newer one");
+        assert_eq!(upload(format!("?sig={}", enc(&signed(&kp, "deelpe-winagent.exe", "0.1.8", exe)))).await.unwrap().status(), StatusCode::OK, "the same version again is fine");
         let r = send(&app, "DELETE", "/api/binaries/windows", (header::COOKIE.as_str(), &admin), serde_json::Value::Null).await;
         assert_eq!(r.status(), StatusCode::NO_CONTENT);
         let actions: Vec<String> = sqlx::query_scalar("SELECT action FROM audit_log WHERE action LIKE 'binary_%' ORDER BY id").fetch_all(&pool).await.unwrap();
-        assert_eq!(actions, ["binary_upload", "binary_remove"]);
+        assert_eq!(actions, ["binary_upload", "binary_upload", "binary_remove"]);
+        // Deleting the program does not reset the record: delete, then upload
+        // the old build, would otherwise be the same rollback.
+        let r = upload(format!("?sig={}", enc(&signed(&kp, "deelpe-winagent.exe", "0.1.7", exe)))).await.unwrap();
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST, "an emptied slot still remembers its version");
         let _ = std::fs::remove_dir_all(data_dir);
     }
 }

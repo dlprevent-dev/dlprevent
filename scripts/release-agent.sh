@@ -37,7 +37,7 @@ echo "== building ($TAG)"
 
 echo "== signing"
 rm -f "$EXE.sig"
-"$ROOT/target/release/deelpe-sign" sign "$KEY" "$EXE" >/dev/null
+"$ROOT/target/release/deelpe-sign" sign "$KEY" "$EXE" "$VERSION" >/dev/null
 SHA="$(shasum -a 256 "$EXE" | cut -d' ' -f1)"
 echo "   $SHA"
 
