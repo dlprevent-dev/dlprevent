@@ -10,3 +10,7 @@ docs
 # Database dumps, wherever they lie (docs/INSTALL.md, Backup). Not `*.sql`:
 # the migrations are SQL and go into the build.
 **/*.sql.gz
+# Local tool output (see .gitignore): never part of a build context.
+strix_runs
+.source-aware
+baron-q6k
