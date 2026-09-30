@@ -40,12 +40,21 @@ pub struct CentralConfig {
 
 impl CentralConfig {
     pub fn from_credentials(c: Credentials, kind: deelpe_core::central::AgentKind) -> Self {
-        Self { url: c.url, agent_id: c.agent_id, ca_pem: c.ca_pem, cert_pem: c.cert_pem, key_pem: c.key_pem, enrolled_at: Some(Utc::now()), kind: Some(kind) }
+        Self {
+            url: c.url,
+            agent_id: c.agent_id,
+            ca_pem: c.ca_pem,
+            cert_pem: c.cert_pem,
+            key_pem: c.key_pem,
+            enrolled_at: Some(Utc::now()),
+            kind: Some(kind),
+        }
     }
 
     /// File server, as long as nothing else is written there.
     pub fn kind(&self) -> deelpe_core::central::AgentKind {
-        self.kind.unwrap_or(deelpe_core::central::AgentKind::WindowsServer)
+        self.kind
+            .unwrap_or(deelpe_core::central::AgentKind::WindowsServer)
     }
 
     pub fn credentials(&self) -> Credentials {
@@ -60,14 +69,19 @@ impl CentralConfig {
 
     pub fn load() -> Result<Option<Self>> {
         match std::fs::read_to_string(CONFIG_PATH) {
-            Ok(raw) => Ok(Some(serde_json::from_str(&raw).with_context(|| format!("{CONFIG_PATH} unreadable"))?)),
+            Ok(raw) => Ok(Some(
+                serde_json::from_str(&raw).with_context(|| format!("{CONFIG_PATH} unreadable"))?,
+            )),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e.into()),
         }
     }
 
     pub fn save(&self) -> Result<()> {
-        write_private(Path::new(CONFIG_PATH), serde_json::to_string_pretty(self)?.as_bytes())
+        write_private(
+            Path::new(CONFIG_PATH),
+            serde_json::to_string_pretty(self)?.as_bytes(),
+        )
     }
 }
 
@@ -157,10 +171,16 @@ impl Default for AgentState {
 
 impl AgentState {
     pub fn load() -> Self {
-        std::fs::read_to_string(STATE_PATH).ok().and_then(|r| serde_json::from_str(&r).ok()).unwrap_or_default()
+        std::fs::read_to_string(STATE_PATH)
+            .ok()
+            .and_then(|r| serde_json::from_str(&r).ok())
+            .unwrap_or_default()
     }
     pub fn save(&self) -> Result<()> {
-        write_private(Path::new(STATE_PATH), serde_json::to_string(self)?.as_bytes())
+        write_private(
+            Path::new(STATE_PATH),
+            serde_json::to_string(self)?.as_bytes(),
+        )
     }
 }
 
@@ -181,7 +201,10 @@ impl deelpe_core::session::CredentialStore for CentralConfig {
 }
 
 pub fn hostname() -> String {
-    std::env::var("COMPUTERNAME").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "unknown".into())
+    std::env::var("COMPUTERNAME")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".into())
 }
 
 /// The 8.3 short name of a folder — `C:\Freigaben\GL` → `C:\FREIG~1\GL`.
@@ -204,7 +227,11 @@ pub fn short_name(path: &Path) -> Option<PathBuf> {
     use std::os::windows::ffi::OsStrExt;
     use windows::core::PCWSTR;
     use windows::Win32::Storage::FileSystem::GetShortPathNameW;
-    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let wide: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
     let mut buf = [0u16; 1024];
     let n = unsafe { GetShortPathNameW(PCWSTR(wide.as_ptr()), Some(&mut buf)) };
     if n == 0 || n as usize > buf.len() {
@@ -233,7 +260,9 @@ pub fn short_name(_: &Path) -> Option<PathBuf> {
 #[cfg(windows)]
 pub fn fqdn() -> String {
     use windows::core::PWSTR;
-    use windows::Win32::System::SystemInformation::{ComputerNameDnsFullyQualified, GetComputerNameExW};
+    use windows::Win32::System::SystemInformation::{
+        ComputerNameDnsFullyQualified, GetComputerNameExW,
+    };
     let mut n = 0u32;
     // First call without a buffer: it fails as expected with
     // `ERROR_MORE_DATA` and sets the required length while doing so.
@@ -245,7 +274,15 @@ pub fn fqdn() -> String {
     }
     let mut buf = vec![0u16; n as usize];
     // After the second call `n` is the length **without** the trailing NUL.
-    if unsafe { GetComputerNameExW(ComputerNameDnsFullyQualified, Some(PWSTR(buf.as_mut_ptr())), &mut n) }.is_err() {
+    if unsafe {
+        GetComputerNameExW(
+            ComputerNameDnsFullyQualified,
+            Some(PWSTR(buf.as_mut_ptr())),
+            &mut n,
+        )
+    }
+    .is_err()
+    {
         return String::new();
     }
     let name = String::from_utf16_lossy(&buf[..(n as usize).min(buf.len())]);
@@ -276,20 +313,21 @@ fn write_private(path: &Path, data: &[u8]) -> Result<()> {
     // without a right on the file.
     let _ = std::fs::remove_file(&tmp);
     {
-        let mut f = std::fs::File::create(&tmp)
-            .with_context(|| format!("create {}", tmp.display()))?;
+        let mut f =
+            std::fs::File::create(&tmp).with_context(|| format!("create {}", tmp.display()))?;
         f.write_all(data)?;
         f.sync_all()?;
     }
     restrict(&tmp)?;
-    std::fs::rename(&tmp, path).with_context(|| format!("rename {} to {}", tmp.display(), path.display()))?;
+    std::fs::rename(&tmp, path)
+        .with_context(|| format!("rename {} to {}", tmp.display(), path.display()))?;
     Ok(())
 }
 
 /// SID of the account this process runs under.
 #[cfg(windows)]
 pub(crate) fn own_sid() -> Option<String> {
-    use windows::Win32::Foundation::{CloseHandle, HANDLE, LocalFree, HLOCAL};
+    use windows::Win32::Foundation::{CloseHandle, LocalFree, HANDLE, HLOCAL};
     use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
     use windows::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};
     use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
@@ -299,7 +337,14 @@ pub(crate) fn own_sid() -> Option<String> {
         let mut len = 0u32;
         let _ = GetTokenInformation(token, TokenUser, None, 0, &mut len);
         let mut buf = vec![0u8; len as usize];
-        let ok = GetTokenInformation(token, TokenUser, Some(buf.as_mut_ptr() as *mut _), len, &mut len).is_ok();
+        let ok = GetTokenInformation(
+            token,
+            TokenUser,
+            Some(buf.as_mut_ptr() as *mut _),
+            len,
+            &mut len,
+        )
+        .is_ok();
         let _ = CloseHandle(token);
         if !ok {
             return None;
@@ -333,19 +378,39 @@ fn sddl_private() -> String {
 #[cfg(windows)]
 fn restrict(path: &Path) -> Result<()> {
     use windows::core::{HSTRING, PCWSTR};
-    use windows::Win32::Security::Authorization::{ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1};
-    use windows::Win32::Security::{SetFileSecurityW, DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR};
+    use windows::Win32::Security::Authorization::{
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+    };
+    use windows::Win32::Security::{
+        SetFileSecurityW, DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
+        PSECURITY_DESCRIPTOR,
+    };
 
     let sddl = HSTRING::from(sddl_private());
     let mut psd = PSECURITY_DESCRIPTOR::default();
     unsafe {
-        ConvertStringSecurityDescriptorToSecurityDescriptorW(PCWSTR(sddl.as_ptr()), SDDL_REVISION_1, &mut psd, None)
-            .context("SDDL of the credentials file")?;
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            PCWSTR(sddl.as_ptr()),
+            SDDL_REVISION_1,
+            &mut psd,
+            None,
+        )
+        .context("SDDL of the credentials file")?;
     }
     let p = HSTRING::from(path.as_os_str());
-    let r = unsafe { SetFileSecurityW(PCWSTR(p.as_ptr()), DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION, psd) };
-    unsafe { let _ = windows::Win32::Foundation::LocalFree(Some(windows::Win32::Foundation::HLOCAL(psd.0))); }
-    r.ok().with_context(|| format!("set permissions on {}", path.display()))?;
+    let r = unsafe {
+        SetFileSecurityW(
+            PCWSTR(p.as_ptr()),
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            psd,
+        )
+    };
+    unsafe {
+        let _ =
+            windows::Win32::Foundation::LocalFree(Some(windows::Win32::Foundation::HLOCAL(psd.0)));
+    }
+    r.ok()
+        .with_context(|| format!("set permissions on {}", path.display()))?;
     Ok(())
 }
 

@@ -106,7 +106,9 @@ pub enum Response {
 pub async fn client(req: Request) -> Result<Response> {
     let mut stream = UnixStream::connect(Path::new(SOCKET))
         .await
-        .with_context(|| format!("service not reachable at {SOCKET}. Is `deelpe daemon` running?"))?;
+        .with_context(|| {
+            format!("service not reachable at {SOCKET}. Is `deelpe daemon` running?")
+        })?;
     let mut line = serde_json::to_string(&req)?;
     line.push('\n');
     stream.write_all(line.as_bytes()).await?;

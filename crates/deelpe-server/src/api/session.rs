@@ -21,11 +21,17 @@ pub(super) struct Login {
 }
 
 fn address(st: &Shared, peer: PeerAddr, headers: &HeaderMap) -> IpAddr {
-    st.client_ip(peer.0, headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()))
+    st.client_ip(
+        peer.0,
+        headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()),
+    )
 }
 
 fn locked() -> ApiError {
-    ApiError(StatusCode::TOO_MANY_REQUESTS, "too many failed attempts, wait a minute".into())
+    ApiError(
+        StatusCode::TOO_MANY_REQUESTS,
+        "too many failed attempts, wait a minute".into(),
+    )
 }
 
 /// The address of whoever is signing in, with the attempt already counted
@@ -41,7 +47,13 @@ fn caller(st: &Shared, peer: PeerAddr, headers: &HeaderMap) -> Result<IpAddr, Ap
 /// A failed attempt (already counted by [`caller`]): goes into the audit
 /// log, and the answer does not give away what it was that went wrong.
 async fn refuse(st: &Shared, ip: IpAddr, name: &str, step: &str, msg: &str) -> ApiError {
-    db::audit(&st.pool, db::Actor::SYSTEM, "login_failed", json!({ "name": name, "ip": ip.to_string(), "step": step })).await;
+    db::audit(
+        &st.pool,
+        db::Actor::SYSTEM,
+        "login_failed",
+        json!({ "name": name, "ip": ip.to_string(), "step": step }),
+    )
+    .await;
     ApiError(StatusCode::UNAUTHORIZED, msg.into())
 }
 
@@ -50,17 +62,51 @@ async fn refuse(st: &Shared, ip: IpAddr, name: &str, step: &str, msg: &str) -> A
 /// Not for an account from an identity provider (`external`): it signs in
 /// there only. Otherwise a password an administrator set, or a passkey,
 /// would skip the provider's MFA and outlive its offboarding.
-async fn open_session(st: &Shared, id: Uuid, name: String, role: String, ip: IpAddr, how: &str) -> Result<Response, ApiError> {
-    let external: bool = sqlx::query_scalar("SELECT external FROM users WHERE id = $1").bind(id).fetch_one(&st.pool).await?;
+async fn open_session(
+    st: &Shared,
+    id: Uuid,
+    name: String,
+    role: String,
+    ip: IpAddr,
+    how: &str,
+) -> Result<Response, ApiError> {
+    let external: bool = sqlx::query_scalar("SELECT external FROM users WHERE id = $1")
+        .bind(id)
+        .fetch_one(&st.pool)
+        .await?;
     if external {
-        return Err(refuse(st, ip, &name, how, "this account signs in through single sign-on").await);
+        return Err(refuse(
+            st,
+            ip,
+            &name,
+            how,
+            "this account signs in through single sign-on",
+        )
+        .await);
     }
     st.login_ok(ip);
     let sid = auth::new_session(&st.pool, id).await?;
-    let user = User { id, name, role, refreshed_cookie: None, second_factor_required: auth::second_factor_required(&st.pool, id).await? };
-    db::audit(&st.pool, (&user).into(), "login", json!({ "ip": ip.to_string(), "method": how })).await;
+    let user = User {
+        id,
+        name,
+        role,
+        refreshed_cookie: None,
+        second_factor_required: auth::second_factor_required(&st.pool, id).await?,
+    };
+    db::audit(
+        &st.pool,
+        (&user).into(),
+        "login",
+        json!({ "ip": ip.to_string(), "method": how }),
+    )
+    .await;
     let mut resp = Json(user).into_response();
-    resp.headers_mut().insert(header::SET_COOKIE, auth::session_cookie(&sid, st.public_https()).parse().unwrap());
+    resp.headers_mut().insert(
+        header::SET_COOKIE,
+        auth::session_cookie(&sid, st.public_https())
+            .parse()
+            .unwrap(),
+    );
     Ok(resp)
 }
 
@@ -70,7 +116,12 @@ async fn open_session(st: &Shared, id: Uuid, name: String, role: String, ip: IpA
 /// opens nothing, and the browser is meant to take the passkey route. The
 /// token binds the second step to the verified password; it is worth nothing
 /// without the code and expires after five minutes.
-pub(super) async fn login(State(st): State<Shared>, Extension(peer): Extension<PeerAddr>, headers: HeaderMap, Json(b): Json<Login>) -> Result<Response, ApiError> {
+pub(super) async fn login(
+    State(st): State<Shared>,
+    Extension(peer): Extension<PeerAddr>,
+    headers: HeaderMap,
+    Json(b): Json<Login>,
+) -> Result<Response, ApiError> {
     let ip = caller(&st, peer, &headers)?;
     let row: Option<(Uuid, String, String, String, bool, Option<Vec<u8>>, bool)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT u.id, u.name, u.role, u.pw_hash, u.disabled, u.totp_secret, {} AND EXISTS (SELECT 1 FROM passkeys p WHERE p.user_id = u.id) FROM users u WHERE u.name = $1",
@@ -80,7 +131,9 @@ pub(super) async fn login(State(st): State<Shared>, Extension(peer): Extension<P
     .fetch_optional(&st.pool)
     .await?;
     let ok = match &row {
-        Some((_, _, _, hash, disabled, _, _)) => !disabled && auth::verify_password(&b.password, hash),
+        Some((_, _, _, hash, disabled, _, _)) => {
+            !disabled && auth::verify_password(&b.password, hash)
+        }
         // Same running time whether the name exists or not.
         None => {
             let _ = auth::verify_password(&b.password, "$argon2id$v=19$m=19456,t=2,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
@@ -113,14 +166,23 @@ pub(super) struct TotpLogin {
     code: String,
 }
 
-pub(super) async fn login_totp(State(st): State<Shared>, Extension(peer): Extension<PeerAddr>, headers: HeaderMap, Json(b): Json<TotpLogin>) -> Result<Response, ApiError> {
+pub(super) async fn login_totp(
+    State(st): State<Shared>,
+    Extension(peer): Extension<PeerAddr>,
+    headers: HeaderMap,
+    Json(b): Json<TotpLogin>,
+) -> Result<Response, ApiError> {
     let ip = caller(&st, peer, &headers)?;
     let key = Pending::login_key(&b.token);
     let Some((since, Pending::Totp(id))) = st.pending_take(&key) else {
         return Err(refuse(&st, ip, "?", "totp", "sign in again").await);
     };
-    let row: Option<(String, String, bool, Option<Vec<u8>>, i64)> =
-        sqlx::query_as("SELECT name, role, disabled, totp_secret, totp_used_step FROM users WHERE id = $1").bind(id).fetch_optional(&st.pool).await?;
+    let row: Option<(String, String, bool, Option<Vec<u8>>, i64)> = sqlx::query_as(
+        "SELECT name, role, disabled, totp_secret, totp_used_step FROM users WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(&st.pool)
+    .await?;
     let Some((name, role, false, Some(secret), used)) = row else {
         return Err(ApiError(StatusCode::UNAUTHORIZED, "sign in again".into()));
     };
@@ -133,7 +195,13 @@ pub(super) async fn login_totp(State(st): State<Shared>, Extension(peer): Extens
     // Record it first, then sign in: the same code opens no second session —
     // not even when two requests arrive at the same time. The condition in
     // the UPDATE decides, not the comparison before it.
-    let n = sqlx::query("UPDATE users SET totp_used_step = $2 WHERE id = $1 AND totp_used_step < $2").bind(id).bind(step).execute(&st.pool).await?.rows_affected();
+    let n =
+        sqlx::query("UPDATE users SET totp_used_step = $2 WHERE id = $1 AND totp_used_step < $2")
+            .bind(id)
+            .bind(step)
+            .execute(&st.pool)
+            .await?
+            .rows_affected();
     if n == 0 {
         return Err(refuse(&st, ip, &name, "totp", "wrong code").await);
     }
@@ -155,24 +223,43 @@ pub(super) struct PasskeyStart {
 /// The half-finished step hangs off the account, not off a token: at most
 /// one entry per account, no matter how often somebody asks without being
 /// signed in.
-pub(super) async fn passkey_login_start(State(st): State<Shared>, Extension(peer): Extension<PeerAddr>, headers: HeaderMap, Json(b): Json<PasskeyStart>) -> Result<Response, ApiError> {
+pub(super) async fn passkey_login_start(
+    State(st): State<Shared>,
+    Extension(peer): Extension<PeerAddr>,
+    headers: HeaderMap,
+    Json(b): Json<PasskeyStart>,
+) -> Result<Response, ApiError> {
     // Asking for a challenge is no guess: it is refused while locked, but
     // not counted. The guess is the finish.
     if st.login_locked(address(&st, peer, &headers)) {
         return Err(locked());
     }
     let wa = auth::webauthn(&st, &headers)?;
-    let user: Option<(Uuid, bool)> = sqlx::query_as("SELECT id, disabled FROM users WHERE name = $1").bind(b.name.trim()).fetch_optional(&st.pool).await?;
+    let user: Option<(Uuid, bool)> =
+        sqlx::query_as("SELECT id, disabled FROM users WHERE name = $1")
+            .bind(b.name.trim())
+            .fetch_optional(&st.pool)
+            .await?;
     if let Some((id, false)) = user {
-        let keys: Vec<Passkey> = account::passkeys_of(&st.pool, id).await?.into_iter().map(|(_, k)| k).collect();
+        let keys: Vec<Passkey> = account::passkeys_of(&st.pool, id)
+            .await?
+            .into_iter()
+            .map(|(_, k)| k)
+            .collect();
         if !keys.is_empty() {
-            let (options, state) = wa.start_passkey_authentication(&keys).map_err(|e| anyhow!("webauthn: {e}"))?;
+            let (options, state) = wa
+                .start_passkey_authentication(&keys)
+                .map_err(|e| anyhow!("webauthn: {e}"))?;
             st.pending_put(Pending::passkey_login_key(id), Pending::PasskeyLogin(state));
             return Ok(Json(options).into_response());
         }
     }
     // Hex is valid base64url; trimmed to the length of a real challenge.
-    let rp_id = wa.get_allowed_origins().first().and_then(|o| o.domain()).unwrap_or_default();
+    let rp_id = wa
+        .get_allowed_origins()
+        .first()
+        .and_then(|o| o.domain())
+        .unwrap_or_default();
     let decoy = json!({ "publicKey": { "challenge": &auth::random_token()[..43], "timeout": 60000, "rpId": rp_id, "userVerification": "required",
         "allowCredentials": [{ "type": "public-key", "id": &auth::random_token()[..22] }] } });
     Ok(Json(decoy).into_response())
@@ -184,21 +271,40 @@ pub(super) struct PasskeyFinish {
     credential: PublicKeyCredential,
 }
 
-pub(super) async fn passkey_login_finish(State(st): State<Shared>, Extension(peer): Extension<PeerAddr>, headers: HeaderMap, Json(b): Json<PasskeyFinish>) -> Result<Response, ApiError> {
+pub(super) async fn passkey_login_finish(
+    State(st): State<Shared>,
+    Extension(peer): Extension<PeerAddr>,
+    headers: HeaderMap,
+    Json(b): Json<PasskeyFinish>,
+) -> Result<Response, ApiError> {
     let ip = caller(&st, peer, &headers)?;
     let wa = auth::webauthn(&st, &headers)?;
     let name = b.name.trim();
-    let row: Option<(Uuid, String, bool)> = sqlx::query_as("SELECT id, role, disabled FROM users WHERE name = $1").bind(name).fetch_optional(&st.pool).await?;
+    let row: Option<(Uuid, String, bool)> =
+        sqlx::query_as("SELECT id, role, disabled FROM users WHERE name = $1")
+            .bind(name)
+            .fetch_optional(&st.pool)
+            .await?;
     let Some((id, role, false)) = row else {
         return Err(refuse(&st, ip, name, "passkey", "passkey not accepted").await);
     };
-    let Some((_, Pending::PasskeyLogin(state))) = st.pending_take(&Pending::passkey_login_key(id)) else {
+    let Some((_, Pending::PasskeyLogin(state))) = st.pending_take(&Pending::passkey_login_key(id))
+    else {
         return Err(refuse(&st, ip, name, "passkey", "passkey not accepted").await);
     };
     let name = name.to_string();
     let result = match wa.finish_passkey_authentication(&b.credential, &state) {
         Ok(r) if r.user_verified() => r,
-        Ok(_) => return Err(refuse(&st, ip, &name, "passkey", "the passkey did not verify you (PIN, fingerprint or face)").await),
+        Ok(_) => {
+            return Err(refuse(
+                &st,
+                ip,
+                &name,
+                "passkey",
+                "the passkey did not verify you (PIN, fingerprint or face)",
+            )
+            .await)
+        }
         Err(e) => {
             tracing::info!("passkey refused for {name}: {e}");
             return Err(refuse(&st, ip, &name, "passkey", "passkey not accepted").await);
@@ -209,7 +315,11 @@ pub(super) async fn passkey_login_finish(State(st): State<Shared>, Extension(pee
     // timestamp.
     for (key_id, mut key) in account::passkeys_of(&st.pool, id).await? {
         if key.update_credential(&result).is_some() {
-            sqlx::query("UPDATE passkeys SET credential = $2, last_used_at = now() WHERE id = $1").bind(key_id).bind(sqlx::types::Json(&key)).execute(&st.pool).await?;
+            sqlx::query("UPDATE passkeys SET credential = $2, last_used_at = now() WHERE id = $1")
+                .bind(key_id)
+                .bind(sqlx::types::Json(&key))
+                .execute(&st.pool)
+                .await?;
         }
     }
     open_session(&st, id, name, role, ip, "passkey").await
@@ -217,12 +327,19 @@ pub(super) async fn passkey_login_finish(State(st): State<Shared>, Extension(pee
 
 pub(super) async fn logout(State(st): State<Shared>, headers: HeaderMap) -> Response {
     if let Some(raw) = headers.get(header::COOKIE).and_then(|v| v.to_str().ok()) {
-        if let Some(sid) = raw.split(';').map(str::trim).find_map(|kv| kv.strip_prefix(auth::COOKIE).and_then(|r| r.strip_prefix('='))) {
-            let _ = sqlx::query("DELETE FROM sessions WHERE id = $1").bind(auth::sha256_hex(sid)).execute(&st.pool).await;
+        if let Some(sid) = raw.split(';').map(str::trim).find_map(|kv| {
+            kv.strip_prefix(auth::COOKIE)
+                .and_then(|r| r.strip_prefix('='))
+        }) {
+            let _ = sqlx::query("DELETE FROM sessions WHERE id = $1")
+                .bind(auth::sha256_hex(sid))
+                .execute(&st.pool)
+                .await;
         }
     }
     let mut resp = StatusCode::NO_CONTENT.into_response();
-    resp.headers_mut().insert(header::SET_COOKIE, auth::clear_cookie().parse().unwrap());
+    resp.headers_mut()
+        .insert(header::SET_COOKIE, auth::clear_cookie().parse().unwrap());
     resp
 }
 
@@ -237,7 +354,9 @@ pub(super) async fn me(State(st): State<Shared>, user: User) -> Response {
     // the UI took the browser's zone — correct as long as the viewer's clock
     // is correct, and unprovable as soon as two people see the same alert
     // with different times on it.
-    let tz = crate::mail::timezone(&st.pool).await.unwrap_or(chrono_tz::Tz::UTC);
+    let tz = crate::mail::timezone(&st.pool)
+        .await
+        .unwrap_or(chrono_tz::Tz::UTC);
     let mut body = serde_json::to_value(&user).unwrap_or_else(|_| serde_json::json!({}));
     body["timezone"] = serde_json::json!(tz.name());
     let mut resp = Json(body).into_response();

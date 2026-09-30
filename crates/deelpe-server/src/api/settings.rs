@@ -261,7 +261,12 @@ pub(super) async fn settings(State(st): State<Shared>, _u: Admin) -> R<Settings>
     // The defaults are the same as before, when each was queried on its own.
     let i64_of = |k: &str, d: i64| m.get(k).and_then(serde_json::Value::as_i64).unwrap_or(d);
     let bool_of = |k: &str, d: bool| m.get(k).and_then(serde_json::Value::as_bool).unwrap_or(d);
-    let str_of = |k: &str| m.get(k).and_then(serde_json::Value::as_str).unwrap_or_default().to_string();
+    let str_of = |k: &str| {
+        m.get(k)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
     Ok(Json(Settings {
         learn_days: i64_of("learn_days", 7),
         report_interval_secs: i64_of("report_interval_secs", 30),
@@ -275,7 +280,9 @@ pub(super) async fn settings(State(st): State<Shared>, _u: Admin) -> R<Settings>
         release_pubkey: str_of("release_pubkey"),
         release_token: String::new(),
         release_token_set: !str_of("release_token").is_empty(),
-        release_pubkey_built_in: crate::release::BUILT_IN_PUBKEY.map(str::trim).is_some_and(|k| !k.is_empty()),
+        release_pubkey_built_in: crate::release::BUILT_IN_PUBKEY
+            .map(str::trim)
+            .is_some_and(|k| !k.is_empty()),
         syslog_enabled: bool_of("syslog_enabled", true),
         api_keys_enabled: bool_of("api_keys_enabled", false),
         require_2fa_admin: bool_of("require_2fa_admin", false),
@@ -293,7 +300,11 @@ pub(super) async fn settings(State(st): State<Shared>, _u: Admin) -> R<Settings>
         smtp_enabled: bool_of("smtp_enabled", false),
         smtp_host: str_of("smtp_host"),
         smtp_port: i64_of("smtp_port", 587),
-        smtp_security: m.get("smtp_security").and_then(serde_json::Value::as_str).unwrap_or("starttls").to_string(),
+        smtp_security: m
+            .get("smtp_security")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("starttls")
+            .to_string(),
         smtp_user: str_of("smtp_user"),
         smtp_pass: String::new(),
         smtp_pass_set: !str_of("smtp_pass").is_empty(),
@@ -315,14 +326,21 @@ pub(super) async fn settings(State(st): State<Shared>, _u: Admin) -> R<Settings>
     }))
 }
 
-pub(super) async fn update_settings(State(st): State<Shared>, Admin(user): Admin, Json(b): Json<Settings>) -> R<Settings> {
+pub(super) async fn update_settings(
+    State(st): State<Shared>,
+    Admin(user): Admin,
+    Json(b): Json<Settings>,
+) -> R<Settings> {
     if !(0..=90).contains(&b.learn_days) {
         return Err(bad("learning days: 0 to 90"));
     }
     if !(10..=3600).contains(&b.report_interval_secs) {
         return Err(bad("report interval: 10 to 3600 seconds"));
     }
-    let max = alert_retain_max_days(&st, db::setting_i64(&st.pool, "alert_retain_days", 730).await?);
+    let max = alert_retain_max_days(
+        &st,
+        db::setting_i64(&st.pool, "alert_retain_days", 730).await?,
+    );
     if !(30..=max).contains(&b.alert_retain_days) {
         return Err(bad(format!("alerts: 30 to {max} days")));
     }
@@ -339,13 +357,16 @@ pub(super) async fn update_settings(State(st): State<Shared>, Admin(user): Admin
     // error would only turn up at the first explanation. Same as with
     // `notify_base_url`.
     let assist_base = b.assist_base_url.trim().trim_end_matches('/');
-    if !assist_base.is_empty() && !(assist_base.starts_with("https://") || assist_base.starts_with("http://")) {
+    if !assist_base.is_empty()
+        && !(assist_base.starts_with("https://") || assist_base.starts_with("http://"))
+    {
         return Err(bad("AI base URL: start with https:// or http://"));
     }
     // A user name in the address would travel as a second Authorization
     // header, and it hides where the request really goes.
     if !assist_base.is_empty() {
-        let u = reqwest::Url::parse(assist_base).map_err(|_| bad("AI base URL: not a valid address"))?;
+        let u = reqwest::Url::parse(assist_base)
+            .map_err(|_| bad("AI base URL: not a valid address"))?;
         if !u.username().is_empty() || u.password().is_some() {
             return Err(bad("AI base URL: no user name or password in the address"));
         }
@@ -356,7 +377,9 @@ pub(super) async fn update_settings(State(st): State<Shared>, Admin(user): Admin
     // The most common typo with both providers: the URL entered all the way
     // to `/chat/completions`. The central server appends that itself.
     if assist_base.ends_with("/chat/completions") {
-        return Err(bad("AI base URL: leave off /chat/completions - the server appends it"));
+        return Err(bad(
+            "AI base URL: leave off /chat/completions - the server appends it",
+        ));
     }
     // If the base URL points at a different origin (scheme, machine or port),
     // the stored key is dropped. Otherwise the Infomaniak token would go to
@@ -365,7 +388,9 @@ pub(super) async fn update_settings(State(st): State<Shared>, Admin(user): Admin
     // new key sent along naturally applies; it is meant for the new machine
     // after all.
     let assist_host_changed = {
-        let old = db::setting_str(&st.pool, "assist_base_url").await?.unwrap_or_default();
+        let old = db::setting_str(&st.pool, "assist_base_url")
+            .await?
+            .unwrap_or_default();
         !old.is_empty() && !crate::assist::same_origin(&old, assist_base)
     };
     // Mail: only check what is actually used. A half-filled form with the
@@ -407,7 +432,10 @@ pub(super) async fn update_settings(State(st): State<Shared>, Admin(user): Admin
         }
     }
     if to.len() > mail::MAX_RECIPIENTS {
-        return Err(bad(format!("recipients: at most {} (use a distribution list)", mail::MAX_RECIPIENTS)));
+        return Err(bad(format!(
+            "recipients: at most {} (use a distribution list)",
+            mail::MAX_RECIPIENTS
+        )));
     }
     if let Some(r) = to.iter().find(|r| !mail::valid_address(r)) {
         return Err(bad(format!("recipient {r:?}: not an email address")));
@@ -420,18 +448,29 @@ pub(super) async fn update_settings(State(st): State<Shared>, Admin(user): Admin
     if b.require_2fa_admin {
         // Otherwise the administrator locks himself out of administration by
         // saving — and would not be able to reach this page any more.
-        let (has,): (bool,) = sqlx::query_as(sqlx::AssertSqlSafe(format!("SELECT {} FROM users u WHERE u.id = $1", auth::HAS_SECOND_FACTOR)))
-            .bind(user.id).fetch_one(&st.pool).await?;
+        let (has,): (bool,) = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT {} FROM users u WHERE u.id = $1",
+            auth::HAS_SECOND_FACTOR
+        )))
+        .bind(user.id)
+        .fetch_one(&st.pool)
+        .await?;
         if !has {
-            return Err(bad("set up your own second factor first (Account), then require it for administrators"));
+            return Err(bad(
+                "set up your own second factor first (Account), then require it for administrators",
+            ));
         }
     }
     // Only the lines that actually mean something — and the same splitting as
     // in the agent. What arrives here stands in the field afterwards exactly
     // as it is.
-    let allow: Vec<String> = deelpe_core::learn::parse_allowlist(&b.allow_processes).into_iter().collect();
+    let allow: Vec<String> = deelpe_core::learn::parse_allowlist(&b.allow_processes)
+        .into_iter()
+        .collect();
     if allow.len() > MAX_ALLOW_PROCESSES {
-        return Err(bad(format!("allowed processes: at most {MAX_ALLOW_PROCESSES}")));
+        return Err(bad(format!(
+            "allowed processes: at most {MAX_ALLOW_PROCESSES}"
+        )));
     }
     // Everything in **one** statement. Before, thirty-five writes stood here
     // one after another and without a transaction: if the connection broke in
@@ -470,7 +509,10 @@ pub(super) async fn update_settings(State(st): State<Shared>, Admin(user): Admin
         ("smtp_enabled", json!(b.smtp_enabled)),
         ("smtp_host", json!(b.smtp_host.trim())),
         ("smtp_port", json!(b.smtp_port)),
-        ("smtp_security", json!(mail::Security::parse(&b.smtp_security).label())),
+        (
+            "smtp_security",
+            json!(mail::Security::parse(&b.smtp_security).label()),
+        ),
         ("smtp_user", json!(b.smtp_user.trim())),
         ("smtp_from", json!(b.smtp_from.trim())),
         ("smtp_to", json!(to.join(", "))),
@@ -487,19 +529,31 @@ pub(super) async fn update_settings(State(st): State<Shared>, Admin(user): Admin
     // single hyphen means „delete".
     let pass = b.smtp_pass.trim();
     if !pass.is_empty() {
-        pairs.push(("smtp_pass", json!(if pass == CLEAR_SECRET { "" } else { pass })));
+        pairs.push((
+            "smtp_pass",
+            json!(if pass == CLEAR_SECRET { "" } else { pass }),
+        ));
     }
     let key = b.abuseipdb_key.trim();
     if !key.is_empty() {
-        pairs.push(("abuseipdb_key", json!(if key == CLEAR_SECRET { "" } else { key })));
+        pairs.push((
+            "abuseipdb_key",
+            json!(if key == CLEAR_SECRET { "" } else { key }),
+        ));
     }
     let rel_tok = b.release_token.trim();
     if !rel_tok.is_empty() {
-        pairs.push(("release_token", json!(if rel_tok == CLEAR_SECRET { "" } else { rel_tok })));
+        pairs.push((
+            "release_token",
+            json!(if rel_tok == CLEAR_SECRET { "" } else { rel_tok }),
+        ));
     }
     let ai_key = b.assist_key.trim();
     if !ai_key.is_empty() {
-        pairs.push(("assist_key", json!(if ai_key == CLEAR_SECRET { "" } else { ai_key })));
+        pairs.push((
+            "assist_key",
+            json!(if ai_key == CLEAR_SECRET { "" } else { ai_key }),
+        ));
     } else if assist_host_changed {
         pairs.push(("assist_key", json!("")));
     }
@@ -517,6 +571,12 @@ pub(super) async fn update_settings(State(st): State<Shared>, Admin(user): Admin
     // stay until the next email happened to fall due.
     st.mail.lock().unwrap().last_error = None;
     db::bump_generation(&st.pool).await?;
-    db::audit(&st.pool, (&user).into(), "settings_update", serde_json::to_value(&b).unwrap_or_default()).await;
+    db::audit(
+        &st.pool,
+        (&user).into(),
+        "settings_update",
+        serde_json::to_value(&b).unwrap_or_default(),
+    )
+    .await;
     settings(State(st), Admin(user)).await
 }

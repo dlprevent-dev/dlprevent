@@ -41,7 +41,9 @@ pub struct ProcNet {
 
 impl ProcNet {
     pub fn new(secs: u64) -> Self {
-        Self { interval: Duration::from_secs(secs.max(1)) }
+        Self {
+            interval: Duration::from_secs(secs.max(1)),
+        }
     }
 }
 
@@ -64,9 +66,17 @@ impl Sensor for ProcNet {
         let mut tick = tokio::time::interval(self.interval);
         loop {
             tick.tick().await;
-            let out = Command::new("ss").args(["-tinHp"]).output().await.context("run ss (package iproute2)")?;
+            let out = Command::new("ss")
+                .args(["-tinHp"])
+                .output()
+                .await
+                .context("run ss (package iproute2)")?;
             if !out.status.success() {
-                bail!("ss ended with {}: {}", out.status, String::from_utf8_lossy(&out.stderr).trim_end());
+                bail!(
+                    "ss ended with {}: {}",
+                    out.status,
+                    String::from_utf8_lossy(&out.stderr).trim_end()
+                );
             }
             let at = Utc::now();
             let mut seen: HashMap<Key, (u64, u64)> = HashMap::new();
@@ -74,7 +84,11 @@ impl Sensor for ProcNet {
             // and they all belong to the same process.
             let mut parents: HashMap<u32, Option<u32>> = HashMap::new();
             for s in parse(&String::from_utf8_lossy(&out.stdout)) {
-                let key = Key { pid: s.pid, local: s.local.clone(), peer: s.peer.clone() };
+                let key = Key {
+                    pid: s.pid,
+                    local: s.local.clone(),
+                    peer: s.peer.clone(),
+                };
                 let (po, pi) = last.get(&key).copied().unwrap_or((0, 0));
                 seen.insert(key, (s.bytes_sent, s.bytes_received));
                 if !primed {
@@ -93,7 +107,10 @@ impl Sensor for ProcNet {
                 // events, and without its parent the search for a touched
                 // ancestor ends before it begins.
                 let ppid = *parents.entry(s.pid).or_insert_with(|| {
-                    std::fs::read_to_string(format!("/proc/{}/status", s.pid)).ok().as_deref().and_then(super::fanotify::parse_ppid)
+                    std::fs::read_to_string(format!("/proc/{}/status", s.pid))
+                        .ok()
+                        .as_deref()
+                        .and_then(super::fanotify::parse_ppid)
                 });
                 let ev = Event::Net(NetEvent {
                     at,
@@ -194,7 +211,16 @@ pub(crate) fn socket_line(line: &str) -> Option<Sample> {
     if peer_ip.is_loopback() || peer_ip.is_unspecified() {
         return None;
     }
-    Some(Sample { name, pid, local, peer, peer_ip, peer_port, bytes_sent: 0, bytes_received: 0 })
+    Some(Sample {
+        name,
+        pid,
+        local,
+        peer,
+        peer_ip,
+        peer_port,
+        bytes_sent: 0,
+        bytes_received: 0,
+    })
 }
 
 /// `users:(("chrome",pid=8952,fd=41),("chrome",pid=8112,fd=7))` → the first
@@ -224,7 +250,10 @@ pub(crate) fn split_addr(s: &str) -> Option<(IpAddr, Option<u16>)> {
     // destination shows up twice in the dashboard, depending on which
     // socket carried it.
     let ip = match ip {
-        IpAddr::V6(v6) => v6.to_ipv4_mapped().map(IpAddr::V4).unwrap_or(IpAddr::V6(v6)),
+        IpAddr::V6(v6) => v6
+            .to_ipv4_mapped()
+            .map(IpAddr::V4)
+            .unwrap_or(IpAddr::V6(v6)),
         v4 => v4,
     };
     Some((ip, port.parse().ok()))

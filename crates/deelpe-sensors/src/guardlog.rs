@@ -51,14 +51,27 @@ pub fn parse_line(line: &str) -> Option<GuardEvent> {
     let s = |k: &str| v[k].as_str().map(str::to_string);
     let layers = v["layers"].as_array().cloned().unwrap_or_default();
     Some(GuardEvent {
-        at: s("at").and_then(|t| DateTime::parse_from_rfc3339(&t).ok()).map_or_else(Utc::now, |t| t.with_timezone(&Utc)),
+        at: s("at")
+            .and_then(|t| DateTime::parse_from_rfc3339(&t).ok())
+            .map_or_else(Utc::now, |t| t.with_timezone(&Utc)),
         direction: s("direction")?,
         verdict: s("verdict")?,
         blocked: v["action"].as_str() == Some("blocked"),
         model: s("model"),
         origin: s("origin"),
-        rules: layers.iter().filter_map(|l| l["rule"].as_str().or(l["layer"].as_str()).map(str::to_string)).collect(),
-        reason: layers.first().and_then(|l| l["reason"].as_str()).map(str::to_string),
+        rules: layers
+            .iter()
+            .filter_map(|l| {
+                l["rule"]
+                    .as_str()
+                    .or(l["layer"].as_str())
+                    .map(str::to_string)
+            })
+            .collect(),
+        reason: layers
+            .first()
+            .and_then(|l| l["reason"].as_str())
+            .map(str::to_string),
     })
 }
 
@@ -75,15 +88,31 @@ mod tests {
         assert_eq!(g.direction, "tool_result");
         assert!(!g.blocked, "flag mode forwards");
         assert_eq!(g.origin.as_deref(), Some("web_extract"));
-        assert_eq!(g.rules, ["ignore_prior_instructions", "retrieved_instruction_override"]);
-        assert_eq!(g.reason.as_deref(), Some("Attempt to override prior system or developer instructions."));
+        assert_eq!(
+            g.rules,
+            [
+                "ignore_prior_instructions",
+                "retrieved_instruction_override"
+            ]
+        );
+        assert_eq!(
+            g.reason.as_deref(),
+            Some("Attempt to override prior system or developer instructions.")
+        );
         assert_eq!(g.at.to_rfc3339(), "2026-09-24T10:47:03.218+00:00");
-        assert!(parse_line(&LINE.replace("forwarded", "blocked")).unwrap().blocked);
+        assert!(
+            parse_line(&LINE.replace("forwarded", "blocked"))
+                .unwrap()
+                .blocked
+        );
     }
 
     #[test]
     fn a_broken_line_is_skipped() {
         assert!(parse_line("{not json").is_none());
-        assert!(parse_line(r#"{"at":"x"}"#).is_none(), "no direction, no verdict");
+        assert!(
+            parse_line(r#"{"at":"x"}"#).is_none(),
+            "no direction, no verdict"
+        );
     }
 }

@@ -34,14 +34,18 @@ fn guid(s: &str) -> windows::core::GUID {
 /// Queries the system policy and returns the audit bits per subcategory.
 #[cfg(windows)]
 fn policy_bits(subs: &[&str]) -> Result<Vec<u32>> {
-    use windows::Win32::Security::Authentication::Identity::{AuditFree, AuditQuerySystemPolicy, AUDIT_POLICY_INFORMATION};
+    use windows::Win32::Security::Authentication::Identity::{
+        AuditFree, AuditQuerySystemPolicy, AUDIT_POLICY_INFORMATION,
+    };
     let guids: Vec<windows::core::GUID> = subs.iter().map(|s| guid(s)).collect();
     let mut p: *mut AUDIT_POLICY_INFORMATION = std::ptr::null_mut();
     let ok = unsafe { AuditQuerySystemPolicy(&guids, &mut p) };
     if !ok || p.is_null() {
         bail!("AuditQuerySystemPolicy failed (account needs \"Manage auditing and security log\")");
     }
-    let out = (0..guids.len()).map(|i| unsafe { (*p.add(i)).AuditingInformation }).collect();
+    let out = (0..guids.len())
+        .map(|i| unsafe { (*p.add(i)).AuditingInformation })
+        .collect();
     unsafe { AuditFree(p as *mut _) };
     Ok(out)
 }
@@ -50,7 +54,9 @@ fn policy_bits(subs: &[&str]) -> Result<Vec<u32>> {
 /// it is already set, nothing happens.
 #[cfg(windows)]
 pub fn ensure_policy() -> Result<()> {
-    use windows::Win32::Security::Authentication::Identity::{AuditSetSystemPolicy, AUDIT_POLICY_INFORMATION, POLICY_AUDIT_EVENT_SUCCESS};
+    use windows::Win32::Security::Authentication::Identity::{
+        AuditSetSystemPolicy, AUDIT_POLICY_INFORMATION, POLICY_AUDIT_EVENT_SUCCESS,
+    };
     enable_security_privilege().context("SeSecurityPrivilege")?;
     let subs = [SUB_FILE_SYSTEM, SUB_DETAILED_FILE_SHARE];
     let bits = policy_bits(&subs)?;
@@ -86,10 +92,13 @@ fn policy_has_success(sub: &str) -> Result<bool> {
 
 #[cfg(windows)]
 pub fn policy_state() -> Vec<(&'static str, &'static str, bool)> {
-    [("file system", SUB_FILE_SYSTEM), ("share (detailed)", SUB_DETAILED_FILE_SHARE)]
-        .into_iter()
-        .map(|(n, g)| (n, g, policy_has_success(g).unwrap_or(false)))
-        .collect()
+    [
+        ("file system", SUB_FILE_SYSTEM),
+        ("share (detailed)", SUB_DETAILED_FILE_SHARE),
+    ]
+    .into_iter()
+    .map(|(n, g)| (n, g, policy_has_success(g).unwrap_or(false)))
+    .collect()
 }
 
 /// Audit entry on the folder: success, read, for everyone, inherited down to
@@ -104,22 +113,37 @@ const SACL_AUDIT_READ: &str = "S:(AU;OICISA;FR;;;WD)";
 #[cfg(windows)]
 pub fn ensure_sacl(path: &str) -> Result<()> {
     use windows::core::{HSTRING, PCWSTR};
-    use windows::Win32::Foundation::{HLOCAL, LocalFree};
-    use windows::Win32::Security::Authorization::{ConvertStringSecurityDescriptorToSecurityDescriptorW, ProgressInvokeNever, TreeSetNamedSecurityInfoW, SDDL_REVISION_1, SE_FILE_OBJECT, TREE_SEC_INFO_SET};
-    use windows::Win32::Security::{GetSecurityDescriptorSacl, ACL, PSECURITY_DESCRIPTOR, SACL_SECURITY_INFORMATION, UNPROTECTED_SACL_SECURITY_INFORMATION};
+    use windows::Win32::Foundation::{LocalFree, HLOCAL};
+    use windows::Win32::Security::Authorization::{
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, ProgressInvokeNever,
+        TreeSetNamedSecurityInfoW, SDDL_REVISION_1, SE_FILE_OBJECT, TREE_SEC_INFO_SET,
+    };
+    use windows::Win32::Security::{
+        GetSecurityDescriptorSacl, ACL, PSECURITY_DESCRIPTOR, SACL_SECURITY_INFORMATION,
+        UNPROTECTED_SACL_SECURITY_INFORMATION,
+    };
 
     enable_security_privilege().context("SeSecurityPrivilege")?;
 
     let sddl = HSTRING::from(SACL_AUDIT_READ);
     let mut psd = PSECURITY_DESCRIPTOR::default();
     unsafe {
-        ConvertStringSecurityDescriptorToSecurityDescriptorW(PCWSTR(sddl.as_ptr()), SDDL_REVISION_1, &mut psd, None).context("SDDL of the SACL")?;
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            PCWSTR(sddl.as_ptr()),
+            SDDL_REVISION_1,
+            &mut psd,
+            None,
+        )
+        .context("SDDL of the SACL")?;
     }
     let mut present = windows::core::BOOL::default();
     let mut defaulted = windows::core::BOOL::default();
     let mut sacl: *mut ACL = std::ptr::null_mut();
     let res = (|| -> Result<()> {
-        unsafe { GetSecurityDescriptorSacl(psd, &mut present, &mut sacl, &mut defaulted).context("read SACL")? };
+        unsafe {
+            GetSecurityDescriptorSacl(psd, &mut present, &mut sacl, &mut defaulted)
+                .context("read SACL")?
+        };
         if !present.as_bool() || sacl.is_null() {
             bail!("SDDL yields no SACL");
         }
@@ -153,7 +177,9 @@ pub fn ensure_sacl(path: &str) -> Result<()> {
         }
         Ok(())
     })();
-    unsafe { let _ = LocalFree(Some(HLOCAL(psd.0))); }
+    unsafe {
+        let _ = LocalFree(Some(HLOCAL(psd.0)));
+    }
     res
 }
 
@@ -161,7 +187,7 @@ pub fn ensure_sacl(path: &str) -> Result<()> {
 #[cfg(windows)]
 pub fn has_sacl(path: &str) -> bool {
     use windows::core::{HSTRING, PCWSTR};
-    use windows::Win32::Foundation::{HLOCAL, LocalFree};
+    use windows::Win32::Foundation::{LocalFree, HLOCAL};
     use windows::Win32::Security::Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT};
     use windows::Win32::Security::{ACL, PSECURITY_DESCRIPTOR, SACL_SECURITY_INFORMATION};
 
@@ -171,10 +197,23 @@ pub fn has_sacl(path: &str) -> bool {
     let p = HSTRING::from(path);
     let mut sacl: *mut ACL = std::ptr::null_mut();
     let mut psd = PSECURITY_DESCRIPTOR::default();
-    let rc = unsafe { GetNamedSecurityInfoW(PCWSTR(p.as_ptr()), SE_FILE_OBJECT, SACL_SECURITY_INFORMATION, None, None, None, Some(&mut sacl), &mut psd) };
+    let rc = unsafe {
+        GetNamedSecurityInfoW(
+            PCWSTR(p.as_ptr()),
+            SE_FILE_OBJECT,
+            SACL_SECURITY_INFORMATION,
+            None,
+            None,
+            None,
+            Some(&mut sacl),
+            &mut psd,
+        )
+    };
     let ok = rc.is_ok() && !sacl.is_null() && unsafe { (*sacl).AceCount } > 0;
     if !psd.is_invalid() {
-        unsafe { let _ = LocalFree(Some(HLOCAL(psd.0))); }
+        unsafe {
+            let _ = LocalFree(Some(HLOCAL(psd.0)));
+        }
     }
     ok
 }
@@ -185,12 +224,20 @@ pub fn has_sacl(path: &str) -> bool {
 fn enable_security_privilege() -> Result<()> {
     use windows::core::w;
     use windows::Win32::Foundation::{CloseHandle, HANDLE, LUID};
-    use windows::Win32::Security::{AdjustTokenPrivileges, LookupPrivilegeValueW, LUID_AND_ATTRIBUTES, SE_PRIVILEGE_ENABLED, TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY};
+    use windows::Win32::Security::{
+        AdjustTokenPrivileges, LookupPrivilegeValueW, LUID_AND_ATTRIBUTES, SE_PRIVILEGE_ENABLED,
+        TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
+    };
     use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
     unsafe {
         let mut token = HANDLE::default();
-        OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &mut token).context("OpenProcessToken")?;
+        OpenProcessToken(
+            GetCurrentProcess(),
+            TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
+            &mut token,
+        )
+        .context("OpenProcessToken")?;
         let mut luid = LUID::default();
         let r = LookupPrivilegeValueW(None, w!("SeSecurityPrivilege"), &mut luid);
         if r.is_err() {
@@ -199,7 +246,10 @@ fn enable_security_privilege() -> Result<()> {
         }
         let tp = TOKEN_PRIVILEGES {
             PrivilegeCount: 1,
-            Privileges: [LUID_AND_ATTRIBUTES { Luid: luid, Attributes: SE_PRIVILEGE_ENABLED }],
+            Privileges: [LUID_AND_ATTRIBUTES {
+                Luid: luid,
+                Attributes: SE_PRIVILEGE_ENABLED,
+            }],
         };
         let r = AdjustTokenPrivileges(token, false, Some(&tp), 0, None, None);
         let last = windows::Win32::Foundation::GetLastError();
@@ -220,7 +270,10 @@ fn enable_security_privilege() -> Result<()> {
 pub fn print_check() -> Result<()> {
     println!("audit policy:");
     for (name, guid, on) in policy_state() {
-        println!("  {name:<17} {} {guid}", if on { "success ON " } else { "OFF        " });
+        println!(
+            "  {name:<17} {} {guid}",
+            if on { "success ON " } else { "OFF        " }
+        );
     }
     let st = crate::config::AgentState::load();
     if st.prepared.is_empty() {
@@ -228,7 +281,11 @@ pub fn print_check() -> Result<()> {
     } else {
         println!("SACL:");
         for p in &st.prepared {
-            println!("  {} {}", if has_sacl(p) { "set    " } else { "MISSING" }, p);
+            println!(
+                "  {} {}",
+                if has_sacl(p) { "set    " } else { "MISSING" },
+                p
+            );
         }
     }
     Ok(())
@@ -263,7 +320,9 @@ pub fn prepare(path: &str) -> Option<String> {
         // Without a SACL only local access on the server (4663) is missing.
         // SMB accesses still land in the log as 5145 as soon as the policy is
         // in place — also measured on the lab DC.
-        Err(e) => Some(format!("{e:#}; SMB access is still recorded, local access on the server is not")),
+        Err(e) => Some(format!(
+            "{e:#}; SMB access is still recorded, local access on the server is not"
+        )),
     }
 }
 

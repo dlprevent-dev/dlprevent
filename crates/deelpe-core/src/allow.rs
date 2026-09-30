@@ -34,7 +34,9 @@ pub fn allows(list: &[String], ip: Option<IpAddr>, port: Option<u16>) -> bool {
 /// Is the browser's destination URL on the list? Name entries count here,
 /// IP entries only if the URL itself names an IP.
 pub fn allows_host(list: &[String], url: &str) -> bool {
-    let Some(host) = host_of(url) else { return false };
+    let Some(host) = host_of(url) else {
+        return false;
+    };
     list.iter().any(|e| host_matches(e.trim(), &host))
 }
 
@@ -63,7 +65,10 @@ fn host_matches(entry: &str, host: &str) -> bool {
     }
     // Leading dots and stars are a widespread notation for "including
     // subdomains"; here that is the normal case anyway.
-    let e = entry.trim_start_matches("*.").trim_start_matches('.').to_ascii_lowercase();
+    let e = entry
+        .trim_start_matches("*.")
+        .trim_start_matches('.')
+        .to_ascii_lowercase();
     if e.is_empty() {
         return false;
     }
@@ -96,7 +101,9 @@ pub fn as_net(entry: &str) -> Option<(IpAddr, u8, Option<u16>)> {
 }
 
 fn entry_matches(entry: &str, ip: IpAddr, port: Option<u16>) -> bool {
-    let Some((net, bits, want_port)) = as_net(entry) else { return false };
+    let Some((net, bits, want_port)) = as_net(entry) else {
+        return false;
+    };
     if want_port.is_some() && want_port != port {
         return false;
     }
@@ -108,7 +115,10 @@ fn entry_matches(entry: &str, ip: IpAddr, port: Option<u16>) -> bool {
 fn split_port(e: &str) -> (&str, Option<u16>) {
     if let Some(end) = e.find(']') {
         if e.starts_with('[') {
-            return (&e[1..end], e[end + 1..].strip_prefix(':').and_then(|p| p.parse().ok()));
+            return (
+                &e[1..end],
+                e[end + 1..].strip_prefix(':').and_then(|p| p.parse().ok()),
+            );
         }
     }
     match e.rsplit_once(':') {
@@ -143,14 +153,21 @@ fn is_hostname(h: &str) -> bool {
     // A botched IP (`10.0.0`) would otherwise pass this check as a name
     // and then match nothing. The last label of a real name is never purely
     // numeric.
-    if h.rsplit('.').next().is_some_and(|last| last.chars().all(|c| c.is_ascii_digit())) {
+    if h.rsplit('.')
+        .next()
+        .is_some_and(|last| last.chars().all(|c| c.is_ascii_digit()))
+    {
         return false;
     }
     h.contains('.')
         && !h.starts_with('.')
         && !h.ends_with('.')
         && h.len() <= 253
-        && h.split('.').all(|l| !l.is_empty() && l.len() <= 63 && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
+        && h.split('.').all(|l| {
+            !l.is_empty()
+                && l.len() <= 63
+                && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        })
 }
 
 /// Checks an entry before it is stored. Otherwise a typo in the allow list
@@ -253,7 +270,10 @@ const INTERNAL: &[&str] = &[
 /// [`INTERNAL`] in filter form. The entries live in the code and are
 /// checked — an unreadable one would be a typo, not an operational case.
 pub fn internal_permits() -> Vec<Permit> {
-    INTERNAL.iter().filter_map(|e| as_net(e).map(|(net, bits, port)| Permit { net, bits, port })).collect()
+    INTERNAL
+        .iter()
+        .filter_map(|e| as_net(e).map(|(net, bits, port)| Permit { net, bits, port }))
+        .collect()
 }
 
 /// What a cage for this allowlist lets through: the rule's address entries
@@ -323,16 +343,37 @@ mod tests {
 
     #[test]
     fn validation_catches_typos() {
-        for good in ["10.0.0.1", "10.0.0.0/8", "10.0.0.1:443", "2001:db8::/32", "[2001:db8::1]:443", " 10.0.0.1 "] {
+        for good in [
+            "10.0.0.1",
+            "10.0.0.0/8",
+            "10.0.0.1:443",
+            "2001:db8::/32",
+            "[2001:db8::1]:443",
+            " 10.0.0.1 ",
+        ] {
             assert!(validate(good).is_ok(), "{good}");
         }
         // Hostnames have counted since 2026-09-08 as well: the browser
         // connector knows the destination URL, and behind `chatgpt.com`
         // sits an address range that changes constantly.
-        for good in ["chatgpt.com", "*.openai.com", ".anthropic.com", "gemini.google.com"] {
+        for good in [
+            "chatgpt.com",
+            "*.openai.com",
+            ".anthropic.com",
+            "gemini.google.com",
+        ] {
             assert!(validate(good).is_ok(), "{good}");
         }
-        for bad in ["", "10.0.0.1:https", "10.0.0.0/33", "10.0.0.0/x", "10.0.0", "kein-punkt", "a..b", "un terstrich.com"] {
+        for bad in [
+            "",
+            "10.0.0.1:https",
+            "10.0.0.0/33",
+            "10.0.0.0/x",
+            "10.0.0",
+            "kein-punkt",
+            "a..b",
+            "un terstrich.com",
+        ] {
             assert!(validate(bad).is_err(), "{bad}");
         }
     }
@@ -341,17 +382,33 @@ mod tests {
     /// that merely happens to end that way.
     #[test]
     fn a_hostname_entry_covers_its_subdomains_only() {
-        let list = vec!["chatgpt.com".to_string(), "*.ethical-ai.example".to_string()];
-        for yes in ["https://chatgpt.com/", "https://chat.chatgpt.com/x?y=1", "https://a.b.ethical-ai.example/upload", "https://ethical-ai.example"] {
+        let list = vec![
+            "chatgpt.com".to_string(),
+            "*.ethical-ai.example".to_string(),
+        ];
+        for yes in [
+            "https://chatgpt.com/",
+            "https://chat.chatgpt.com/x?y=1",
+            "https://a.b.ethical-ai.example/upload",
+            "https://ethical-ai.example",
+        ] {
             assert!(allows_host(&list, yes), "{yes}");
         }
-        for no in ["https://notchatgpt.com/", "https://gemini.google.com/app", "https://chatgpt.com.evil.test/", "nicht mal eine url"] {
+        for no in [
+            "https://notchatgpt.com/",
+            "https://gemini.google.com/app",
+            "https://chatgpt.com.evil.test/",
+            "nicht mal eine url",
+        ] {
             assert!(!allows_host(&list, no), "{no}");
         }
         // Port, userinfo part and capitalisation do not get in the way.
         assert!(allows_host(&list, "https://User@CHATGPT.com:443/pfad"));
         // An IP in the list does not answer the connector's question.
-        assert!(!allows_host(&["10.0.0.7".to_string()], "https://chatgpt.com/"));
+        assert!(!allows_host(
+            &["10.0.0.7".to_string()],
+            "https://chatgpt.com/"
+        ));
     }
 
     fn p(s: &str) -> Permit {
@@ -363,9 +420,17 @@ mod tests {
     /// they are not an error, they belong in the log.
     #[test]
     fn only_addresses_become_permits() {
-        let allow = vec!["10.0.0.0/8".into(), "chatgpt.com".into(), "203.0.113.9:443".into(), "2001:db8::/32".into()];
+        let allow = vec![
+            "10.0.0.0/8".into(),
+            "chatgpt.com".into(),
+            "203.0.113.9:443".into(),
+            "2001:db8::/32".into(),
+        ];
         let (ps, skipped) = permits(&allow);
-        assert_eq!(ps, vec![p("10.0.0.0/8"), p("203.0.113.9:443"), p("2001:db8::/32")]);
+        assert_eq!(
+            ps,
+            vec![p("10.0.0.0/8"), p("203.0.113.9:443"), p("2001:db8::/32")]
+        );
         assert_eq!(skipped, vec!["chatgpt.com".to_string()]);
         assert!(ps[1].covers("203.0.113.9".parse().unwrap(), Some(443)));
         assert!(!ps[1].covers("203.0.113.9".parse().unwrap(), Some(80)));
@@ -378,12 +443,22 @@ mod tests {
     #[test]
     fn the_cage_always_lets_the_house_through() {
         let (ps, _) = cage_permits(&["10.0.0.0/8".into()]);
-        assert_eq!(ps.iter().filter(|x| **x == p("10.0.0.0/8")).count(), 1, "no duplicates");
+        assert_eq!(
+            ps.iter().filter(|x| **x == p("10.0.0.0/8")).count(),
+            1,
+            "no duplicates"
+        );
         for inside in ["10.1.1.1", "192.168.1.1", "127.0.0.1", "fd00::1", "::1"] {
-            assert!(ps.iter().any(|q| q.covers(inside.parse().unwrap(), None)), "{inside}");
+            assert!(
+                ps.iter().any(|q| q.covers(inside.parse().unwrap(), None)),
+                "{inside}"
+            );
         }
         for public in ["1.1.1.1", "20.42.73.27", "2001:db8::1"] {
-            assert!(!ps.iter().any(|q| q.covers(public.parse().unwrap(), None)), "{public} counts as internal");
+            assert!(
+                !ps.iter().any(|q| q.covers(public.parse().unwrap(), None)),
+                "{public} counts as internal"
+            );
         }
     }
 }

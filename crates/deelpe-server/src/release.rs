@@ -98,9 +98,16 @@ pub struct Asset {
 /// whoever answers `/releases/latest` would pick where this server sends
 /// its next requests — the token in the header included.
 fn source_of<'a>(asset: &'a Asset, repo: &reqwest::Url) -> Result<&'a str> {
-    let src = if asset.url.is_empty() { &asset.browser_download_url } else { &asset.url };
+    let src = if asset.url.is_empty() {
+        &asset.browser_download_url
+    } else {
+        &asset.url
+    };
     if reqwest::Url::parse(src).ok().map(|u| u.origin()) != Some(repo.origin()) {
-        bail!("{src} is not on the repository's host {}", repo.origin().ascii_serialization());
+        bail!(
+            "{src} is not on the repository's host {}",
+            repo.origin().ascii_serialization()
+        );
     }
     Ok(src)
 }
@@ -141,7 +148,9 @@ pub async fn pubkey(st: &Shared) -> Result<Option<String>> {
     if let Some(k) = BUILT_IN_PUBKEY.map(str::trim).filter(|k| !k.is_empty()) {
         return Ok(Some(k.to_string()));
     }
-    Ok(crate::db::setting_str(&st.pool, "release_pubkey").await?.filter(|k| !k.trim().is_empty()))
+    Ok(crate::db::setting_str(&st.pool, "release_pubkey")
+        .await?
+        .filter(|k| !k.trim().is_empty()))
 }
 
 /// Credentials for a **private** repo. Empty means public.
@@ -151,7 +160,9 @@ pub async fn pubkey(st: &Shared) -> Result<Option<String>> {
 /// themselves too. The token only goes to the address that the operator
 /// entered.
 pub async fn token(st: &Shared) -> Result<Option<String>> {
-    Ok(crate::db::setting_str(&st.pool, "release_token").await?.filter(|t| !t.trim().is_empty()))
+    Ok(crate::db::setting_str(&st.pool, "release_token")
+        .await?
+        .filter(|t| !t.trim().is_empty()))
 }
 
 fn client(timeout: Duration) -> Result<reqwest::Client> {
@@ -184,17 +195,30 @@ fn client(timeout: Duration) -> Result<reqwest::Client> {
 /// normal for a server that stands on premises.
 pub fn latest_url(repo: &str) -> Result<reqwest::Url> {
     let r = repo.trim().trim_end_matches('/');
-    let name = |s: &str| !s.is_empty() && s != "." && s != ".." && s.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c));
+    let name = |s: &str| {
+        !s.is_empty()
+            && s != "."
+            && s != ".."
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
+    };
     let full = if r.contains("://") {
         format!("{r}/releases/latest")
     } else {
         match r.split_once('/') {
-            Some((owner, repo)) if name(owner) && name(repo) => format!("https://api.github.com/repos/{r}/releases/latest"),
+            Some((owner, repo)) if name(owner) && name(repo) => {
+                format!("https://api.github.com/repos/{r}/releases/latest")
+            }
             _ => bail!("repository {r:?} is neither owner/name nor an https:// address"),
         }
     };
-    let url = reqwest::Url::parse(&full).with_context(|| format!("repository {r:?} is not an address"))?;
-    if url.scheme() != "https" || url.host().is_none() || url.query().is_some() || url.fragment().is_some() {
+    let url = reqwest::Url::parse(&full)
+        .with_context(|| format!("repository {r:?} is not an address"))?;
+    if url.scheme() != "https"
+        || url.host().is_none()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
         bail!("repository {r:?} must be an https:// address — the token and the release travel over it");
     }
     Ok(url)
@@ -202,7 +226,9 @@ pub fn latest_url(repo: &str) -> Result<reqwest::Url> {
 
 /// Look at what is there. Changes nothing except the note in memory.
 pub async fn check(st: &Shared) -> Result<Status> {
-    let repo = crate::db::setting_str(&st.pool, "release_repo").await?.unwrap_or_default();
+    let repo = crate::db::setting_str(&st.pool, "release_repo")
+        .await?
+        .unwrap_or_default();
     if repo.trim().is_empty() {
         bail!("no repository configured — Settings, Interfaces");
     }
@@ -221,7 +247,11 @@ pub async fn check(st: &Shared) -> Result<Status> {
         // Otherwise a single hiccup in name resolution turns "v2 is ready"
         // into a bare error message: button and link disappear and only come
         // back on the next run, up to six hours later.
-        Err(e) => Status { checked_at: Some(Utc::now()), error: Some(format!("{e:#}")), ..st.release.lock().unwrap().clone() },
+        Err(e) => Status {
+            checked_at: Some(Utc::now()),
+            error: Some(format!("{e:#}")),
+            ..st.release.lock().unwrap().clone()
+        },
     };
     match (&out.error, &out.tag) {
         // Into the log, not only into the dashboard: whoever wants to know
@@ -240,14 +270,25 @@ pub async fn check(st: &Shared) -> Result<Status> {
 const MAX_METADATA: u64 = 2 * 1024 * 1024;
 
 async fn fetch_latest(url: &reqwest::Url, token: Option<&str>) -> Result<Release> {
-    let resp = auth(client(API_TIMEOUT)?.get(url.clone()), token).send().await.with_context(|| format!("asking {url}"))?;
+    let resp = auth(client(API_TIMEOUT)?.get(url.clone()), token)
+        .send()
+        .await
+        .with_context(|| format!("asking {url}"))?;
     let status = resp.status();
     // The description is read under a cap too, not only the program: it is
     // the same foreign peer, and an endless JSON body fills memory long
     // before the timeout counts.
-    let body = read_capped(resp, MAX_METADATA).await.with_context(|| format!("reading the answer of {url}"))?;
+    let body = read_capped(resp, MAX_METADATA)
+        .await
+        .with_context(|| format!("reading the answer of {url}"))?;
     if !status.is_success() {
-        bail!("{url} answers {status}: {}", String::from_utf8_lossy(&body).chars().take(200).collect::<String>());
+        bail!(
+            "{url} answers {status}: {}",
+            String::from_utf8_lossy(&body)
+                .chars()
+                .take(200)
+                .collect::<String>()
+        );
     }
     serde_json::from_slice(&body).context("the answer is not a release")
 }
@@ -261,7 +302,9 @@ pub async fn fetch(st: &Shared) -> Result<(String, Vec<String>, Vec<String>)> {
     let Some(key) = pubkey(st).await? else {
         bail!("no signing key configured — without it nothing from the network is trusted");
     };
-    let repo = crate::db::setting_str(&st.pool, "release_repo").await?.unwrap_or_default();
+    let repo = crate::db::setting_str(&st.pool, "release_repo")
+        .await?
+        .unwrap_or_default();
     if repo.trim().is_empty() {
         bail!("no repository configured — Settings, Interfaces");
     }
@@ -272,7 +315,9 @@ pub async fn fetch(st: &Shared) -> Result<(String, Vec<String>, Vec<String>)> {
     let mut done = Vec::new();
     let mut failed: Vec<String> = Vec::new();
     for (platform, file_name) in crate::binaries::known() {
-        let Some((asset, sig)) = assets_for(&rel.assets, file_name) else { continue };
+        let Some((asset, sig)) = assets_for(&rel.assets, file_name) else {
+            continue;
+        };
         // The reported size only saves a futile download; the limit that
         // counts sits in `get`.
         // A failure on one platform must not drag the other one down with
@@ -325,19 +370,33 @@ pub async fn fetch(st: &Shared) -> Result<(String, Vec<String>, Vec<String>)> {
 /// it goes over.
 /// One artifact: download, verify, store. Returns its size.
 #[allow(clippy::too_many_arguments)]
-async fn one(http: &reqwest::Client, asset: &Asset, sig: &Asset, repo: &reqwest::Url, key: &str, st: &Shared, platform: &str, token: Option<&str>) -> Result<usize> {
+async fn one(
+    http: &reqwest::Client,
+    asset: &Asset,
+    sig: &Asset,
+    repo: &reqwest::Url,
+    key: &str,
+    st: &Shared,
+    platform: &str,
+    token: Option<&str>,
+) -> Result<usize> {
     // The announced size only saves a futile download.
     if asset.size > MAX_ASSET {
-        bail!("announces {} bytes, more than this server accepts", asset.size);
+        bail!(
+            "announces {} bytes, more than this server accepts",
+            asset.size
+        );
     }
     let bytes = get(http, source_of(asset, repo)?, MAX_ASSET, token).await?;
     // A signed statement is a few hundred characters. A kilobyte is
     // generous and keeps a peer from sending a book here.
-    let sig_text = String::from_utf8(get(http, source_of(sig, repo)?, 1024, token).await?).context("signature file is not text")?;
+    let sig_text = String::from_utf8(get(http, source_of(sig, repo)?, 1024, token).await?)
+        .context("signature file is not text")?;
     // Verify first, then write. A file that makes it into the staging
     // folder and only stands out there is one that could already have been
     // delivered.
-    let version = verify_release(&bytes, &sig_text, key, &asset.name).context("does not carry a valid signature from the configured key")?;
+    let version = verify_release(&bytes, &sig_text, key, &asset.name)
+        .context("does not carry a valid signature from the configured key")?;
     crate::binaries::install_signed(st, platform, &bytes, &version, &sig_text).await?;
     Ok(bytes.len())
 }
@@ -355,12 +414,20 @@ async fn get(http: &reqwest::Client, url: &str, cap: u64, token: Option<&str>) -
     // Without this here, the API address of an asset delivers the
     // description as JSON instead of the file. Where the address already
     // points straight at the file (Gitea), the header changes nothing.
-    let resp = auth(http.get(url).header(reqwest::header::ACCEPT, "application/octet-stream"), token).send().await?;
+    let resp = auth(
+        http.get(url)
+            .header(reqwest::header::ACCEPT, "application/octet-stream"),
+        token,
+    )
+    .send()
+    .await?;
     let status = resp.status();
     if !status.is_success() {
         bail!("{url} answers {status}");
     }
-    read_capped(resp, cap).await.with_context(|| format!("reading {url}"))
+    read_capped(resp, cap)
+        .await
+        .with_context(|| format!("reading {url}"))
 }
 
 /// Read an answer, but no more than `cap`.
@@ -389,7 +456,9 @@ async fn read_capped(mut resp: reqwest::Response, cap: u64) -> Result<Vec<u8>> {
 /// without anyone having to ask for it. This fetches nothing.
 pub async fn run(state: Shared, stop: tokio_util::sync::CancellationToken) -> Result<()> {
     loop {
-        let on = crate::db::setting_bool(&state.pool, "release_check_enabled", false).await.unwrap_or(false);
+        let on = crate::db::setting_bool(&state.pool, "release_check_enabled", false)
+            .await
+            .unwrap_or(false);
         if on {
             // `check` logs by itself what it did or did not find; what
             // remains here is only what went wrong before the query.
@@ -410,7 +479,12 @@ mod tests {
     use deelpe_core::signing::{statement, verify};
 
     fn asset(name: &str) -> Asset {
-        Asset { name: name.into(), browser_download_url: format!("https://example.invalid/{name}"), url: String::new(), size: 10 }
+        Asset {
+            name: name.into(),
+            browser_download_url: format!("https://example.invalid/{name}"),
+            url: String::new(),
+            size: 10,
+        }
     }
 
     /// A key pair such as `deelpe-sign keygen` produces.
@@ -472,14 +546,47 @@ mod tests {
             format!("{st}sig: {}\n", b64_encode(kp.sign(st.as_bytes()).as_ref()))
         };
         let good = sig_file("deelpe-winagent.exe", "0.1.8");
-        assert_eq!(verify_release(bytes, &good, &pubkey, "deelpe-winagent.exe").unwrap(), "0.1.8");
-        assert!(verify_release(bytes, &good, &pubkey, "deelpe-linux-amd64").is_err(), "another slot");
-        assert!(verify_release(b"MZ ein Programm!", &good, &pubkey, "deelpe-winagent.exe").is_err(), "another file");
+        assert_eq!(
+            verify_release(bytes, &good, &pubkey, "deelpe-winagent.exe").unwrap(),
+            "0.1.8"
+        );
+        assert!(
+            verify_release(bytes, &good, &pubkey, "deelpe-linux-amd64").is_err(),
+            "another slot"
+        );
+        assert!(
+            verify_release(b"MZ ein Programm!", &good, &pubkey, "deelpe-winagent.exe").is_err(),
+            "another file"
+        );
         let relabelled = good.replace("version: 0.1.8", "version: 0.2.0");
-        assert!(verify_release(bytes, &relabelled, &pubkey, "deelpe-winagent.exe").is_err(), "the version is signed too");
-        assert!(verify_release(bytes, &b64_encode(kp.sign(bytes).as_ref()), &pubkey, "deelpe-winagent.exe").is_err(), "a bare signature says no version");
-        assert!(verify_release(bytes, &sig_file("deelpe-winagent.exe", "latest"), &pubkey, "deelpe-winagent.exe").is_err(), "not a version");
-        assert!(parse_version("v0.1.10") > parse_version("0.1.9"), "numbers, not text");
+        assert!(
+            verify_release(bytes, &relabelled, &pubkey, "deelpe-winagent.exe").is_err(),
+            "the version is signed too"
+        );
+        assert!(
+            verify_release(
+                bytes,
+                &b64_encode(kp.sign(bytes).as_ref()),
+                &pubkey,
+                "deelpe-winagent.exe"
+            )
+            .is_err(),
+            "a bare signature says no version"
+        );
+        assert!(
+            verify_release(
+                bytes,
+                &sig_file("deelpe-winagent.exe", "latest"),
+                &pubkey,
+                "deelpe-winagent.exe"
+            )
+            .is_err(),
+            "not a version"
+        );
+        assert!(
+            parse_version("v0.1.10") > parse_version("0.1.9"),
+            "numbers, not text"
+        );
         assert_eq!(parse_version("0.1.x"), None);
     }
 
@@ -489,14 +596,23 @@ mod tests {
     fn a_key_or_signature_of_the_wrong_shape_is_refused() {
         let (pubkey, kp) = keypair();
         let sig = b64_encode(kp.sign(b"x").as_ref());
-        assert!(verify(b"x", &sig, "").unwrap_err().to_string().contains("32 bytes"));
+        assert!(verify(b"x", &sig, "")
+            .unwrap_err()
+            .to_string()
+            .contains("32 bytes"));
         // The same check protects storing in the settings — otherwise a
         // typo only shows up once the program has already been downloaded.
         assert!(check_pubkey(&pubkey).is_ok());
         assert!(check_pubkey("").is_err());
-        assert!(check_pubkey("dGVzdA==").is_err(), "vier Bytes sind kein ed25519-Schluessel");
+        assert!(
+            check_pubkey("dGVzdA==").is_err(),
+            "vier Bytes sind kein ed25519-Schluessel"
+        );
         assert!(check_pubkey("nicht base64 !!").is_err());
-        assert!(verify(b"x", "", &pubkey).unwrap_err().to_string().contains("64 bytes"));
+        assert!(verify(b"x", "", &pubkey)
+            .unwrap_err()
+            .to_string()
+            .contains("64 bytes"));
         assert!(verify(b"x", &sig, "nicht base64 !!").is_err());
         // Whitespace and line breaks do no harm: a signature file almost
         // always ends with a line break.
@@ -507,9 +623,16 @@ mod tests {
     /// none at all: it should stand out, not slip through.
     #[test]
     fn a_program_without_its_signature_does_not_count() {
-        let with = vec![asset("deelpe-winagent.exe"), asset("deelpe-winagent.exe.sig"), asset("DLPrevent.zip")];
+        let with = vec![
+            asset("deelpe-winagent.exe"),
+            asset("deelpe-winagent.exe.sig"),
+            asset("DLPrevent.zip"),
+        ];
         assert!(assets_for(&with, "deelpe-winagent.exe").is_some());
-        assert!(assets_for(&with, "DLPrevent.zip").is_none(), "ohne .sig kein Fund");
+        assert!(
+            assets_for(&with, "DLPrevent.zip").is_none(),
+            "ohne .sig kein Fund"
+        );
         assert_eq!(platforms_in(&with), vec!["windows"]);
         assert!(platforms_in(&[]).is_empty());
     }
@@ -522,9 +645,18 @@ mod tests {
     fn a_private_repository_is_asked_through_the_api_address() {
         let gitea = asset("deelpe-winagent.exe");
         let repo = latest_url("https://example.invalid/api/v1/repos/o/r").unwrap();
-        assert_eq!(source_of(&gitea, &repo).unwrap(), "https://example.invalid/deelpe-winagent.exe");
-        let github = Asset { url: "https://api.github.com/repos/o/r/releases/assets/7".into(), ..asset("deelpe-winagent.exe") };
-        assert_eq!(source_of(&github, &latest_url("o/r").unwrap()).unwrap(), "https://api.github.com/repos/o/r/releases/assets/7");
+        assert_eq!(
+            source_of(&gitea, &repo).unwrap(),
+            "https://example.invalid/deelpe-winagent.exe"
+        );
+        let github = Asset {
+            url: "https://api.github.com/repos/o/r/releases/assets/7".into(),
+            ..asset("deelpe-winagent.exe")
+        };
+        assert_eq!(
+            source_of(&github, &latest_url("o/r").unwrap()).unwrap(),
+            "https://api.github.com/repos/o/r/releases/assets/7"
+        );
     }
 
     /// The release document names where its files lie — the host is not its
@@ -536,8 +668,15 @@ mod tests {
     #[test]
     fn a_release_cannot_send_the_download_to_another_host() {
         let repo = latest_url("https://git.example.com/api/v1/repos/owner/dlprevent").unwrap();
-        let at = |u: &str| Asset { browser_download_url: u.into(), ..asset("deelpe-winagent.exe") };
-        assert!(source_of(&at("https://git.example.com/owner/dlprevent/releases/download/v1/deelpe-winagent.exe"), &repo).is_ok());
+        let at = |u: &str| Asset {
+            browser_download_url: u.into(),
+            ..asset("deelpe-winagent.exe")
+        };
+        assert!(source_of(
+            &at("https://git.example.com/owner/dlprevent/releases/download/v1/deelpe-winagent.exe"),
+            &repo
+        )
+        .is_ok());
         for elsewhere in [
             "http://169.254.169.254/latest/meta-data/iam/security-credentials/role",
             "http://127.0.0.1:19998/internal-db-dump",
@@ -551,9 +690,15 @@ mod tests {
         // GitHub: the API address of the asset is on the API host; the
         // redirect from there to its storage host is GitHub's, not the
         // release document's.
-        let github = Asset { url: "https://api.github.com/repos/o/r/releases/assets/7".into(), ..at("https://github.com/o/r/releases/download/v1/x") };
+        let github = Asset {
+            url: "https://api.github.com/repos/o/r/releases/assets/7".into(),
+            ..at("https://github.com/o/r/releases/download/v1/x")
+        };
         assert!(source_of(&github, &latest_url("o/r").unwrap()).is_ok());
-        let github = Asset { url: "https://evil.example/assets/7".into(), ..github };
+        let github = Asset {
+            url: "https://evil.example/assets/7".into(),
+            ..github
+        };
         assert!(source_of(&github, &latest_url("o/r").unwrap()).is_err());
     }
 
@@ -561,9 +706,14 @@ mod tests {
     /// a self-hosted Gitea stays reachable.
     #[test]
     fn the_repository_can_be_a_short_name_or_a_full_address() {
-        assert_eq!(latest_url("owner/dlprevent").unwrap().as_str(), "https://api.github.com/repos/owner/dlprevent/releases/latest");
         assert_eq!(
-            latest_url("https://git.example.com/api/v1/repos/owner/dlprevent/").unwrap().as_str(),
+            latest_url("owner/dlprevent").unwrap().as_str(),
+            "https://api.github.com/repos/owner/dlprevent/releases/latest"
+        );
+        assert_eq!(
+            latest_url("https://git.example.com/api/v1/repos/owner/dlprevent/")
+                .unwrap()
+                .as_str(),
             "https://git.example.com/api/v1/repos/owner/dlprevent/releases/latest"
         );
         // A self-hosted Gitea on the local network is a normal case for a
@@ -575,7 +725,20 @@ mod tests {
     /// text, and a short form is `owner/name` and nothing else.
     #[test]
     fn the_repository_is_https_or_owner_slash_name() {
-        for bad in ["http://git.example.com/api/v1/repos/o/r", "ftp://x/y", "file:///etc/passwd", "https://", "o", "o/r/x", "../x", "o/..", "o r/x", "o/r?x=1", "o/r#x", ""] {
+        for bad in [
+            "http://git.example.com/api/v1/repos/o/r",
+            "ftp://x/y",
+            "file:///etc/passwd",
+            "https://",
+            "o",
+            "o/r/x",
+            "../x",
+            "o/..",
+            "o r/x",
+            "o/r?x=1",
+            "o/r#x",
+            "",
+        ] {
             assert!(latest_url(bad).is_err(), "{bad}");
         }
         assert!(latest_url("dlprevent-dev/dlprevent").is_ok());
@@ -586,7 +749,9 @@ mod tests {
     /// refused, a hop to `https://` is followed (GitHub's asset storage).
     #[tokio::test]
     async fn a_redirect_does_not_leave_https() {
-        rustls::crypto::ring::default_provider().install_default().ok();
+        rustls::crypto::ring::default_provider()
+            .install_default()
+            .ok();
         let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let at = format!("http://{}/", l.local_addr().unwrap());
         tokio::spawn(async move {
@@ -594,14 +759,24 @@ mod tests {
             while let Ok((mut c, _)) = l.accept().await {
                 let mut buf = [0u8; 1024];
                 let n = c.read(&mut buf).await.unwrap_or(0);
-                let to = if String::from_utf8_lossy(&buf[..n]).starts_with("GET /s ") { "https://127.0.0.1:1/x" } else { "http://127.0.0.1:1/x" };
+                let to = if String::from_utf8_lossy(&buf[..n]).starts_with("GET /s ") {
+                    "https://127.0.0.1:1/x"
+                } else {
+                    "http://127.0.0.1:1/x"
+                };
                 c.write_all(format!("HTTP/1.1 302 Found\r\nLocation: {to}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).await.ok();
             }
         });
         let http = client(Duration::from_secs(5)).unwrap();
-        assert!(http.get(&at).send().await.unwrap_err().is_redirect(), "to http: refused");
+        assert!(
+            http.get(&at).send().await.unwrap_err().is_redirect(),
+            "to http: refused"
+        );
         let e = http.get(format!("{at}s")).send().await.unwrap_err();
-        assert!(!e.is_redirect(), "to https: followed (and then refused by the closed port) — {e}");
+        assert!(
+            !e.is_redirect(),
+            "to https: followed (and then refused by the closed port) — {e}"
+        );
     }
 }
 
@@ -629,7 +804,8 @@ sig: jY4OEbOhCRrF1pbgMVTtI2cayG82obF+YzE+S/KEwwJ4CP0oJFkgDkHeg5V4itUYj0vk/2v8ndm
 
     #[test]
     fn a_signature_written_by_the_tool_is_one_this_module_accepts() {
-        let v = super::verify_release(MESSAGE, SIG_FILE, PUBKEY, "deelpe-winagent.exe").expect("was das Werkzeug schreibt, muss hier durchkommen");
+        let v = super::verify_release(MESSAGE, SIG_FILE, PUBKEY, "deelpe-winagent.exe")
+            .expect("was das Werkzeug schreibt, muss hier durchkommen");
         assert_eq!(v, "0.1.8");
         // And the counter-check, so that the test does not simply accept
         // everything: one byte different, and it is over.

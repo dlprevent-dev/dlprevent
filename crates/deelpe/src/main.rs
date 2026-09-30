@@ -13,7 +13,11 @@ use std::io::Write;
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "deelpe", version, about = "DLPrevent - lean data-loss detection")]
+#[command(
+    name = "deelpe",
+    version,
+    about = "DLPrevent - lean data-loss detection"
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -127,11 +131,19 @@ async fn main() -> Result<()> {
     match cli.cmd {
         Cmd::Daemon => daemon::run().await,
         Cmd::Watch { cmd } => match cmd {
-            WatchCmd::Add { path } => ipc::client(ipc::Request::WatchAdd(canon(path)?)).await.map(ui::print_response),
-            WatchCmd::Remove { path } => ipc::client(ipc::Request::WatchRemove(canon(path)?)).await.map(ui::print_response),
-            WatchCmd::List => ipc::client(ipc::Request::WatchList).await.map(ui::print_response),
+            WatchCmd::Add { path } => ipc::client(ipc::Request::WatchAdd(canon(path)?))
+                .await
+                .map(ui::print_response),
+            WatchCmd::Remove { path } => ipc::client(ipc::Request::WatchRemove(canon(path)?))
+                .await
+                .map(ui::print_response),
+            WatchCmd::List => ipc::client(ipc::Request::WatchList)
+                .await
+                .map(ui::print_response),
         },
-        Cmd::Alerts { all: false } => ipc::client(ipc::Request::Alerts).await.map(ui::print_response),
+        Cmd::Alerts { all: false } => ipc::client(ipc::Request::Alerts)
+            .await
+            .map(ui::print_response),
         Cmd::Alerts { all: true } => ipc::client(ipc::Request::AlertsAll).await.map(|r| {
             // Like `alerts`: newest first; the service delivers oldest first.
             ui::print_response(match r {
@@ -170,12 +182,22 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
-        Cmd::Show { id } => ipc::client(ipc::Request::Show(id)).await.map(ui::print_response),
-        Cmd::Status => ipc::client(ipc::Request::Status).await.map(ui::print_response),
+        Cmd::Show { id } => ipc::client(ipc::Request::Show(id))
+            .await
+            .map(ui::print_response),
+        Cmd::Status => ipc::client(ipc::Request::Status)
+            .await
+            .map(ui::print_response),
         Cmd::Ignore { cmd } => match cmd {
-            IgnoreCmd::Add { rule } => ipc::client(ipc::Request::IgnoreAdd(rule)).await.map(ui::print_response),
-            IgnoreCmd::Remove { rule } => ipc::client(ipc::Request::IgnoreRemove(rule)).await.map(ui::print_response),
-            IgnoreCmd::List => ipc::client(ipc::Request::IgnoreList).await.map(ui::print_response),
+            IgnoreCmd::Add { rule } => ipc::client(ipc::Request::IgnoreAdd(rule))
+                .await
+                .map(ui::print_response),
+            IgnoreCmd::Remove { rule } => ipc::client(ipc::Request::IgnoreRemove(rule))
+                .await
+                .map(ui::print_response),
+            IgnoreCmd::List => ipc::client(ipc::Request::IgnoreList)
+                .await
+                .map(ui::print_response),
         },
         Cmd::Central { cmd } => central_cmd(cmd).await,
         Cmd::Learn { cmd } => {
@@ -195,14 +217,27 @@ async fn main() -> Result<()> {
 async fn central_cmd(cmd: CentralCmd) -> Result<()> {
     use deelpe::central::{self, CentralConfig};
     match cmd {
-        CentralCmd::Enroll { url, token, ca_sha256 } => {
+        CentralCmd::Enroll {
+            url,
+            token,
+            ca_sha256,
+        } => {
             if CentralConfig::load()?.is_some() {
-                bail!("already enrolled ({}); run `deelpe central remove` first", central::CONFIG_PATH);
+                bail!(
+                    "already enrolled ({}); run `deelpe central remove` first",
+                    central::CONFIG_PATH
+                );
             }
             let host = central::hostname();
-            let cfg = central::enroll(&url, &token, &ca_sha256, &host, env!("CARGO_PKG_VERSION")).await?;
-            cfg.save().map_err(|e| anyhow::anyhow!("{e:#} (needs root: sudo deelpe central enroll ...)"))?;
-            println!("Enrolled as agent {} at {}. The service reports within a minute.", cfg.agent_id, cfg.url);
+            let cfg =
+                central::enroll(&url, &token, &ca_sha256, &host, env!("CARGO_PKG_VERSION")).await?;
+            cfg.save().map_err(|e| {
+                anyhow::anyhow!("{e:#} (needs root: sudo deelpe central enroll ...)")
+            })?;
+            println!(
+                "Enrolled as agent {} at {}. The service reports within a minute.",
+                cfg.agent_id, cfg.url
+            );
             Ok(())
         }
         // As root straight from disk (the service may not be running),
@@ -211,7 +246,9 @@ async fn central_cmd(cmd: CentralCmd) -> Result<()> {
             ui::print_response(ipc::Response::Central(central::info()));
             Ok(())
         }
-        CentralCmd::Status => ipc::client(ipc::Request::CentralStatus).await.map(ui::print_response),
+        CentralCmd::Status => ipc::client(ipc::Request::CentralStatus)
+            .await
+            .map(ui::print_response),
         CentralCmd::Remove => {
             if CentralConfig::remove()? {
                 // The state file stays: it records which folders came from

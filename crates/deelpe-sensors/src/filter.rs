@@ -8,8 +8,8 @@
 //! happens. Before, all of this sat in `windows::etw`, a module `cargo
 //! check` on a dev machine does not even read.
 
-use std::collections::HashMap;
 use deelpe_core::config::Guard;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{LazyLock, RwLock};
 use std::time::{Duration, Instant};
@@ -22,8 +22,9 @@ static FILTER: LazyLock<RwLock<Option<Vec<String>>>> = LazyLock::new(|| RwLock::
 /// The taint in the sensor has to hold at least as long as the one in the
 /// correlator, otherwise the sensor is the narrower filter; see
 /// [`deelpe_core::config::Config::sensor_taint_ttl`].
-pub const DEFAULT_TAINT_TTL: Duration =
-    Duration::from_secs(deelpe_core::config::DEFAULT_TOUCH_TTL_SECS + deelpe_core::config::SENSOR_TAINT_MARGIN_SECS);
+pub const DEFAULT_TAINT_TTL: Duration = Duration::from_secs(
+    deelpe_core::config::DEFAULT_TOUCH_TTL_SECS + deelpe_core::config::SENSOR_TAINT_MARGIN_SECS,
+);
 
 static TAINT_TTL_SECS: AtomicU64 = AtomicU64::new(DEFAULT_TAINT_TTL.as_secs());
 
@@ -42,7 +43,11 @@ pub fn taint_ttl() -> Duration {
 /// filter is set, not on every event.
 pub fn set_file_filter(paths: Option<Vec<String>>, taint_ttl: Duration) {
     TAINT_TTL_SECS.store(taint_ttl.as_secs(), Ordering::Relaxed);
-    let normed = paths.map(|v: Vec<String>| v.iter().map(|p| deelpe_core::path::norm(p)).collect::<Vec<String>>());
+    let normed = paths.map(|v: Vec<String>| {
+        v.iter()
+            .map(|p| deelpe_core::path::norm(p))
+            .collect::<Vec<String>>()
+    });
     if let Ok(mut g) = FILTER.write() {
         *g = normed;
     }
@@ -82,7 +87,10 @@ fn matches(list: Option<&[String]>, path: &str) -> bool {
 ///
 /// No filter at all (`None`) is not this state: that means "everything".
 pub fn watches_nothing() -> bool {
-    FILTER.read().map(|g| nothing(g.as_deref())).unwrap_or(false)
+    FILTER
+        .read()
+        .map(|g| nothing(g.as_deref()))
+        .unwrap_or(false)
 }
 
 /// The verdict without the global list — same reason as [`matches`]: a test
@@ -124,7 +132,15 @@ pub fn passes_execs() -> bool {
 static GUARDED: LazyLock<RwLock<Vec<(String, Guard)>>> = LazyLock::new(|| RwLock::new(Vec::new()));
 
 pub fn set_guarded(guards: &[Guard]) {
-    let normed = guards.iter().map(|g| (deelpe_core::path::norm(&g.path.to_string_lossy()), g.clone())).collect();
+    let normed = guards
+        .iter()
+        .map(|g| {
+            (
+                deelpe_core::path::norm(&g.path.to_string_lossy()),
+                g.clone(),
+            )
+        })
+        .collect();
     if let Ok(mut g) = GUARDED.write() {
         *g = normed;
     }
@@ -132,7 +148,10 @@ pub fn set_guarded(guards: &[Guard]) {
 
 /// The guarded folders as set, for the listener to mark.
 pub fn guarded() -> Vec<Guard> {
-    GUARDED.read().map(|g| g.iter().map(|(_, g)| g.clone()).collect()).unwrap_or_default()
+    GUARDED
+        .read()
+        .map(|g| g.iter().map(|(_, g)| g.clone()).collect())
+        .unwrap_or_default()
 }
 
 /// Refuse this open? `chain` yields the command lines of the process and
@@ -149,20 +168,33 @@ pub fn refuses(path: &str, chain: impl FnOnce() -> Vec<String>) -> bool {
 /// itself: an open of its own in a guarded folder waits for an answer only
 /// the listener could give.
 pub fn is_guarded(path: &str) -> bool {
-    GUARDED.read().map(|g| guard_of(&g, path).is_some()).unwrap_or(false)
+    GUARDED
+        .read()
+        .map(|g| guard_of(&g, path).is_some())
+        .unwrap_or(false)
 }
 
 /// The guard a path lies under. The longest decides, as for the strict
 /// folders: a nested one may name other programs than the one around it.
 fn guard_of<'a>(list: &'a [(String, Guard)], path: &str) -> Option<&'a Guard> {
     let p = deelpe_core::path::norm(path);
-    list.iter().filter(|(n, _)| deelpe_core::path::under_norm(&p, n)).max_by_key(|(n, _)| n.len()).map(|(_, g)| g)
+    list.iter()
+        .filter(|(n, _)| deelpe_core::path::under_norm(&p, n))
+        .max_by_key(|(n, _)| n.len())
+        .map(|(_, g)| g)
 }
 
 /// The verdict without the global list, for the tests.
 fn refuse(list: &[(String, Guard)], path: &str, chain: impl FnOnce() -> Vec<String>) -> bool {
-    let Some(g) = guard_of(list, path) else { return false };
-    g.processes.is_empty() || chain().iter().any(|cmd| g.processes.iter().any(|w| !w.is_empty() && cmd.contains(w.as_str())))
+    let Some(g) = guard_of(list, path) else {
+        return false;
+    };
+    g.processes.is_empty()
+        || chain().iter().any(|cmd| {
+            g.processes
+                .iter()
+                .any(|w| !w.is_empty() && cmd.contains(w.as_str()))
+        })
 }
 
 /// Who recently read from a protected folder.
@@ -274,24 +306,50 @@ mod tests {
     }
 
     fn guards() -> Vec<(String, Guard)> {
-        [("/root/.ssh", vec!["hermes".to_string()]), ("/srv/Vault", vec![])]
-            .into_iter()
-            .map(|(p, processes)| (deelpe_core::path::norm(p), Guard { path: p.into(), processes }))
-            .collect()
+        [
+            ("/root/.ssh", vec!["hermes".to_string()]),
+            ("/srv/Vault", vec![]),
+        ]
+        .into_iter()
+        .map(|(p, processes)| {
+            (
+                deelpe_core::path::norm(p),
+                Guard {
+                    path: p.into(),
+                    processes,
+                },
+            )
+        })
+        .collect()
     }
 
     #[test]
     fn a_guard_refuses_the_named_program_and_its_children() {
         let g = guards();
-        let hermes = || vec!["cat /root/.ssh/id_ed25519".to_string(), "/usr/bin/python3 /opt/hermes/gateway.py".to_string()];
+        let hermes = || {
+            vec![
+                "cat /root/.ssh/id_ed25519".to_string(),
+                "/usr/bin/python3 /opt/hermes/gateway.py".to_string(),
+            ]
+        };
         assert!(refuse(&g, "/root/.ssh/id_ed25519", hermes));
-        assert!(!refuse(&g, "/root/.ssh/id_ed25519", || vec!["ssh host".into(), "-bash".into()]), "the owner still reads");
-        assert!(!refuse(&g, "/root/.sshx/a", || panic!("not guarded, no /proc reads")));
+        assert!(
+            !refuse(&g, "/root/.ssh/id_ed25519", || vec![
+                "ssh host".into(),
+                "-bash".into()
+            ]),
+            "the owner still reads"
+        );
+        assert!(!refuse(&g, "/root/.sshx/a", || panic!(
+            "not guarded, no /proc reads"
+        )));
     }
 
     #[test]
     fn a_guard_without_programs_refuses_everyone() {
-        assert!(refuse(&guards(), "/srv/vault/a.pdf", || panic!("nobody to ask about")));
+        assert!(refuse(&guards(), "/srv/vault/a.pdf", || panic!(
+            "nobody to ask about"
+        )));
         assert!(!refuse(&[], "/srv/vault/a.pdf", Vec::new));
     }
 

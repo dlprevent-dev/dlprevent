@@ -11,8 +11,8 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use deelpe_core::central::AgentKind;
-use deelpe_core::net::Credentials;
 use deelpe_core::correlate::Alert;
+use deelpe_core::net::Credentials;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -34,7 +34,10 @@ pub struct CentralConfig {
 impl CentralConfig {
     pub fn load_from(path: &Path) -> Result<Option<Self>> {
         match std::fs::read_to_string(path) {
-            Ok(raw) => Ok(Some(serde_json::from_str(&raw).with_context(|| format!("{} unlesbar", path.display()))?)),
+            Ok(raw) => Ok(Some(
+                serde_json::from_str(&raw)
+                    .with_context(|| format!("{} unlesbar", path.display()))?,
+            )),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e.into()),
         }
@@ -80,7 +83,10 @@ pub struct CentralState {
 
 impl CentralState {
     pub fn load_from(path: &Path) -> Self {
-        std::fs::read_to_string(path).ok().and_then(|r| serde_json::from_str(&r).ok()).unwrap_or_default()
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|r| serde_json::from_str(&r).ok())
+            .unwrap_or_default()
     }
     pub fn load() -> Self {
         Self::load_from(Path::new(STATE_PATH))
@@ -132,7 +138,13 @@ pub fn info() -> Option<CentralInfo> {
 
 /// Signature of an alert: it is only sent again when it has changed.
 pub fn alert_signature(a: &Alert) -> String {
-    format!("{}|{:?}|{:?}|{:?}", a.bytes_out, a.last_at, a.verdict, a.files.len())
+    format!(
+        "{}|{:?}|{:?}|{:?}",
+        a.bytes_out,
+        a.last_at,
+        a.verdict,
+        a.files.len()
+    )
 }
 
 /// From the stored alerts, the ones that are new or have been continued.
@@ -140,7 +152,11 @@ pub fn alert_signature(a: &Alert) -> String {
 pub fn pending_alerts(alerts: &[Alert], sent: &mut HashMap<u64, String>) -> Vec<Alert> {
     let ids: std::collections::HashSet<u64> = alerts.iter().map(|a| a.id).collect();
     sent.retain(|id, _| ids.contains(id));
-    alerts.iter().filter(|a| sent.get(&a.id) != Some(&alert_signature(a))).cloned().collect()
+    alerts
+        .iter()
+        .filter(|a| sent.get(&a.id) != Some(&alert_signature(a)))
+        .cloned()
+        .collect()
 }
 
 pub fn hostname() -> String {
@@ -182,8 +198,15 @@ impl CentralConfig {
 
 /// Enrollment with the central server; the check of the CA fingerprint
 /// lives in `deelpe-core::net`, here only the platform is added.
-pub async fn enroll(url: &str, token: &str, ca_sha256: &str, hostname: &str, version: &str) -> Result<CentralConfig> {
-    let c = deelpe_core::net::enroll(url, token, ca_sha256, hostname, agent_kind(), version).await?;
+pub async fn enroll(
+    url: &str,
+    token: &str,
+    ca_sha256: &str,
+    hostname: &str,
+    version: &str,
+) -> Result<CentralConfig> {
+    let c =
+        deelpe_core::net::enroll(url, token, ca_sha256, hostname, agent_kind(), version).await?;
     Ok(CentralConfig {
         url: c.url,
         agent_id: c.agent_id,
@@ -202,7 +225,12 @@ fn write_private(path: &Path, data: &[u8]) -> Result<()> {
         std::fs::create_dir_all(dir)?;
     }
     let tmp = path.with_extension("tmp");
-    let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&tmp)?;
     f.write_all(data)?;
     f.sync_all()?;
     std::fs::rename(&tmp, path)?;
@@ -258,12 +286,24 @@ mod tests {
     fn config_roundtrip_is_private() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("central.json");
-        let c = CentralConfig { url: "https://z:8444".into(), agent_id: "a".into(), ca_pem: "c".into(), cert_pem: "x".into(), key_pem: "k".into(), enrolled_at: None };
+        let c = CentralConfig {
+            url: "https://z:8444".into(),
+            agent_id: "a".into(),
+            ca_pem: "c".into(),
+            cert_pem: "x".into(),
+            key_pem: "k".into(),
+            enrolled_at: None,
+        };
         c.save_to(&p).unwrap();
         use std::os::unix::fs::PermissionsExt;
-        assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            std::fs::metadata(&p).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
         assert_eq!(CentralConfig::load_from(&p).unwrap().unwrap().agent_id, "a");
-        assert!(CentralConfig::load_from(&dir.path().join("nein.json")).unwrap().is_none());
+        assert!(CentralConfig::load_from(&dir.path().join("nein.json"))
+            .unwrap()
+            .is_none());
     }
 }
 

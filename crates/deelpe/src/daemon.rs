@@ -9,9 +9,9 @@
 //! app and the CLI get admin rights for that (`sudo deelpe …`, in the app
 //! the password dialog). Every change ends up in `CHANGES`.
 
+use anyhow::{Context, Result};
 use deelpe::alertlog::AlertLog;
 use deelpe::ipc::{Request, Response, SensorState, SOCKET};
-use anyhow::{Context, Result};
 use deelpe_core::config::{validate_ignore_rule, Config};
 use deelpe_core::correlate::{Correlator, Snapshot};
 use deelpe_core::event::Event;
@@ -81,11 +81,19 @@ struct Integrity {
 
 impl Integrity {
     fn expected(&self, path: &str) -> &str {
-        if path == CONFIG { &self.config_sha256 } else { &self.learned_sha256 }
+        if path == CONFIG {
+            &self.config_sha256
+        } else {
+            &self.learned_sha256
+        }
     }
 
     fn set(&mut self, path: &str, hash: String) {
-        if path == CONFIG { self.config_sha256 = hash } else { self.learned_sha256 = hash }
+        if path == CONFIG {
+            self.config_sha256 = hash
+        } else {
+            self.learned_sha256 = hash
+        }
     }
 
     /// Our own write: the user acted through the service, so the warning
@@ -117,14 +125,20 @@ impl Integrity {
 }
 
 fn file_name(path: &str) -> String {
-    Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
+    Path::new(path)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default()
 }
 
 /// Hex SHA-256 of the file, empty when it is missing.
 fn sha256_file(path: &str) -> String {
     use sha2::{Digest, Sha256};
     match std::fs::read(path) {
-        Ok(data) => Sha256::digest(data).iter().map(|b| format!("{b:02x}")).collect(),
+        Ok(data) => Sha256::digest(data)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect(),
         Err(_) => String::new(),
     }
 }
@@ -143,7 +157,10 @@ struct StateFile {
 pub async fn run() -> Result<()> {
     let cfg = Config::load(Path::new(CONFIG))?;
     tighten(Path::new(CONFIG));
-    tracing::info!("DLPrevent service starting, {} protected folders", cfg.watched.len());
+    tracing::info!(
+        "DLPrevent service starting, {} protected folders",
+        cfg.watched.len()
+    );
     let net_poll = cfg.net_poll_secs;
     let alerts = AlertLog::open(Path::new(ALERT_LOG), cfg.alert_retain_days)?;
     tracing::info!("{} stored alerts from {ALERT_LOG}", alerts.alerts().len());
@@ -160,7 +177,13 @@ pub async fn run() -> Result<()> {
         integrity_dirty: true,
         alerts,
         started: Instant::now(),
-        sensors: specs.iter().map(|s| SensorState { name: s.name.into(), error: None }).collect(),
+        sensors: specs
+            .iter()
+            .map(|s| SensorState {
+                name: s.name.into(),
+                error: None,
+            })
+            .collect(),
         dirty: false,
         learner,
         learn_dirty: false,
@@ -246,13 +269,24 @@ pub async fn run() -> Result<()> {
             // A copy, not a reference: behind the `MutexGuard` sits a value,
             // and `&mut s.learner` is already holding it.
             let allow = s.corr.config().allow_processes.clone();
-            let Some((mut judged, is_new)) = deelpe_core::pipeline::judge(&mut s.learner, &allow, o, chrono::Utc::now()) else { continue };
+            let Some((mut judged, is_new)) =
+                deelpe_core::pipeline::judge(&mut s.learner, &allow, o, chrono::Utc::now())
+            else {
+                continue;
+            };
             deelpe_core::pipeline::enforce(s.corr.config(), &mut judged, &MacEnforcer);
             let a = judged.into_alert();
             // On failure it stays in memory (AlertLog), only the disk copy
             // is missing.
             let res = if is_new || !s.alerts.alerts().iter().any(|x| x.id == a.id) {
-                tracing::warn!("ALERT #{} {:?} {} -> {:?} {} B", a.id, a.verdict, a.identity, a.remote, a.bytes_out);
+                tracing::warn!(
+                    "ALERT #{} {:?} {} -> {:?} {} B",
+                    a.id,
+                    a.verdict,
+                    a.identity,
+                    a.remote,
+                    a.bytes_out
+                );
                 s.alerts.append(&a)
             } else {
                 tracing::info!("ALERT #{} now {} B", a.id, a.bytes_out);
@@ -333,7 +367,12 @@ pub async fn run() -> Result<()> {
 
 /// Without `central.json` the loop sleeps and checks once a minute whether
 /// an enrollment has happened. Errors do not hold the service up.
-async fn central_loop(st: Arc<Mutex<State>>, alerted: Arc<tokio::sync::Notify>, cages: Arc<Mutex<crate::cage::Cages>>, restart: Arc<tokio::sync::Notify>) {
+async fn central_loop(
+    st: Arc<Mutex<State>>,
+    alerted: Arc<tokio::sync::Notify>,
+    cages: Arc<Mutex<crate::cage::Cages>>,
+    restart: Arc<tokio::sync::Notify>,
+) {
     use deelpe::central::{self, CentralConfig, CentralState};
     use deelpe_core::session::Session;
     const UA: &str = concat!("deelpe/", env!("CARGO_PKG_VERSION"));
@@ -367,7 +406,12 @@ async fn central_loop(st: Arc<Mutex<State>>, alerted: Arc<tokio::sync::Notify>, 
         };
         let key = format!("{}|{}", cfg.url, cfg.agent_id);
         if session.as_ref().map(|(k, _)| k != &key).unwrap_or(true) {
-            match Session::new(cfg.credentials(), central::hostname(), UA, Box::new(cfg.clone())) {
+            match Session::new(
+                cfg.credentials(),
+                central::hostname(),
+                UA,
+                Box::new(cfg.clone()),
+            ) {
                 Ok(s) => {
                     tracing::info!("central {} as agent {}", cfg.url, cfg.agent_id);
                     session = Some((key, s));
@@ -386,7 +430,8 @@ async fn central_loop(st: Arc<Mutex<State>>, alerted: Arc<tokio::sync::Notify>, 
         let mut report = {
             let s = st.lock().await;
             let now = chrono::Utc::now();
-            let started_at = now - chrono::Duration::from_std(s.started.elapsed()).unwrap_or_default();
+            let started_at =
+                now - chrono::Duration::from_std(s.started.elapsed()).unwrap_or_default();
             deelpe_core::central::Report {
                 api_version: Some(deelpe_core::central::API_VERSION),
                 // What this service is currently running; the central
@@ -405,17 +450,34 @@ async fn central_loop(st: Arc<Mutex<State>>, alerted: Arc<tokio::sync::Notify>, 
                     sensors: s
                         .sensors
                         .iter()
-                        .map(|x| deelpe_core::central::SensorHealth { name: x.name.clone(), ok: x.error.is_none(), error: x.error.clone() })
+                        .map(|x| deelpe_core::central::SensorHealth {
+                            name: x.name.clone(),
+                            ok: x.error.is_none(),
+                            error: x.error.clone(),
+                        })
                         // The cage fails open: its failure has to show in the
                         // dashboard, or it stops protecting while all is green.
-                        .chain(std::iter::once(deelpe_core::central::SensorHealth { name: "network cage".into(), ok: cage_health.is_none(), error: cage_health.clone() }))
+                        .chain(std::iter::once(deelpe_core::central::SensorHealth {
+                            name: "network cage".into(),
+                            ok: cage_health.is_none(),
+                            error: cage_health.clone(),
+                        }))
                         // Can it renew itself? Linux only: the Mac service
                         // sits in an app bundle and is not ordered to.
                         .chain(cfg!(target_os = "linux").then(update_readiness))
                         .collect(),
-                    watched: s.corr.config().watched.iter().map(|p| p.display().to_string()).collect(),
+                    watched: s
+                        .corr
+                        .config()
+                        .watched
+                        .iter()
+                        .map(|p| p.display().to_string())
+                        .collect(),
                     shares: Vec::new(),
-                    learn_phase: serde_json::to_value(s.learner.phase(now)).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(),
+                    learn_phase: serde_json::to_value(s.learner.phase(now))
+                        .ok()
+                        .and_then(|v| v.as_str().map(str::to_string))
+                        .unwrap_or_default(),
                     addrs: deelpe_core::netaddr::local_addrs(),
                     arch: deelpe_core::central::arch().into(),
                     learn_until: s.learner.status(now).until,
@@ -428,14 +490,16 @@ async fn central_loop(st: Arc<Mutex<State>>, alerted: Arc<tokio::sync::Notify>, 
                 ..Default::default()
             }
         };
-        let sent_ids: Vec<(u64, String)> = report.alerts.iter().map(|a| (a.id, central::alert_signature(a))).collect();
+        let sent_ids: Vec<(u64, String)> = report
+            .alerts
+            .iter()
+            .map(|a| (a.id, central::alert_signature(a)))
+            .collect();
         let done_sent = report.learn_done.clone();
         // Log lines, error counters, the wait time and the renewal of the
         // certificate are the session's job; what stays here is what only
         // this service knows.
-        let sent = session
-            .send(&mut report)
-            .await;
+        let sent = session.send(&mut report).await;
         match sent {
             Ok(resp) => {
                 for (id, sig) in sent_ids {
@@ -466,7 +530,11 @@ async fn central_loop(st: Arc<Mutex<State>>, alerted: Arc<tokio::sync::Notify>, 
                 // keeps its configuration in /etc/deelpe/config.json and
                 // merges it — it cannot end up unconfigured the way an
                 // endpoint without a stored version can.
-                if deelpe_core::central::adopt_generation(new_config.generation, cstate.generation, true) {
+                if deelpe_core::central::adopt_generation(
+                    new_config.generation,
+                    cstate.generation,
+                    true,
+                ) {
                     apply_central_config(&st, &mut cstate, &new_config).await;
                 }
                 // Learning instructions do not hang off the generation:
@@ -533,7 +601,11 @@ async fn central_loop(st: Arc<Mutex<State>>, alerted: Arc<tokio::sync::Notify>, 
 /// `/usr/bin/deelpe` belongs to the `.deb`: after a swap `dpkg -V deelpe`
 /// reports it changed, and the next `apt install` of a package puts the
 /// package's file back — both expected.
-async fn self_update(session: &deelpe_core::session::Session, want: &str, tries: &mut deelpe_core::update::Updater) -> Result<bool> {
+async fn self_update(
+    session: &deelpe_core::session::Session,
+    want: &str,
+    tries: &mut deelpe_core::update::Updater,
+) -> Result<bool> {
     use deelpe_core::update::{can_replace, check_release, is_sha256, short, swap, verify};
     if !cfg!(target_os = "linux") {
         return Ok(false);
@@ -547,15 +619,32 @@ async fn self_update(session: &deelpe_core::session::Session, want: &str, tries:
     }
     let exe = std::env::current_exe().context("own path")?;
     can_replace(&exe)?;
-    tracing::info!(want = short(want), "central holds a different agent program, fetching it");
-    let (bytes, statement) = session.binary().await.context("downloading the agent program")?;
+    tracing::info!(
+        want = short(want),
+        "central holds a different agent program, fetching it"
+    );
+    let (bytes, statement) = session
+        .binary()
+        .await
+        .context("downloading the agent program")?;
     verify(&bytes, want)?;
     let slot = format!("deelpe-linux-{}", deelpe_core::central::arch());
-    check_release(&bytes, statement.as_deref(), deelpe_core::signing::BUILT_IN_PUBKEY, &slot, env!("CARGO_PKG_VERSION"))?;
+    check_release(
+        &bytes,
+        statement.as_deref(),
+        deelpe_core::signing::BUILT_IN_PUBKEY,
+        &slot,
+        env!("CARGO_PKG_VERSION"),
+    )?;
     // The permissions of the file it replaces: `fs::write` creates 0644.
     swap(&exe, &bytes)?;
-    std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).context("making the new program executable")?;
-    tracing::info!(bytes = bytes.len(), want = short(want), "agent program replaced");
+    std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755))
+        .context("making the new program executable")?;
+    tracing::info!(
+        bytes = bytes.len(),
+        want = short(want),
+        "agent program replaced"
+    );
     Ok(true)
 }
 
@@ -563,15 +652,25 @@ async fn self_update(session: &deelpe_core::session::Session, want: &str, tries:
 /// the Windows agent's: otherwise "outdated" and "update sent" stand there
 /// and why nothing happens is only in the device's log.
 fn update_readiness() -> deelpe_core::central::SensorHealth {
-    let out = std::env::current_exe().map_err(anyhow::Error::from).and_then(|e| deelpe_core::update::can_replace(&e));
-    deelpe_core::central::SensorHealth { name: "self-update".into(), ok: out.is_ok(), error: out.err().map(|e| format!("{e:#}")) }
+    let out = std::env::current_exe()
+        .map_err(anyhow::Error::from)
+        .and_then(|e| deelpe_core::update::can_replace(&e));
+    deelpe_core::central::SensorHealth {
+        name: "self-update".into(),
+        ok: out.is_ok(),
+        error: out.err().map(|e| format!("{e:#}")),
+    }
 }
 
 /// Carry out the central server's learning instructions. They carry this
 /// device's alert ID; the pair (process, target network) is only known
 /// here. An alert that has since rolled out of the log counts as settled —
 /// otherwise the central server would get it back in every report.
-async fn apply_learn(st: &Mutex<State>, cstate: &mut deelpe::central::CentralState, cmds: &[deelpe_core::central::LearnCommand]) {
+async fn apply_learn(
+    st: &Mutex<State>,
+    cstate: &mut deelpe::central::CentralState,
+    cmds: &[deelpe_core::central::LearnCommand],
+) {
     let mut s = st.lock().await;
     let alerts = s.alerts.alerts().to_vec();
     let out = deelpe_core::pipeline::apply_learn(&mut s.learner, &alerts, cmds, &cstate.learn_done);
@@ -602,7 +701,10 @@ async fn release_central_config(st: &Mutex<State>, cstate: &mut deelpe::central:
     };
     match res {
         Ok(()) => {
-            tracing::info!("central: connection gone, {} distributed folders released", managed.len());
+            tracing::info!(
+                "central: connection gone, {} distributed folders released",
+                managed.len()
+            );
             record_change(&format!("Central removed, released {managed:?}"));
             // As after a fresh enrollment: what had been reported does not
             // count for the next central server.
@@ -620,9 +722,20 @@ async fn release_central_config(st: &Mutex<State>, cstate: &mut deelpe::central:
     }
 }
 
-async fn apply_central_config(st: &Mutex<State>, cstate: &mut deelpe::central::CentralState, cfg: &deelpe_core::central::AgentConfig) {
-    let mine: Vec<&deelpe_core::central::Rule> = cfg.rules.iter().filter(|r| r.enabled && r.path.starts_with('/')).collect();
-    let wanted: Vec<std::path::PathBuf> = mine.iter().map(|r| std::path::PathBuf::from(&r.path)).collect();
+async fn apply_central_config(
+    st: &Mutex<State>,
+    cstate: &mut deelpe::central::CentralState,
+    cfg: &deelpe_core::central::AgentConfig,
+) {
+    let mine: Vec<&deelpe_core::central::Rule> = cfg
+        .rules
+        .iter()
+        .filter(|r| r.enabled && r.path.starts_with('/'))
+        .collect();
+    let wanted: Vec<std::path::PathBuf> = mine
+        .iter()
+        .map(|r| std::path::PathBuf::from(&r.path))
+        .collect();
     // Strict folders come entirely from the central server: leaving them
     // standing here would keep a block in place after a rule was switched
     // off.
@@ -648,12 +761,24 @@ async fn apply_central_config(st: &Mutex<State>, cstate: &mut deelpe::central::C
         // Like the strict folders: the list comes entirely from the
         // central server. Leaving it standing here would keep a process
         // allowed after the dashboard took it off the list.
-        c.allow_processes = cfg.allow_processes.iter().map(|s| deelpe_core::identity::image_name(s)).collect();
+        c.allow_processes = cfg
+            .allow_processes
+            .iter()
+            .map(|s| deelpe_core::identity::image_name(s))
+            .collect();
     });
     match res {
         Ok(()) => {
-            tracing::info!("central: configuration {} applied, {} distributed folders, {} strict", cfg.generation, wanted.len(), strict.len());
-            record_change(&format!("Central generation {} managed {:?}", cfg.generation, wanted));
+            tracing::info!(
+                "central: configuration {} applied, {} distributed folders, {} strict",
+                cfg.generation,
+                wanted.len(),
+                strict.len()
+            );
+            record_change(&format!(
+                "Central generation {} managed {:?}",
+                cfg.generation, wanted
+            ));
             cstate.managed = wanted;
             cstate.generation = cfg.generation;
         }
@@ -681,19 +806,30 @@ async fn apply_central_config(st: &Mutex<State>, cstate: &mut deelpe::central::C
 /// already runs and stays outside; it is reported, not stopped.
 fn fresh_touches(corr: &mut Correlator) -> Vec<(u32, String, Vec<String>, bool)> {
     let batch = corr.drain_tainted();
-    let Some(&(reader, _)) = batch.first() else { return Vec::new() };
+    let Some(&(reader, _)) = batch.first() else {
+        return Vec::new();
+    };
     let parent = corr.parent_of(reader);
     let mut out = Vec::new();
     for (pid, origin) in batch {
         if pid != reader && Some(pid) != parent {
             continue;
         }
-        let Some(x) = corr.config().strict_for(&origin).filter(|x| x.enforce) else { continue };
-        let name = corr.touched_identity(pid).map(|i| i.short()).unwrap_or_default();
+        let Some(x) = corr.config().strict_for(&origin).filter(|x| x.enforce) else {
+            continue;
+        };
+        let name = corr
+            .touched_identity(pid)
+            .map(|i| i.short())
+            .unwrap_or_default();
         // An ancestor the sensors never named, or a reader gone before it
         // was named, is a placeholder (`pid 123`). The cage judges by name,
         // so ask the system once more.
-        let name = if name.starts_with("pid ") { crate::cage::process_name(pid).unwrap_or(name) } else { name };
+        let name = if name.starts_with("pid ") {
+            crate::cage::process_name(pid).unwrap_or(name)
+        } else {
+            name
+        };
         out.push((pid, name, x.allow.clone(), pid == reader));
     }
     out
@@ -733,7 +869,8 @@ async fn set_sensor_error(st: &Mutex<State>, name: &str, err: Option<String>) {
 
 async fn serve(state: Arc<Mutex<State>>) -> Result<()> {
     let _ = std::fs::remove_file(SOCKET);
-    let listener = UnixListener::bind(SOCKET).with_context(|| format!("socket {SOCKET} (needs root)"))?;
+    let listener =
+        UnixListener::bind(SOCKET).with_context(|| format!("socket {SOCKET} (needs root)"))?;
     // The CLI and the menu bar app run without root, but not every local
     // process may read: access for root and the user group only.
     restrict_socket(Path::new(SOCKET))?;
@@ -817,7 +954,10 @@ fn apply(st: &mut State, req: Request) -> Response {
         Request::LearnConfirm => {
             st.learner.confirm();
             st.learn_dirty = true;
-            Response::Ok(format!("{} pairs confirmed; from now on only new and deviating traffic is reported", st.learner.pair_count()))
+            Response::Ok(format!(
+                "{} pairs confirmed; from now on only new and deviating traffic is reported",
+                st.learner.pair_count()
+            ))
         }
         Request::LearnForget(key) => {
             if st.learner.forget(&key) {
@@ -832,13 +972,23 @@ fn apply(st: &mut State, req: Request) -> Response {
             let Some(a) = st.alerts.alerts().iter().find(|a| a.id == id).cloned() else {
                 return Response::Err(format!("no alert #{id}"));
             };
-            let key = if remember { st.learner.remember(&a) } else { st.learner.flag(&a) };
+            let key = if remember {
+                st.learner.remember(&a)
+            } else {
+                st.learner.flag(&a)
+            };
             match key {
                 Some(k) => {
                     st.learn_dirty = true;
-                    Response::Ok(if remember { format!("{k} remembered: silent from now on") } else { format!("{k} is always reported") })
+                    Response::Ok(if remember {
+                        format!("{k} remembered: silent from now on")
+                    } else {
+                        format!("{k} is always reported")
+                    })
                 }
-                None => Response::Err("unsigned processes are always reported and never learned".into()),
+                None => {
+                    Response::Err("unsigned processes are always reported and never learned".into())
+                }
             }
         }
         Request::LearnRestart => {
@@ -847,9 +997,19 @@ fn apply(st: &mut State, req: Request) -> Response {
             st.learn_dirty = true;
             Response::Ok(format!("new learning phase, {days} days"))
         }
-        Request::Alerts => Response::Alerts(st.alerts.alerts().iter().rev().take(RECENT_ALERTS).cloned().collect()),
+        Request::Alerts => Response::Alerts(
+            st.alerts
+                .alerts()
+                .iter()
+                .rev()
+                .take(RECENT_ALERTS)
+                .cloned()
+                .collect(),
+        ),
         Request::AlertsAll => Response::Alerts(st.alerts.alerts().to_vec()),
-        Request::Show(id) => Response::Alert(st.alerts.alerts().iter().find(|a| a.id == id).cloned()),
+        Request::Show(id) => {
+            Response::Alert(st.alerts.alerts().iter().find(|a| a.id == id).cloned())
+        }
         Request::CentralStatus => Response::Central(deelpe::central::info()),
         Request::Status => Response::Status {
             touched: st.corr.touched_count(),
@@ -869,7 +1029,10 @@ fn record_change(req: &str) {
 }
 
 fn record_line(text: &str) {
-    let line = format!("{} {text}\n", chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+    let line = format!(
+        "{} {text}\n",
+        chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+    );
     let res = std::fs::OpenOptions::new()
         .append(true)
         .create(true)
@@ -884,7 +1047,11 @@ fn record_line(text: &str) {
 /// Set the socket to 0660 and assign it to the user group (macOS: `staff`,
 /// Linux: `deelpe`, falling back to `users`).
 fn restrict_socket(sock: &Path) -> Result<()> {
-    let candidates: &[&str] = if cfg!(target_os = "macos") { &["staff"] } else { &["deelpe", "users"] };
+    let candidates: &[&str] = if cfg!(target_os = "macos") {
+        &["staff"]
+    } else {
+        &["deelpe", "users"]
+    };
     let gid = candidates.iter().find_map(|g| group_id(g));
     match gid {
         Some(gid) => {
@@ -907,9 +1074,19 @@ fn group_id(name: &str) -> Option<u32> {
     // SAFETY: getgrnam_r is reentrant; every buffer is ours and lives until
     // after the call. `result` points at `grp` or is NULL.
     let rc = unsafe {
-        libc::getgrnam_r(cname.as_ptr(), &mut grp, buf.as_mut_ptr() as *mut libc::c_char, buf.len(), &mut result)
+        libc::getgrnam_r(
+            cname.as_ptr(),
+            &mut grp,
+            buf.as_mut_ptr() as *mut libc::c_char,
+            buf.len(),
+            &mut result,
+        )
     };
-    if rc == 0 && !result.is_null() { Some(grp.gr_gid) } else { None }
+    if rc == 0 && !result.is_null() {
+        Some(grp.gr_gid)
+    } else {
+        None
+    }
 }
 
 fn update_config(st: &mut State, f: impl FnOnce(&mut Config)) -> Result<()> {
@@ -933,8 +1110,15 @@ fn update_config(st: &mut State, f: impl FnOnce(&mut Config)) -> Result<()> {
 /// workstation (lab log 2026-09-07), and it holds here for the same reason.
 /// `eslogger` on the Mac ignores the filter and lets the correlator decide.
 fn arm_sensors(cfg: &Config) {
-    let paths: Vec<String> = cfg.watched.iter().map(|p| p.display().to_string()).collect();
-    deelpe_sensors::set_watched(deelpe_sensors::Watch::Folders { paths: &paths, taint_ttl: cfg.sensor_taint_ttl() });
+    let paths: Vec<String> = cfg
+        .watched
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect();
+    deelpe_sensors::set_watched(deelpe_sensors::Watch::Folders {
+        paths: &paths,
+        taint_ttl: cfg.sensor_taint_ttl(),
+    });
     deelpe_sensors::set_guarded(&cfg.guarded);
 }
 
@@ -956,7 +1140,11 @@ fn load_learner(alerts: &AlertLog, learn_days: u32) -> Learner {
     match std::fs::read_to_string(LEARNED) {
         Ok(raw) => match serde_json::from_str::<Learner>(&raw) {
             Ok(l) => {
-                tracing::info!("learning phase: {:?}, {} pairs", l.phase(now), l.pair_count());
+                tracing::info!(
+                    "learning phase: {:?}, {} pairs",
+                    l.phase(now),
+                    l.pair_count()
+                );
                 return l;
             }
             Err(e) => tracing::warn!("{LEARNED} unreadable, starting a new learning phase: {e}"),
@@ -966,7 +1154,10 @@ fn load_learner(alerts: &AlertLog, learn_days: u32) -> Learner {
     }
     let mut l = Learner::new(learn_days, now);
     l.seed(alerts.alerts(), learn_days, now);
-    tracing::info!("learning phase starts, {} pairs from the log", l.pair_count());
+    tracing::info!(
+        "learning phase starts, {} pairs from the log",
+        l.pair_count()
+    );
     l
 }
 
@@ -979,7 +1170,9 @@ async fn save_learner(st: &Mutex<State>) {
         s.learn_dirty = false;
         serde_json::to_string(&s.learner)
     };
-    let res = json.map_err(anyhow::Error::from).and_then(|j| write_private(LEARNED, j.as_bytes()));
+    let res = json
+        .map_err(anyhow::Error::from)
+        .and_then(|j| write_private(LEARNED, j.as_bytes()));
     match res {
         Err(e) => tracing::error!("learned data not saved: {e:#}"),
         Ok(()) => {
@@ -993,7 +1186,12 @@ async fn save_learner(st: &Mutex<State>) {
 /// Write atomically and with mode 0600.
 fn write_private(path: &str, data: &[u8]) -> Result<()> {
     let tmp = format!("{path}.tmp");
-    let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&tmp)?;
     f.write_all(data)?;
     f.sync_all()?;
     std::fs::rename(&tmp, path)?;
@@ -1019,7 +1217,11 @@ fn restore_state(corr: &mut Correlator) -> Integrity {
                 "memory loaded: {} touched processes, {} derived files{}",
                 corr.touched_count(),
                 corr.derived_count(),
-                if same_boot { "" } else { " (after a reboot: files only)" }
+                if same_boot {
+                    ""
+                } else {
+                    " (after a reboot: files only)"
+                }
             );
             f.integrity
         }
@@ -1038,9 +1240,15 @@ async fn save_state(st: &Mutex<State>) {
         }
         s.integrity_dirty = false;
         s.dirty = false;
-        StateFile { boot_id: boot_id(), snapshot: s.corr.snapshot(), integrity: s.integrity.clone() }
+        StateFile {
+            boot_id: boot_id(),
+            snapshot: s.corr.snapshot(),
+            integrity: s.integrity.clone(),
+        }
     };
-    let res = serde_json::to_vec(&file).map_err(anyhow::Error::from).and_then(|j| write_private(STATE, &j));
+    let res = serde_json::to_vec(&file)
+        .map_err(anyhow::Error::from)
+        .and_then(|j| write_private(STATE, &j));
     if let Err(e) = res {
         tracing::error!("memory not saved: {e:#}");
     }
@@ -1055,11 +1263,25 @@ fn boot_id() -> String {
         let name = std::ffi::CString::new("kern.boottime").expect("static");
         // SAFETY: buffer and length match `timeval`, the way sysctl delivers
         // it for kern.boottime.
-        let rc = unsafe { libc::sysctlbyname(name.as_ptr(), &mut tv as *mut _ as *mut libc::c_void, &mut len, std::ptr::null_mut(), 0) };
-        if rc == 0 { tv.tv_sec.to_string() } else { String::new() }
+        let rc = unsafe {
+            libc::sysctlbyname(
+                name.as_ptr(),
+                &mut tv as *mut _ as *mut libc::c_void,
+                &mut len,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if rc == 0 {
+            tv.tv_sec.to_string()
+        } else {
+            String::new()
+        }
     }
     #[cfg(target_os = "linux")]
     {
-        std::fs::read_to_string("/proc/sys/kernel/random/boot_id").map(|s| s.trim().to_string()).unwrap_or_default()
+        std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default()
     }
 }

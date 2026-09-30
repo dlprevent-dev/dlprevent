@@ -23,14 +23,11 @@ mod browser;
 // tested on the Mac as well; only the stopping itself needs Windows. Same as
 // with `evtlog`.
 #[cfg_attr(not(windows), allow(dead_code))]
-mod enforce;
-/// The network cage: whoever has read from a strict folder reaches nothing
-/// but its allowlist any more (ADR 0002).
-mod wfp;
-#[cfg_attr(not(windows), allow(dead_code))]
 mod audit;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod config;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod enforce;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod groups;
 #[cfg(windows)]
@@ -39,6 +36,9 @@ mod rights;
 mod service;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod shares;
+/// The network cage: whoever has read from a strict folder reaches nothing
+/// but its allowlist any more (ADR 0002).
+mod wfp;
 // Downloading, checking and swapping are pure file work and get tested on
 // the Mac as well; only the restart afterwards needs the service manager.
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -76,7 +76,11 @@ use clap::{Parser, Subcommand};
 
 #[cfg(windows)]
 #[derive(Parser)]
-#[command(name = "deelpe-winagent", version, about = "DLPrevent agent for Windows file servers and workstations")]
+#[command(
+    name = "deelpe-winagent",
+    version,
+    about = "DLPrevent agent for Windows file servers and workstations"
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -194,7 +198,9 @@ enum RightsCmd {
 fn main() -> anyhow::Result<()> {
     // If the service manager starts the process, there is no console and the
     // sequence is a different one: the dispatcher first, then the loop.
-    if matches!(std::env::args().nth(1).as_deref(), Some("service")) && matches!(std::env::args().nth(2).as_deref(), Some("run")) {
+    if matches!(std::env::args().nth(1).as_deref(), Some("service"))
+        && matches!(std::env::args().nth(2).as_deref(), Some("run"))
+    {
         return service::run_dispatcher();
     }
     let cli = Cli::parse();
@@ -205,7 +211,9 @@ fn main() -> anyhow::Result<()> {
     // that the central reads anyway.
     let file = matches!(cli.cmd, Cmd::Run).then(|| std::path::Path::new(config::LOG_PATH));
     deelpe_core::agentlog::init(file, true);
-    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
     rt.block_on(async {
         match cli.cmd {
             Cmd::Enroll { url, token, ca_sha256, endpoint } => {
@@ -343,15 +351,28 @@ async fn trace_events(seconds: u64, filter: Option<String>) -> anyhow::Result<()
                 files += 1;
                 // The identity is printed along with it: the lab run uses
                 // that to check in one go whether the signature check bites.
-                format!("file  pid={:<6} {:<24} {:?} {}", f.process.pid, f.process.identity.short(), f.action, f.path.display())
+                format!(
+                    "file  pid={:<6} {:<24} {:?} {}",
+                    f.process.pid,
+                    f.process.identity.short(),
+                    f.action,
+                    f.path.display()
+                )
             }
             Event::Net(n) => {
                 nets += 1;
-                format!("net   pid={:<6} {} -> {:?}:{:?} {} B", n.pid, n.process_name, n.remote, n.remote_port, n.bytes_out)
+                format!(
+                    "net   pid={:<6} {} -> {:?}:{:?} {} B",
+                    n.pid, n.process_name, n.remote, n.remote_port, n.bytes_out
+                )
             }
             _ => continue,
         };
-        if filter.as_deref().map(|f| line.to_lowercase().contains(&f.to_lowercase())).unwrap_or(true) {
+        if filter
+            .as_deref()
+            .map(|f| line.to_lowercase().contains(&f.to_lowercase()))
+            .unwrap_or(true)
+        {
             println!("{line}");
         }
     }
@@ -360,7 +381,9 @@ async fn trace_events(seconds: u64, filter: Option<String>) -> anyhow::Result<()
     let dropped = deelpe_sensors::windows::etw::dropped();
     println!("\n{files} file events, {nets} network events, {dropped} dropped.");
     if dropped > 0 {
-        println!("dropped events mean the console could not keep up; use --filter to narrow it down.");
+        println!(
+            "dropped events mean the console could not keep up; use --filter to narrow it down."
+        );
     }
     if files == 0 {
         println!("no file events: check the keywords of Microsoft-Windows-Kernel-File in deelpe-sensors/src/windows/etw.rs.");

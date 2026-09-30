@@ -35,7 +35,11 @@ const AUDIT_HAYSTACK: &str = "lower(user_name || ' ' || action || ' ' || detail:
 /// [`crate::sql::ListQuery`] — here only what makes this list what it is.
 const AUDIT_ORDER: &[(&str, &str)] = &[("user", "lower(user_name)"), ("action", "action")];
 
-pub(super) async fn audit(State(st): State<Shared>, _u: Admin, Query(q): Query<AuditQuery>) -> R<Vec<AuditRow>> {
+pub(super) async fn audit(
+    State(st): State<Shared>,
+    _u: Admin,
+    Query(q): Query<AuditQuery>,
+) -> R<Vec<AuditRow>> {
     let order = order_by(q.sort.as_deref(), q.dir.as_deref(), AUDIT_ORDER);
     let mut list = ListQuery::new();
     let action = list.binder().text(q.action.clone());
@@ -60,8 +64,14 @@ mod tests {
     /// `sql::tests::order_only_from_allowlist`.
     #[test]
     fn the_audit_log_sorts_by_user_and_action() {
-        assert_eq!(order_by(Some("user"), Some("asc"), AUDIT_ORDER), "lower(user_name) ASC, id DESC");
-        assert_eq!(order_by(Some("action"), None, AUDIT_ORDER), "action DESC, id DESC");
+        assert_eq!(
+            order_by(Some("user"), Some("asc"), AUDIT_ORDER),
+            "lower(user_name) ASC, id DESC"
+        );
+        assert_eq!(
+            order_by(Some("action"), None, AUDIT_ORDER),
+            "action DESC, id DESC"
+        );
         assert_eq!(order_by(Some("detail"), None, AUDIT_ORDER), "id DESC");
     }
 }

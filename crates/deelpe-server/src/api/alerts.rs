@@ -24,13 +24,19 @@ pub(super) struct Overview {
 
 pub(super) async fn overview(State(st): State<Shared>, _u: User) -> R<Overview> {
     let interval = db::setting_i64(&st.pool, "report_interval_secs", 30).await?;
-    let (agents,): (i64,) = sqlx::query_as("SELECT count(*) FROM agents WHERE revoked_at IS NULL").fetch_one(&st.pool).await?;
+    let (agents,): (i64,) = sqlx::query_as("SELECT count(*) FROM agents WHERE revoked_at IS NULL")
+        .fetch_one(&st.pool)
+        .await?;
     let (agents_online,): (i64,) = sqlx::query_as("SELECT count(*) FROM agents WHERE revoked_at IS NULL AND last_seen > now() - ($1::bigint * interval '1 second')")
         .bind(interval * 3)
         .fetch_one(&st.pool)
         .await?;
-    let (sources,): (i64,) = sqlx::query_as("SELECT count(*) FROM sources").fetch_one(&st.pool).await?;
-    let (rules,): (i64,) = sqlx::query_as("SELECT count(*) FROM rules WHERE enabled").fetch_one(&st.pool).await?;
+    let (sources,): (i64,) = sqlx::query_as("SELECT count(*) FROM sources")
+        .fetch_one(&st.pool)
+        .await?;
+    let (rules,): (i64,) = sqlx::query_as("SELECT count(*) FROM rules WHERE enabled")
+        .fetch_one(&st.pool)
+        .await?;
     let (alerts_open, alerts_24h): (i64, i64) = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT count(*) FILTER (WHERE acknowledged_at IS NULL), count(*) FILTER (WHERE at > now() - interval '24 hours') FROM alerts WHERE {IS_ALERT}"
     )))
@@ -149,8 +155,6 @@ const ALERT_ORDER: &[(&str, &str)] = &[
     ("status", "acknowledged_at"),
     ("reputation", REP_SCORE),
 ];
-
-
 
 /// The filters that the list and the bulk acknowledge have in common. One
 /// type for both, so that „acknowledge all matching the filter" never means a
@@ -283,10 +287,16 @@ fn rep_where(rep: Option<&str>) -> Option<String> {
         "ok" => &ok,
         // Never checked, or no address at all. NULL compares with nothing,
         // so `remote IS NULL` falls in here too.
-        "none" => return Some(format!("NOT EXISTS (SELECT 1 FROM ip_reputations r WHERE r.ip = {ALERT_IP})")),
+        "none" => {
+            return Some(format!(
+                "NOT EXISTS (SELECT 1 FROM ip_reputations r WHERE r.ip = {ALERT_IP})"
+            ))
+        }
         _ => return None,
     };
-    Some(format!("EXISTS (SELECT 1 FROM ip_reputations r WHERE r.ip = {ALERT_IP} AND {cond})"))
+    Some(format!(
+        "EXISTS (SELECT 1 FROM ip_reputations r WHERE r.ip = {ALERT_IP} AND {cond})"
+    ))
 }
 
 /// The alert list's condition, together with its values in the `Binder`.
@@ -331,7 +341,11 @@ fn alert_where(b: &mut Binder, f: &AlertFilter) -> String {
     sql
 }
 
-pub(super) async fn alerts(State(st): State<Shared>, _u: User, Query(q): Query<AlertQuery>) -> R<Vec<AlertRow>> {
+pub(super) async fn alerts(
+    State(st): State<Shared>,
+    _u: User,
+    Query(q): Query<AlertQuery>,
+) -> R<Vec<AlertRow>> {
     let order = order_by(q.sort.as_deref(), q.dir.as_deref(), ALERT_ORDER);
     let mut list = ListQuery::new();
     // `alert_where` appends the search terms itself, so no `list.search` —
@@ -369,18 +383,36 @@ const COUNT_CAP: i64 = 10_000;
 /// matching": that one is irreversible, and a number is what makes it a
 /// decision instead of a leap. Same filter, same condition, so the number
 /// and the button can never mean two different „all"s.
-pub(super) async fn alert_count(State(st): State<Shared>, _u: User, Query(q): Query<AlertQuery>) -> R<AlertCount> {
+pub(super) async fn alert_count(
+    State(st): State<Shared>,
+    _u: User,
+    Query(q): Query<AlertQuery>,
+) -> R<AlertCount> {
     let mut binder = Binder::new();
     let cond = alert_where(&mut binder, &AlertFilter::from_query(&q));
     // Counted through a window, so the scan stops at the cap instead of
     // walking the whole table. The bound is a constant of this module and
     // never a request value.
-    let sql = format!("SELECT count(*) FROM (SELECT 1 FROM alerts WHERE {cond} LIMIT {}) t", COUNT_CAP + 1);
-    let total: i64 = binder.bind_as(sqlx::query_as(sqlx::AssertSqlSafe(sql))).fetch_one(&st.pool).await.map(|(n,): (i64,)| n)?;
-    Ok(Json(AlertCount { total: total.min(COUNT_CAP), capped: total > COUNT_CAP }))
+    let sql = format!(
+        "SELECT count(*) FROM (SELECT 1 FROM alerts WHERE {cond} LIMIT {}) t",
+        COUNT_CAP + 1
+    );
+    let total: i64 = binder
+        .bind_as(sqlx::query_as(sqlx::AssertSqlSafe(sql)))
+        .fetch_one(&st.pool)
+        .await
+        .map(|(n,): (i64,)| n)?;
+    Ok(Json(AlertCount {
+        total: total.min(COUNT_CAP),
+        capped: total > COUNT_CAP,
+    }))
 }
 
-pub(super) async fn ack_alert(State(st): State<Shared>, Admin(user): Admin, Path(id): Path<i64>) -> R<AlertRow> {
+pub(super) async fn ack_alert(
+    State(st): State<Shared>,
+    Admin(user): Admin,
+    Path(id): Path<i64>,
+) -> R<AlertRow> {
     let row: Option<AlertRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "UPDATE alerts SET acknowledged_at = now(), acknowledged_by = $2 WHERE id = $1 AND acknowledged_at IS NULL RETURNING {ALERT_COLS}"
     )))
@@ -432,14 +464,22 @@ pub(super) struct Acked {
 /// that does not come from anybody ticking boxes.
 const ACK_IDS_MAX: usize = 1000;
 
-pub(super) async fn ack_alerts(State(st): State<Shared>, Admin(user): Admin, Json(b): Json<AckBody>) -> R<Acked> {
+pub(super) async fn ack_alerts(
+    State(st): State<Shared>,
+    Admin(user): Admin,
+    Json(b): Json<AckBody>,
+) -> R<Acked> {
     let acked = if b.all {
         // The same `WHERE` as the list, with the user behind it.
         let mut binder = Binder::new();
         let cond = alert_where(&mut binder, &AlertFilter::from_ack(&b));
         let by = binder.uuid(Some(user.id));
         let sql = format!("UPDATE alerts SET acknowledged_at = now(), acknowledged_by = {by} WHERE acknowledged_at IS NULL AND {cond}");
-        binder.bind(sqlx::query(sqlx::AssertSqlSafe(sql))).execute(&st.pool).await?.rows_affected()
+        binder
+            .bind(sqlx::query(sqlx::AssertSqlSafe(sql)))
+            .execute(&st.pool)
+            .await?
+            .rows_affected()
     } else {
         if b.ids.is_empty() {
             return Err(bad("no alerts given"));
@@ -467,11 +507,17 @@ pub(super) struct LearnBody {
 /// instruction does not go out right away: it lies there until the agent
 /// reports the next time. Only an agent's endpoint alerts have a pair — an
 /// access alert from the NAS and a syslog source have none.
-pub(super) async fn learn_alert(State(st): State<Shared>, Admin(user): Admin, Path(id): Path<i64>, Json(b): Json<LearnBody>) -> R<Acked> {
-    let row: Option<(Option<Uuid>, String, String)> = sqlx::query_as("SELECT agent_id, kind, external_id FROM alerts WHERE id = $1")
-        .bind(id)
-        .fetch_optional(&st.pool)
-        .await?;
+pub(super) async fn learn_alert(
+    State(st): State<Shared>,
+    Admin(user): Admin,
+    Path(id): Path<i64>,
+    Json(b): Json<LearnBody>,
+) -> R<Acked> {
+    let row: Option<(Option<Uuid>, String, String)> =
+        sqlx::query_as("SELECT agent_id, kind, external_id FROM alerts WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&st.pool)
+            .await?;
     if !db::setting_bool(&st.pool, "learn_push_enabled", false).await? {
         return Err(bad("learning instructions are switched off (Settings)"));
     }
@@ -482,13 +528,21 @@ pub(super) async fn learn_alert(State(st): State<Shared>, Admin(user): Admin, Pa
     if kind != "endpoint" {
         return Err(bad("only endpoint alerts have a process/destination pair"));
     }
-    let alert_id: i64 = external_id.parse().map_err(|_| bad("agent alert id is unreadable"))?;
+    let alert_id: i64 = external_id
+        .parse()
+        .map_err(|_| bad("agent alert id is unreadable"))?;
     let action = match b.action {
         deelpe_core::central::LearnAction::Remember => "remember",
         deelpe_core::central::LearnAction::Flag => "flag",
     };
     db::queue_learn(&st.pool, agent_id, alert_id, action, user.id).await?;
-    db::audit(&st.pool, (&user).into(), "alert_learn", json!({ "id": id, "agent": agent_id, "alert_id": alert_id, "action": action })).await;
+    db::audit(
+        &st.pool,
+        (&user).into(),
+        "alert_learn",
+        json!({ "id": id, "agent": agent_id, "alert_id": alert_id, "action": action }),
+    )
+    .await;
     // What has been remembered no longer needs to stand in the open list.
     //
     // The same (process, destination) pair, and nothing else — a `denied`
@@ -544,7 +598,11 @@ pub(super) struct Counts {
     top: Vec<TopUser>,
 }
 
-pub(super) async fn counts(State(st): State<Shared>, _u: User, Query(q): Query<CountQuery>) -> R<Counts> {
+pub(super) async fn counts(
+    State(st): State<Shared>,
+    _u: User,
+    Query(q): Query<CountQuery>,
+) -> R<Counts> {
     let hours = q.hours.unwrap_or(24).clamp(1, 24 * 30);
     let per_hour: Vec<HourBucket> = sqlx::query_as(
         "SELECT date_trunc('hour', bucket) AS hour, sum(files)::bigint AS files, sum(bytes)::bigint AS bytes FROM access_counts WHERE bucket > now() - ($1::bigint * interval '1 hour') GROUP BY 1 ORDER BY 1",
@@ -558,7 +616,11 @@ pub(super) async fn counts(State(st): State<Shared>, _u: User, Query(q): Query<C
     .bind(hours)
     .fetch_all(&st.pool)
     .await?;
-    Ok(Json(Counts { hours, per_hour, top }))
+    Ok(Json(Counts {
+        hours,
+        per_hour,
+        top,
+    }))
 }
 
 #[cfg(test)]
@@ -571,12 +633,28 @@ mod tests {
     /// `sql::tests::order_only_from_allowlist`.
     #[test]
     fn alerts_sort_by_their_own_columns() {
-        assert_eq!(order_by(Some("bytes"), Some("asc"), ALERT_ORDER), "bytes ASC, id DESC");
-        assert_eq!(order_by(Some("at"), None, ALERT_ORDER), "coalesce(last_at, at) DESC, id DESC");
-        assert_eq!(order_by(Some("verdict"), Some("asc"), ALERT_ORDER), format!("{VERDICT_RANK} ASC, id DESC"));
+        assert_eq!(
+            order_by(Some("bytes"), Some("asc"), ALERT_ORDER),
+            "bytes ASC, id DESC"
+        );
+        assert_eq!(
+            order_by(Some("at"), None, ALERT_ORDER),
+            "coalesce(last_at, at) DESC, id DESC"
+        );
+        assert_eq!(
+            order_by(Some("verdict"), Some("asc"), ALERT_ORDER),
+            format!("{VERDICT_RANK} ASC, id DESC")
+        );
         // `id` is deliberately not in the list: it is the fallback.
         assert_eq!(order_by(Some("id"), Some("asc"), ALERT_ORDER), "id ASC");
-        assert_eq!(order_by(Some("bytes; DROP TABLE alerts"), Some("asc; --"), ALERT_ORDER), "id DESC");
+        assert_eq!(
+            order_by(
+                Some("bytes; DROP TABLE alerts"),
+                Some("asc; --"),
+                ALERT_ORDER
+            ),
+            "id DESC"
+        );
     }
 
     fn filter(terms: &[&str]) -> AlertFilter {
@@ -604,16 +682,35 @@ mod tests {
         let mut b = Binder::new();
         let cond = alert_where(&mut b, &filter(&[]));
         assert!(cond.contains("($1::bigint IS NULL OR id = $1)"), "{cond}");
-        assert!(cond.contains("($5::uuid IS NULL OR agent_id = $5)"), "{cond}");
-        assert!(cond.contains("($6::uuid IS NULL OR source_id = $6)"), "{cond}");
-        assert!(cond.contains("($7::text IS NULL OR origin_name = $7)"), "{cond}");
-        assert!(cond.contains("($8::bigint IS NULL OR coalesce(last_at, at) > now() - ($8 * interval '1 hour'))"), "{cond}");
+        assert!(
+            cond.contains("($5::uuid IS NULL OR agent_id = $5)"),
+            "{cond}"
+        );
+        assert!(
+            cond.contains("($6::uuid IS NULL OR source_id = $6)"),
+            "{cond}"
+        );
+        assert!(
+            cond.contains("($7::text IS NULL OR origin_name = $7)"),
+            "{cond}"
+        );
+        assert!(
+            cond.contains(
+                "($8::bigint IS NULL OR coalesce(last_at, at) > now() - ($8 * interval '1 hour'))"
+            ),
+            "{cond}"
+        );
         assert_eq!(b.i64(100), "$9", "Grenze und Versatz kommen danach");
         assert_eq!(b.i64(0), "$10");
 
         let mut b = Binder::new();
         let cond = alert_where(&mut b, &filter(&["%a%", "%b%"]));
-        assert!(cond.contains(&format!(" AND {ALERT_HAYSTACK} LIKE $9 AND {ALERT_HAYSTACK} LIKE $10")), "{cond}");
+        assert!(
+            cond.contains(&format!(
+                " AND {ALERT_HAYSTACK} LIKE $9 AND {ALERT_HAYSTACK} LIKE $10"
+            )),
+            "{cond}"
+        );
         assert_eq!(b.i64(100), "$11");
     }
 
@@ -646,7 +743,10 @@ mod tests {
         let mut f = filter(&[]);
         f.rep = Some("bad".into());
         let cond = alert_where(&mut b, &f);
-        assert!(cond.contains("EXISTS (SELECT 1 FROM ip_reputations"), "{cond}");
+        assert!(
+            cond.contains("EXISTS (SELECT 1 FROM ip_reputations"),
+            "{cond}"
+        );
         assert!(cond.contains("r.score >= 75"), "{cond}");
         assert_eq!(b.i64(100), "$9", "der Ruffilter bindet keinen Wert");
 
@@ -655,7 +755,11 @@ mod tests {
         assert!(rep_where(Some("none")).unwrap().starts_with("NOT EXISTS"));
         assert_eq!(rep_where(None), None);
         assert_eq!(rep_where(Some("")), None);
-        assert_eq!(rep_where(Some("bad'; DROP TABLE alerts --")), None, "unbekannt heisst: kein Filter");
+        assert_eq!(
+            rep_where(Some("bad'; DROP TABLE alerts --")),
+            None,
+            "unbekannt heisst: kein Filter"
+        );
     }
 
     /// „Acknowledge all matching the filter" has to hit the same condition as
@@ -710,7 +814,11 @@ mod tests {
         // The user is bound *after* the search terms: if the number slips,
         // the server acknowledges under somebody else's name — or not at
         // all, because a UUID ends up as a search term.
-        assert_eq!(b1.uuid(Some(Uuid::nil())), b2.uuid(Some(Uuid::nil())), "gleiche Bedingung, gleiche Bindestellen");
+        assert_eq!(
+            b1.uuid(Some(Uuid::nil())),
+            b2.uuid(Some(Uuid::nil())),
+            "gleiche Bedingung, gleiche Bindestellen"
+        );
     }
 
     /// "Remember" closes the open notices of its (process, destination)
@@ -720,19 +828,35 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn remembering_a_pair_leaves_its_denied_alarm_open(pool: sqlx::PgPool) {
         use tower::ServiceExt;
-        rustls::crypto::ring::default_provider().install_default().ok();
+        rustls::crypto::ring::default_provider()
+            .install_default()
+            .ok();
         let dir = std::env::temp_dir().join(format!("deelpe-api-test-{}", Uuid::new_v4()));
         let pki = crate::pki::Pki::load_or_create(&dir, &["localhost".into()]).unwrap();
         std::fs::remove_dir_all(dir).unwrap();
-        let st = std::sync::Arc::new(crate::state::AppState::new(pool.clone(), std::sync::Arc::new(pki), false, 8444, false, std::env::temp_dir().join("deelpe-test")));
+        let st = std::sync::Arc::new(crate::state::AppState::new(
+            pool.clone(),
+            std::sync::Arc::new(pki),
+            false,
+            8444,
+            false,
+            std::env::temp_dir().join("deelpe-test"),
+        ));
         let app = super::super::router(st, Router::new());
 
-        let admin: Uuid = sqlx::query_scalar("INSERT INTO users (name, pw_hash, role) VALUES ('admin', '', 'admin') RETURNING id").fetch_one(&pool).await.unwrap();
+        let admin: Uuid = sqlx::query_scalar(
+            "INSERT INTO users (name, pw_hash, role) VALUES ('admin', '', 'admin') RETURNING id",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         let token = crate::auth::random_token();
         sqlx::query("INSERT INTO sessions (id, user_id, expires_at) VALUES ($1, $2, now() + interval '12 hours')")
             .bind(crate::auth::sha256_hex(&token)).bind(admin).execute(&pool).await.unwrap();
         let cookie = format!("{}={token}", crate::auth::COOKIE);
-        db::set_setting(&pool, "learn_push_enabled", json!(true)).await.unwrap();
+        db::set_setting(&pool, "learn_push_enabled", json!(true))
+            .await
+            .unwrap();
         let agent = Uuid::new_v4();
         sqlx::query("INSERT INTO agents (id, name, kind, version, cert_fingerprint, cert_not_after) VALUES ($1, 'pc01', 'windows_client', '0.1.0', 'fp', now() + interval '1 day')")
             .bind(agent).execute(&pool).await.unwrap();
@@ -745,20 +869,45 @@ mod tests {
             let app = app.clone();
             let cookie = cookie.clone();
             async move {
-                let req = axum::http::Request::builder().method("POST").uri("/api/alerts/1/learn")
-                    .header(header::COOKIE, cookie).header(header::CONTENT_TYPE, "application/json")
-                    .body(axum::body::Body::from(json!({ "action": action }).to_string())).unwrap();
+                let req = axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/api/alerts/1/learn")
+                    .header(header::COOKIE, cookie)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(axum::body::Body::from(
+                        json!({ "action": action }).to_string(),
+                    ))
+                    .unwrap();
                 let r = app.oneshot(req).await.unwrap();
                 assert_eq!(r.status(), StatusCode::OK, "{action}");
                 let body = axum::body::to_bytes(r.into_body(), 1024).await.unwrap();
-                serde_json::from_slice::<serde_json::Value>(&body).unwrap()["acked"].as_u64().unwrap()
+                serde_json::from_slice::<serde_json::Value>(&body).unwrap()["acked"]
+                    .as_u64()
+                    .unwrap()
             }
         };
-        let open = || sqlx::query_scalar::<_, String>("SELECT verdict FROM alerts WHERE acknowledged_at IS NULL ORDER BY id").fetch_all(&pool);
+        let open = || {
+            sqlx::query_scalar::<_, String>(
+                "SELECT verdict FROM alerts WHERE acknowledged_at IS NULL ORDER BY id",
+            )
+            .fetch_all(&pool)
+        };
 
-        assert_eq!(learn("flag").await, 0, "flag keeps reporting and closes nothing");
+        assert_eq!(
+            learn("flag").await,
+            0,
+            "flag keeps reporting and closes nothing"
+        );
         assert_eq!(open().await.unwrap(), ["new", "deviation", "denied"]);
-        assert_eq!(learn("remember").await, 2, "the pair's notices, not its alarm");
-        assert_eq!(open().await.unwrap(), ["denied"], "a strict-folder alarm is never silenced");
+        assert_eq!(
+            learn("remember").await,
+            2,
+            "the pair's notices, not its alarm"
+        );
+        assert_eq!(
+            open().await.unwrap(),
+            ["denied"],
+            "a strict-folder alarm is never silenced"
+        );
     }
 }

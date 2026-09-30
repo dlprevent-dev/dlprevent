@@ -169,7 +169,8 @@ impl Config {
         if !path.exists() {
             return Ok(Self::default());
         }
-        let raw = std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+        let raw =
+            std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
         serde_json::from_str(&raw).with_context(|| format!("parse {}", path.display()))
     }
 
@@ -183,7 +184,12 @@ impl Config {
         #[cfg(unix)]
         {
             use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-            let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path)?;
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(path)?;
             f.write_all(serde_json::to_string_pretty(self)?.as_bytes())?;
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
         }
@@ -224,7 +230,10 @@ impl Config {
     /// a human typed, and the comparison form belongs in exactly one place
     /// — see [`crate::identity::image_name`].
     pub fn with_allowed(mut self, names: &[String]) -> Self {
-        self.allow_processes = names.iter().map(|n| crate::identity::image_name(n)).collect();
+        self.allow_processes = names
+            .iter()
+            .map(|n| crate::identity::image_name(n))
+            .collect();
         self
     }
 
@@ -232,7 +241,8 @@ impl Config {
     /// data (firmlink, Time Machine snapshot) count too, see `normalize`.
     pub fn is_watched(&self, file: &Path) -> bool {
         let file = normalize(file);
-        self.watched.iter().any(|w| under(&file, w)) || self.strict.iter().any(|s| under(&file, &s.path))
+        self.watched.iter().any(|w| under(&file, w))
+            || self.strict.iter().any(|s| under(&file, &s.path))
     }
 
     /// The strict folder for this file; with nested ones the longest path,
@@ -240,13 +250,19 @@ impl Config {
     /// instead of inheriting it.
     pub fn strict_for(&self, file: &Path) -> Option<&Strict> {
         let file = normalize(file);
-        self.strict.iter().filter(|s| under(&file, &s.path)).max_by_key(|s| s.path.as_os_str().len())
+        self.strict
+            .iter()
+            .filter(|s| under(&file, &s.path))
+            .max_by_key(|s| s.path.as_os_str().len())
     }
 
     /// The guarded folder a file lies in, the longest one if they nest.
     pub fn guard_for(&self, file: &Path) -> Option<&Guard> {
         let file = normalize(file);
-        self.guarded.iter().filter(|g| under(&file, &g.path)).max_by_key(|g| g.path.as_os_str().len())
+        self.guarded
+            .iter()
+            .filter(|g| under(&file, &g.path))
+            .max_by_key(|g| g.path.as_os_str().len())
     }
 
     /// The strict folder that forbids this flow: the first one among the
@@ -266,11 +282,19 @@ impl Config {
     /// and carries it out. This layer then does not catch it; caging a
     /// browser because it is talking to itself is the more expensive
     /// mistake — the same trade-off as with a destination without a name.
-    pub fn denies(&self, files: &[PathBuf], ip: Option<IpAddr>, port: Option<u16>) -> Option<&Strict> {
+    pub fn denies(
+        &self,
+        files: &[PathBuf],
+        ip: Option<IpAddr>,
+        port: Option<u16>,
+    ) -> Option<&Strict> {
         if ip.is_some_and(|a| a.is_loopback()) {
             return None;
         }
-        files.iter().filter_map(|f| self.strict_for(f)).find(|s| !crate::allow::allows(&s.allow, ip, port))
+        files
+            .iter()
+            .filter_map(|f| self.strict_for(f))
+            .find(|s| !crate::allow::allows(&s.allow, ip, port))
     }
 
     /// Does an entry of the exception list match this identity? Unsigned
@@ -282,7 +306,10 @@ impl Config {
     /// A rule for exactly this identity, as app and CLI should create it.
     pub fn ignore_rule_for(id: &ProcessIdentity) -> Option<String> {
         match id {
-            ProcessIdentity::Signed { team_id, signing_id } if !signing_id.is_empty() => Some(format!("{team_id}/{signing_id}")),
+            ProcessIdentity::Signed {
+                team_id,
+                signing_id,
+            } if !signing_id.is_empty() => Some(format!("{team_id}/{signing_id}")),
             _ => None,
         }
     }
@@ -355,8 +382,14 @@ pub fn add_path_aliases(cfg: &mut Config, alias: impl Fn(&Path) -> Option<PathBu
     // picking the spelling the rule was written in wherever both match.
     let mut extra: Vec<Strict> = Vec::new();
     for s in &cfg.strict {
-        if let Some(a) = alias(&s.path).filter(|a| *a != s.path && !cfg.strict.iter().any(|o| o.path == *a)) {
-            extra.push(Strict { path: a, allow: s.allow.clone(), enforce: s.enforce });
+        if let Some(a) =
+            alias(&s.path).filter(|a| *a != s.path && !cfg.strict.iter().any(|o| o.path == *a))
+        {
+            extra.push(Strict {
+                path: a,
+                allow: s.allow.clone(),
+                enforce: s.enforce,
+            });
         }
     }
     cfg.strict.extend(extra);
@@ -378,14 +411,22 @@ pub fn validate_ignore_rule(rule: &str) -> Result<(), String> {
     }
     let signing = rule.split_once('/').map_or(rule, |(_, s)| s);
     match signing.strip_suffix('*') {
-        Some(prefix) if prefix.len() < MIN_PREFIX => Err(format!("the prefix before * needs at least {MIN_PREFIX} characters")),
+        Some(prefix) if prefix.len() < MIN_PREFIX => Err(format!(
+            "the prefix before * needs at least {MIN_PREFIX} characters"
+        )),
         _ if signing.is_empty() => Err("signing id is missing".into()),
         _ => Ok(()),
     }
 }
 
 fn rule_matches(rule: &str, id: &ProcessIdentity) -> bool {
-    let ProcessIdentity::Signed { team_id, signing_id } = id else { return false };
+    let ProcessIdentity::Signed {
+        team_id,
+        signing_id,
+    } = id
+    else {
+        return false;
+    };
     if let Some(team) = rule.strip_prefix("team:") {
         return team_id == team;
     }
@@ -409,30 +450,54 @@ mod tests {
     use super::*;
 
     fn signed(team: &str, id: &str) -> ProcessIdentity {
-        ProcessIdentity::Signed { team_id: team.into(), signing_id: id.into() }
+        ProcessIdentity::Signed {
+            team_id: team.into(),
+            signing_id: id.into(),
+        }
     }
 
     #[test]
     fn ignore_rules() {
-        let cfg = Config { ignored: vec!["com.apple.backupd".into(), "com.bitdefender.*".into(), "team:ABC".into()], ..Default::default() };
+        let cfg = Config {
+            ignored: vec![
+                "com.apple.backupd".into(),
+                "com.bitdefender.*".into(),
+                "team:ABC".into(),
+            ],
+            ..Default::default()
+        };
         assert!(cfg.is_ignored(&signed("apple", "com.apple.backupd")));
         assert!(!cfg.is_ignored(&signed("apple", "com.apple.backupd2")));
         assert!(cfg.is_ignored(&signed("X", "com.bitdefender.epsecurity")));
         assert!(cfg.is_ignored(&signed("ABC", "anything")));
-        assert!(!cfg.is_ignored(&ProcessIdentity::Unknown { path: "/tmp/com.apple.backupd".into() }));
-        assert!(!cfg.is_ignored(&ProcessIdentity::Hashed { path: "/x".into(), sha256: "team:ABC".into() }));
+        assert!(!cfg.is_ignored(&ProcessIdentity::Unknown {
+            path: "/tmp/com.apple.backupd".into()
+        }));
+        assert!(!cfg.is_ignored(&ProcessIdentity::Hashed {
+            path: "/x".into(),
+            sha256: "team:ABC".into()
+        }));
     }
 
     #[test]
     fn team_bound_rules_reject_impostors() {
         let cfg = Config::default();
         assert!(cfg.is_ignored(&signed("apple", "com.apple.backupd")));
-        assert!(!cfg.is_ignored(&signed("EVIL1", "com.apple.backupd")), "fremde Signatur mit Apple-Namen");
+        assert!(
+            !cfg.is_ignored(&signed("EVIL1", "com.apple.backupd")),
+            "fremde Signatur mit Apple-Namen"
+        );
         assert!(cfg.is_ignored(&signed("apple", "com.apple.metadata.mdworker_shared")));
         assert!(!cfg.is_ignored(&signed("EVIL1", "com.bitdefender.epsecurity")));
         assert!(cfg.is_ignored(&signed("GUNFMW623Y", "com.bitdefender.epsecurity")));
-        assert_eq!(Config::ignore_rule_for(&signed("ABC", "com.x.y")).as_deref(), Some("ABC/com.x.y"));
-        assert_eq!(Config::ignore_rule_for(&ProcessIdentity::Unknown { path: "/x".into() }), None);
+        assert_eq!(
+            Config::ignore_rule_for(&signed("ABC", "com.x.y")).as_deref(),
+            Some("ABC/com.x.y")
+        );
+        assert_eq!(
+            Config::ignore_rule_for(&ProcessIdentity::Unknown { path: "/x".into() }),
+            None
+        );
     }
 
     #[test]
@@ -463,16 +528,31 @@ mod tests {
     fn strict_folder_is_watched_and_the_longest_path_wins() {
         let cfg = Config {
             strict: vec![
-                Strict { path: "/srv/GL".into(), allow: vec!["10.0.0.1".into()], enforce: false },
-                Strict { path: "/srv/GL/Vertraege".into(), allow: vec![], enforce: true },
+                Strict {
+                    path: "/srv/GL".into(),
+                    allow: vec!["10.0.0.1".into()],
+                    enforce: false,
+                },
+                Strict {
+                    path: "/srv/GL/Vertraege".into(),
+                    allow: vec![],
+                    enforce: true,
+                },
             ],
             ..Default::default()
         };
         assert!(cfg.is_watched(Path::new("/srv/GL/a.xlsx")));
         assert!(cfg.is_watched(Path::new("/System/Volumes/Data/srv/GL/a.xlsx")));
         assert!(!cfg.is_watched(Path::new("/srv/Other/a.xlsx")));
-        assert_eq!(cfg.strict_for(Path::new("/srv/GL/a.xlsx")).unwrap().allow, ["10.0.0.1"]);
-        assert!(cfg.strict_for(Path::new("/srv/GL/Vertraege/b.pdf")).unwrap().enforce);
+        assert_eq!(
+            cfg.strict_for(Path::new("/srv/GL/a.xlsx")).unwrap().allow,
+            ["10.0.0.1"]
+        );
+        assert!(
+            cfg.strict_for(Path::new("/srv/GL/Vertraege/b.pdf"))
+                .unwrap()
+                .enforce
+        );
         assert!(cfg.strict_for(Path::new("/srv/Other/a")).is_none());
     }
 
@@ -480,22 +560,36 @@ mod tests {
     fn any_strict_folder_in_the_flow_can_deny_it() {
         let cfg = Config {
             strict: vec![
-                Strict { path: "/srv/GL".into(), allow: vec!["10.0.0.5".into()], enforce: false },
-                Strict { path: "/srv/HR".into(), allow: vec![], enforce: true },
+                Strict {
+                    path: "/srv/GL".into(),
+                    allow: vec!["10.0.0.5".into()],
+                    enforce: false,
+                },
+                Strict {
+                    path: "/srv/HR".into(),
+                    allow: vec![],
+                    enforce: true,
+                },
             ],
             ..Default::default()
         };
         let ip = Some("10.0.0.5".parse().unwrap());
         let gl: Vec<PathBuf> = vec!["/srv/GL/a.xlsx".into()];
         let both: Vec<PathBuf> = vec!["/srv/GL/a.xlsx".into(), "/srv/HR/b.xlsx".into()];
-        assert!(cfg.denies(&gl, ip, Some(443)).is_none(), "GL erlaubt dieses Ziel");
+        assert!(
+            cfg.denies(&gl, ip, Some(443)).is_none(),
+            "GL erlaubt dieses Ziel"
+        );
         // HR allows nothing — the order of reading must not change that.
         let d = cfg.denies(&both, ip, Some(443)).expect("HR verbietet");
         assert_eq!(d.path, Path::new("/srv/HR"));
         assert!(d.enforce);
         let mut reversed = both.clone();
         reversed.reverse();
-        assert_eq!(cfg.denies(&reversed, ip, Some(443)).unwrap().path, Path::new("/srv/HR"));
+        assert_eq!(
+            cfg.denies(&reversed, ip, Some(443)).unwrap().path,
+            Path::new("/srv/HR")
+        );
         assert!(cfg.denies(&[], ip, Some(443)).is_none());
     }
 }
@@ -506,7 +600,10 @@ mod path_tests {
 
     #[test]
     fn normalize_maps_firmlink_and_snapshots_back() {
-        assert_eq!(normalize(Path::new("/System/Volumes/Data/Users/me/Steuern/a.pdf")), PathBuf::from("/Users/me/Steuern/a.pdf"));
+        assert_eq!(
+            normalize(Path::new("/System/Volumes/Data/Users/me/Steuern/a.pdf")),
+            PathBuf::from("/Users/me/Steuern/a.pdf")
+        );
         assert_eq!(
             normalize(Path::new("/Volumes/com.apple.TimeMachine.localsnapshots/Backups.backupdb/Mac/2026-09-05-101010/Data/Users/me/Steuern/a.pdf")),
             PathBuf::from("/Users/me/Steuern/a.pdf")
@@ -516,26 +613,44 @@ mod path_tests {
             PathBuf::from("/Users/me/Steuern/a.pdf")
         );
         // No snapshot pattern: unchanged.
-        assert_eq!(normalize(Path::new("/Users/me/Backups.backupdb/x")), PathBuf::from("/Users/me/Backups.backupdb/x"));
+        assert_eq!(
+            normalize(Path::new("/Users/me/Backups.backupdb/x")),
+            PathBuf::from("/Users/me/Backups.backupdb/x")
+        );
         assert_eq!(normalize(Path::new("/tmp/x")), PathBuf::from("/tmp/x"));
     }
 
     #[test]
     fn paths_match_regardless_of_case_and_separator() {
-        let c = Config { watched: vec![r"\\srv01\GL".into()], ..Default::default() };
+        let c = Config {
+            watched: vec![r"\\srv01\GL".into()],
+            ..Default::default()
+        };
         assert!(c.is_watched(Path::new(r"\\srv01\GL\zahlen.xlsx")));
-        assert!(c.is_watched(Path::new(r"\\SRV01\gl\Zahlen.xlsx")), "Freigaben schreibt jeder anders");
+        assert!(
+            c.is_watched(Path::new(r"\\SRV01\gl\Zahlen.xlsx")),
+            "Freigaben schreibt jeder anders"
+        );
         assert!(c.is_watched(Path::new(r"\\srv01\GL")));
-        assert!(!c.is_watched(Path::new(r"\\srv01\GL2\a.txt")), "kein Treffer mitten im Namen");
+        assert!(
+            !c.is_watched(Path::new(r"\\srv01\GL2\a.txt")),
+            "kein Treffer mitten im Namen"
+        );
         assert!(!c.is_watched(Path::new(r"\\srv01\Andere\a.txt")));
         // An empty rule path protects nothing rather than everything.
-        let empty = Config { watched: vec!["".into()], ..Default::default() };
+        let empty = Config {
+            watched: vec!["".into()],
+            ..Default::default()
+        };
         assert!(!empty.is_watched(Path::new("/a/b")));
     }
 
     #[test]
     fn is_watched_sees_through_snapshots() {
-        let c = Config { watched: vec!["/Users/me/Steuern".into()], ..Default::default() };
+        let c = Config {
+            watched: vec!["/Users/me/Steuern".into()],
+            ..Default::default()
+        };
         assert!(c.is_watched(Path::new("/Users/me/Steuern/a")));
         assert!(c.is_watched(Path::new("/System/Volumes/Data/Users/me/Steuern/a")));
         assert!(c.is_watched(Path::new("/Volumes/com.apple.TimeMachine.localsnapshots/Backups.backupdb/Mac/2026-09-05-101010/Data/Users/me/Steuern/a")));
@@ -557,18 +672,30 @@ mod path_tests {
         };
         let mut cfg = Config {
             watched: vec![r"C:\Freigaben\GL".into(), r"C:\Kurz".into()],
-            strict: vec![Strict { path: r"C:\Freigaben\GL".into(), allow: vec!["10.0.0.5".into()], enforce: true }],
+            strict: vec![Strict {
+                path: r"C:\Freigaben\GL".into(),
+                allow: vec!["10.0.0.5".into()],
+                enforce: true,
+            }],
             ..Default::default()
         };
-        assert!(!cfg.is_watched(Path::new(r"C:\FREIG~1\GL\zahlen.xlsx")), "ohne Alias geht der kurze Name durch");
+        assert!(
+            !cfg.is_watched(Path::new(r"C:\FREIG~1\GL\zahlen.xlsx")),
+            "ohne Alias geht der kurze Name durch"
+        );
         add_path_aliases(&mut cfg, alias);
 
         assert!(cfg.is_watched(Path::new(r"C:\FREIG~1\GL\zahlen.xlsx")));
-        assert!(cfg.is_watched(Path::new(r"C:\Freigaben\GL\zahlen.xlsx")), "der lange Name bleibt");
+        assert!(
+            cfg.is_watched(Path::new(r"C:\Freigaben\GL\zahlen.xlsx")),
+            "der lange Name bleibt"
+        );
         assert!(!cfg.is_watched(Path::new(r"C:\Anderes\a.txt")));
         // The alias is a strict folder in its own right, or the allow list
         // would not apply to it and the folder would report instead of act.
-        let s = cfg.strict_for(Path::new(r"C:\FREIG~1\GL\zahlen.xlsx")).expect("der kurze Name ist streng");
+        let s = cfg
+            .strict_for(Path::new(r"C:\FREIG~1\GL\zahlen.xlsx"))
+            .expect("der kurze Name ist streng");
         assert_eq!(s.allow, ["10.0.0.5"]);
         assert!(s.enforce);
         // A folder without a second spelling adds nothing, and running it
@@ -577,7 +704,11 @@ mod path_tests {
         assert_eq!(cfg.watched.len(), 3);
         let (w, s) = (cfg.watched.len(), cfg.strict.len());
         add_path_aliases(&mut cfg, alias);
-        assert_eq!((cfg.watched.len(), cfg.strict.len()), (w, s), "zweimal angewandt bleibt es dasselbe");
+        assert_eq!(
+            (cfg.watched.len(), cfg.strict.len()),
+            (w, s),
+            "zweimal angewandt bleibt es dasselbe"
+        );
     }
 
     /// The sensor's starting value (`etw::DEFAULT_TAINT_TTL`) is computed
@@ -598,7 +729,10 @@ mod path_tests {
     #[test]
     fn sensor_outlives_the_correlators_touch() {
         for secs in [0, 1, 10, 300, 600, 3600, u64::MAX] {
-            let c = Config { touch_ttl_secs: secs, ..Default::default() };
+            let c = Config {
+                touch_ttl_secs: secs,
+                ..Default::default()
+            };
             assert!(
                 c.sensor_taint_ttl() >= std::time::Duration::from_secs(secs),
                 "sensor ttl {:?} is shorter than touch_ttl_secs {secs}",
@@ -612,12 +746,25 @@ mod path_tests {
     /// all", and the intervention stopped the browser.
     #[test]
     fn the_machine_itself_is_never_a_forbidden_destination() {
-        let c = Config { strict: vec![Strict { path: "/srv/GL".into(), allow: vec![], enforce: true }], ..Default::default() };
+        let c = Config {
+            strict: vec![Strict {
+                path: "/srv/GL".into(),
+                allow: vec![],
+                enforce: true,
+            }],
+            ..Default::default()
+        };
         let files = vec![PathBuf::from("/srv/GL/a.xlsx")];
         for local in ["127.0.0.1", "127.0.0.53", "::1"] {
-            assert!(c.denies(&files, Some(local.parse().unwrap()), Some(443)).is_none(), "{local} verlaesst den Rechner nicht");
+            assert!(
+                c.denies(&files, Some(local.parse().unwrap()), Some(443))
+                    .is_none(),
+                "{local} verlaesst den Rechner nicht"
+            );
         }
         // Outbound it stays forbidden.
-        assert!(c.denies(&files, Some("203.0.113.9".parse().unwrap()), Some(443)).is_some());
+        assert!(c
+            .denies(&files, Some("203.0.113.9".parse().unwrap()), Some(443))
+            .is_some());
     }
 }

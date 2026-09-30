@@ -43,7 +43,10 @@ pub fn action_for(cfg: &Config, a: &Alert) -> Action {
     if a.verdict != Verdict::Denied {
         return Action::None;
     }
-    if !cfg.denies(&a.files, a.remote, a.remote_port).is_some_and(|s| s.enforce) {
+    if !cfg
+        .denies(&a.files, a.remote, a.remote_port)
+        .is_some_and(|s| s.enforce)
+    {
         return Action::None;
     }
     // Before, two `is_none` questions stood here that together made the
@@ -64,7 +67,11 @@ mod tests {
 
     fn cfg(enforce: bool, allow: &[&str]) -> Config {
         Config {
-            strict: vec![Strict { path: "/srv/GL".into(), allow: allow.iter().map(|s| s.to_string()).collect(), enforce }],
+            strict: vec![Strict {
+                path: "/srv/GL".into(),
+                allow: allow.iter().map(|s| s.to_string()).collect(),
+                enforce,
+            }],
             ..Default::default()
         }
     }
@@ -74,7 +81,9 @@ mod tests {
             id: 1,
             at: chrono::Utc::now(),
             pid: 4242,
-            identity: ProcessIdentity::Unknown { path: "/usr/bin/curl".into() },
+            identity: ProcessIdentity::Unknown {
+                path: "/usr/bin/curl".into(),
+            },
             files: vec![PathBuf::from("/srv/GL/a.xlsx")],
             remote: Some("203.0.113.9".parse().unwrap()),
             remote_port: Some(443),
@@ -97,14 +106,21 @@ mod tests {
     #[test]
     fn a_flow_to_the_network_is_only_reported() {
         for enforce in [true, false] {
-            assert_eq!(action_for(&cfg(enforce, &[]), &alert()), Action::None, "enforce={enforce}");
+            assert_eq!(
+                action_for(&cfg(enforce, &[]), &alert()),
+                Action::None,
+                "enforce={enforce}"
+            );
         }
         // Not even when the sender read the file itself.
         let mut a = alert();
         a.sender_read_directly = false;
         assert_eq!(action_for(&cfg(true, &[]), &a), Action::None);
         // Destination on the allow list, a different verdict: all the less.
-        assert_eq!(action_for(&cfg(true, &["203.0.113.9"]), &alert()), Action::None);
+        assert_eq!(
+            action_for(&cfg(true, &["203.0.113.9"]), &alert()),
+            Action::None
+        );
         a = alert();
         a.verdict = Verdict::New;
         assert_eq!(action_for(&cfg(true, &[]), &a), Action::None);
@@ -129,6 +145,10 @@ mod tests {
         let mut a = alert();
         a.remote = None;
         a.remote_port = None;
-        assert_eq!(action_for(&cfg(true, &[]), &a), Action::None, "kein Ziel, kein Kopierziel: melden reicht");
+        assert_eq!(
+            action_for(&cfg(true, &[]), &a),
+            Action::None,
+            "kein Ziel, kein Kopierziel: melden reicht"
+        );
     }
 }

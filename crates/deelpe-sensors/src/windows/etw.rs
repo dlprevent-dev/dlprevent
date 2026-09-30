@@ -60,6 +60,7 @@ const EV_NET_SEND_V6: u16 = 26;
 /// up; the limit catches the case where some go missing.
 const MAX_OPEN_FILES: usize = 50_000;
 
+use crate::filter::TaintTable;
 /// Paths for which file events get passed on at all.
 ///
 /// `None` means "everything" and is meant only for `trace`. In production
@@ -78,7 +79,6 @@ const MAX_OPEN_FILES: usize = 50_000;
 // bookkeeping, which gets tested on every platform. What stays here is only
 // what ETW itself needs.
 pub use crate::filter::{dropped, set_file_filter, wanted, DEFAULT_TAINT_TTL};
-use crate::filter::TaintTable;
 
 /// Stops the running session. `ProcessTrace` returns as a result — without
 /// it the sensor keeps running even though nobody is listening any more,
@@ -88,7 +88,12 @@ pub fn stop_session() {
     let name = wide(SESSION);
     let mut props = properties();
     unsafe {
-        let _ = ControlTraceW(CONTROLTRACE_HANDLE::default(), PCWSTR(name.as_ptr()), props.as_mut_ptr() as *mut _, EVENT_TRACE_CONTROL_STOP);
+        let _ = ControlTraceW(
+            CONTROLTRACE_HANDLE::default(),
+            PCWSTR(name.as_ptr()),
+            props.as_mut_ptr() as *mut _,
+            EVENT_TRACE_CONTROL_STOP,
+        );
     }
 }
 
@@ -159,12 +164,23 @@ fn pump(tx: mpsc::Sender<Event>) -> Result<()> {
     // hence clean up first.
     let mut props = properties();
     unsafe {
-        let _ = ControlTraceW(CONTROLTRACE_HANDLE::default(), PCWSTR(name.as_ptr()), props.as_mut_ptr() as *mut _, EVENT_TRACE_CONTROL_STOP);
+        let _ = ControlTraceW(
+            CONTROLTRACE_HANDLE::default(),
+            PCWSTR(name.as_ptr()),
+            props.as_mut_ptr() as *mut _,
+            EVENT_TRACE_CONTROL_STOP,
+        );
     }
 
     let mut props = properties();
     let mut session = CONTROLTRACE_HANDLE::default();
-    let rc = unsafe { StartTraceW(&mut session, PCWSTR(name.as_ptr()), props.as_mut_ptr() as *mut _) };
+    let rc = unsafe {
+        StartTraceW(
+            &mut session,
+            PCWSTR(name.as_ptr()),
+            props.as_mut_ptr() as *mut _,
+        )
+    };
     if rc.is_err() {
         bail!("StartTrace \"{SESSION}\" failed ({rc:?}); the service needs to run as LocalSystem or in \"Performance Log Users\"");
     }
@@ -188,7 +204,10 @@ fn pump(tx: mpsc::Sender<Event>) -> Result<()> {
         Ok(())
     };
     let armed = (|| -> Result<()> {
-        enable(KERNEL_FILE, FILE_KW_CREATE | FILE_KW_READ | FILE_KW_WRITE | FILE_KW_CLOSE)?;
+        enable(
+            KERNEL_FILE,
+            FILE_KW_CREATE | FILE_KW_READ | FILE_KW_WRITE | FILE_KW_CLOSE,
+        )?;
         enable(KERNEL_NETWORK, NET_KW_IPV4 | NET_KW_IPV6)?;
         Ok(())
     })();
@@ -211,7 +230,8 @@ fn pump(tx: mpsc::Sender<Event>) -> Result<()> {
         Context: &mut *ctx as *mut Ctx as *mut std::ffi::c_void,
         ..Default::default()
     };
-    log.Anonymous1.ProcessTraceMode = PROCESS_TRACE_MODE_REAL_TIME | PROCESS_TRACE_MODE_EVENT_RECORD;
+    log.Anonymous1.ProcessTraceMode =
+        PROCESS_TRACE_MODE_REAL_TIME | PROCESS_TRACE_MODE_EVENT_RECORD;
     log.Anonymous2.EventRecordCallback = Some(on_event);
 
     let trace = unsafe { OpenTraceW(&mut log) };
@@ -235,7 +255,12 @@ fn pump(tx: mpsc::Sender<Event>) -> Result<()> {
 fn stop(session: CONTROLTRACE_HANDLE, name: &[u16]) {
     let mut props = properties();
     unsafe {
-        let _ = ControlTraceW(session, PCWSTR(name.as_ptr()), props.as_mut_ptr() as *mut _, EVENT_TRACE_CONTROL_STOP);
+        let _ = ControlTraceW(
+            session,
+            PCWSTR(name.as_ptr()),
+            props.as_mut_ptr() as *mut _,
+            EVENT_TRACE_CONTROL_STOP,
+        );
     }
 }
 
@@ -270,7 +295,16 @@ unsafe extern "system" fn on_event(rec: *mut EVENT_RECORD) {
     // inheritance is decided in the event itself.
     for p in ctx.procs.take_pending() {
         let path = p.path.clone();
-        let intro = Event::File(FileEvent { at: Utc::now(), process: p, path, action: FileAction::Exec, target: None, inode: None, nlink: None, argv: None });
+        let intro = Event::File(FileEvent {
+            at: Utc::now(),
+            process: p,
+            path,
+            action: FileAction::Exec,
+            target: None,
+            inode: None,
+            nlink: None,
+            argv: None,
+        });
         if ctx.tx.try_send(intro).is_err() {
             break;
         }
@@ -356,7 +390,11 @@ fn file_event(ctx: &mut Ctx, rec: *mut EVENT_RECORD, id: u16) -> Option<Event> {
         EV_FILE_READ | EV_FILE_WRITE => {
             // Not `EventHeader.ProcessId`: see `Ctx::open`.
             let (path, pid) = ctx.open.get(&obj)?.clone();
-            let action = if id == EV_FILE_READ { FileAction::Open } else { FileAction::Write };
+            let action = if id == EV_FILE_READ {
+                FileAction::Open
+            } else {
+                FileAction::Write
+            };
             Some(Event::File(FileEvent {
                 at: Utc::now(),
                 process: ctx.procs.get(pid),
@@ -389,7 +427,11 @@ fn net_event(ctx: &mut Ctx, rec: *mut EVENT_RECORD, id: u16) -> Option<Event> {
     // was dropped here, and with it the only edge over which the correlator
     // connects a sending child process to the reading parent process.
     let proc = ctx.procs.get(pid);
-    let name = proc.path.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    let name = proc
+        .path
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
     Some(Event::Net(NetEvent {
         at: Utc::now(),
         pid,

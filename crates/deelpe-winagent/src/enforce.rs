@@ -33,8 +33,21 @@ use std::path::{Path, PathBuf};
 /// with more steps. The only reader of this list is therefore
 /// [`crate::wfp::may_cage`].
 const CRITICAL: &[&str] = &[
-    "system", "smss.exe", "csrss.exe", "wininit.exe", "winlogon.exe", "services.exe", "lsass.exe", "svchost.exe", "sshd.exe",
-    "explorer.exe", "dwm.exe", "fontdrvhost.exe", "conhost.exe", "runtimebroker.exe", "deelpe-winagent.exe",
+    "system",
+    "smss.exe",
+    "csrss.exe",
+    "wininit.exe",
+    "winlogon.exe",
+    "services.exe",
+    "lsass.exe",
+    "svchost.exe",
+    "sshd.exe",
+    "explorer.exe",
+    "dwm.exe",
+    "fontdrvhost.exe",
+    "conhost.exe",
+    "runtimebroker.exe",
+    "deelpe-winagent.exe",
 ];
 
 /// Is this a process that every intervention has to go past?
@@ -93,8 +106,14 @@ pub enum Outcome {
 pub fn delete_copy(path: &Path, protected: &Protected) -> Result<Outcome> {
     let out = remove(path, protected);
     match &out {
-        Ok(Outcome::Done) => tracing::warn!("BLOCKED: copy {} deleted (strict folder)", path.display()),
-        Ok(Outcome::Refused(real)) => tracing::error!("copy {} leads into the protected folder ({}); not deleted", path.display(), real.display()),
+        Ok(Outcome::Done) => {
+            tracing::warn!("BLOCKED: copy {} deleted (strict folder)", path.display())
+        }
+        Ok(Outcome::Refused(real)) => tracing::error!(
+            "copy {} leads into the protected folder ({}); not deleted",
+            path.display(),
+            real.display()
+        ),
         _ => {}
     }
     out
@@ -104,7 +123,9 @@ pub fn delete_copy(path: &Path, protected: &Protected) -> Result<Outcome> {
 fn remove(path: &Path, protected: &Protected) -> Result<Outcome> {
     use std::os::windows::io::AsRawHandle;
     use windows::Win32::Foundation::HANDLE;
-    use windows::Win32::Storage::FileSystem::{FileDispositionInfo, SetFileInformationByHandle, FILE_DISPOSITION_INFO};
+    use windows::Win32::Storage::FileSystem::{
+        FileDispositionInfo, SetFileInformationByHandle, FILE_DISPOSITION_INFO,
+    };
     const DELETE: u32 = 0x0001_0000;
     let f = match open_checked(path, DELETE, protected) {
         Ok(Ok(f)) => f,
@@ -112,9 +133,16 @@ fn remove(path: &Path, protected: &Protected) -> Result<Outcome> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Outcome::Gone),
         Err(e) => bail!("delete {}: {e}", path.display()),
     };
-    let info = FILE_DISPOSITION_INFO { DeleteFile: true.into() };
+    let info = FILE_DISPOSITION_INFO {
+        DeleteFile: true.into(),
+    };
     unsafe {
-        SetFileInformationByHandle(HANDLE(f.as_raw_handle()), FileDispositionInfo, &info as *const _ as *const std::ffi::c_void, std::mem::size_of::<FILE_DISPOSITION_INFO>() as u32)
+        SetFileInformationByHandle(
+            HANDLE(f.as_raw_handle()),
+            FileDispositionInfo,
+            &info as *const _ as *const std::ffi::c_void,
+            std::mem::size_of::<FILE_DISPOSITION_INFO>() as u32,
+        )
     }
     .map_err(|e| anyhow::anyhow!("delete {}: {e}", path.display()))?;
     // Gone once the handle closes.
@@ -144,17 +172,33 @@ fn remove(path: &Path, protected: &Protected) -> Result<Outcome> {
 /// is no obstacle where it need not be) and say where the open file really
 /// lies. `Ok(Err(real))` when that is inside a protected folder.
 #[cfg(windows)]
-fn open_checked(path: &Path, access: u32, protected: &Protected) -> std::io::Result<Result<std::fs::File, PathBuf>> {
+fn open_checked(
+    path: &Path,
+    access: u32,
+    protected: &Protected,
+) -> std::io::Result<Result<std::fs::File, PathBuf>> {
     use std::os::windows::fs::OpenOptionsExt;
     use std::os::windows::io::AsRawHandle;
     use windows::Win32::Foundation::HANDLE;
-    use windows::Win32::Storage::FileSystem::{GetFinalPathNameByHandleW, FILE_NAME_NORMALIZED, GETFINALPATHNAMEBYHANDLE_FLAGS, VOLUME_NAME_DOS};
+    use windows::Win32::Storage::FileSystem::{
+        GetFinalPathNameByHandleW, FILE_NAME_NORMALIZED, GETFINALPATHNAMEBYHANDLE_FLAGS,
+        VOLUME_NAME_DOS,
+    };
     const FILE_READ_ATTRIBUTES: u32 = 0x80;
     const SHARE_ALL: u32 = 0x1 | 0x2 | 0x4;
-    let f = std::fs::OpenOptions::new().access_mode(access | FILE_READ_ATTRIBUTES).share_mode(SHARE_ALL).open(path)?;
+    let f = std::fs::OpenOptions::new()
+        .access_mode(access | FILE_READ_ATTRIBUTES)
+        .share_mode(SHARE_ALL)
+        .open(path)?;
     let mut buf = vec![0u16; 1024];
     loop {
-        let n = unsafe { GetFinalPathNameByHandleW(HANDLE(f.as_raw_handle()), &mut buf, GETFINALPATHNAMEBYHANDLE_FLAGS(FILE_NAME_NORMALIZED.0 | VOLUME_NAME_DOS.0)) } as usize;
+        let n = unsafe {
+            GetFinalPathNameByHandleW(
+                HANDLE(f.as_raw_handle()),
+                &mut buf,
+                GETFINALPATHNAMEBYHANDLE_FLAGS(FILE_NAME_NORMALIZED.0 | VOLUME_NAME_DOS.0),
+            )
+        } as usize;
         if n == 0 {
             return Err(std::io::Error::last_os_error());
         }
@@ -222,8 +266,13 @@ pub fn lock_copy(path: &Path, protected: &Protected) -> Result<Outcome> {
     use std::os::windows::io::AsRawHandle;
     use windows::core::{HSTRING, PCWSTR};
     use windows::Win32::Foundation::{LocalFree, HANDLE, HLOCAL};
-    use windows::Win32::Security::Authorization::{ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1};
-    use windows::Win32::Security::{SetKernelObjectSecurity, DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR};
+    use windows::Win32::Security::Authorization::{
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+    };
+    use windows::Win32::Security::{
+        SetKernelObjectSecurity, DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
+        PSECURITY_DESCRIPTOR,
+    };
     const WRITE_DAC: u32 = 0x0004_0000;
 
     let f = match open_checked(path, WRITE_DAC, protected) {
@@ -235,10 +284,21 @@ pub fn lock_copy(path: &Path, protected: &Protected) -> Result<Outcome> {
     let sddl = HSTRING::from(quarantine_sddl(crate::config::own_sid().as_deref()));
     let mut psd = PSECURITY_DESCRIPTOR::default();
     unsafe {
-        ConvertStringSecurityDescriptorToSecurityDescriptorW(PCWSTR(sddl.as_ptr()), SDDL_REVISION_1, &mut psd, None)
-            .context("SDDL for the quarantined copy")?;
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            PCWSTR(sddl.as_ptr()),
+            SDDL_REVISION_1,
+            &mut psd,
+            None,
+        )
+        .context("SDDL for the quarantined copy")?;
     }
-    let r = unsafe { SetKernelObjectSecurity(HANDLE(f.as_raw_handle()), DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION, psd) };
+    let r = unsafe {
+        SetKernelObjectSecurity(
+            HANDLE(f.as_raw_handle()),
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            psd,
+        )
+    };
     unsafe {
         let _ = LocalFree(Some(HLOCAL(psd.0)));
     }
@@ -252,7 +312,9 @@ pub fn lock_copy(path: &Path, protected: &Protected) -> Result<Outcome> {
 /// front of a resolved path.
 #[cfg(not(windows))]
 fn resolved(path: &Path) -> std::io::Result<PathBuf> {
-    Ok(PathBuf::from(plain(&std::fs::canonicalize(path)?.to_string_lossy())))
+    Ok(PathBuf::from(plain(
+        &std::fs::canonicalize(path)?.to_string_lossy(),
+    )))
 }
 
 /// `\\?\C:\x` → `C:\x`, `\\?\UNC\srv\gl\x` → `\\srv\gl\x`.
@@ -289,7 +351,10 @@ mod tests {
 
     #[test]
     fn a_resolved_windows_path_loses_its_prefix() {
-        assert_eq!(plain(r"\\?\C:\Freigaben\GL\a.docx"), r"C:\Freigaben\GL\a.docx");
+        assert_eq!(
+            plain(r"\\?\C:\Freigaben\GL\a.docx"),
+            r"C:\Freigaben\GL\a.docx"
+        );
         assert_eq!(plain(r"\\?\UNC\fs-01\GL\a.docx"), r"\\fs-01\GL\a.docx");
         assert_eq!(plain("/Users/me/a"), "/Users/me/a");
     }
@@ -302,7 +367,10 @@ mod tests {
     fn critical_processes_are_never_stopped() {
         for name in CRITICAL {
             assert!(is_critical(name), "{name} muesste verschont werden");
-            assert!(is_critical(&name.to_uppercase()), "{name} in Grossschreibung");
+            assert!(
+                is_critical(&name.to_uppercase()),
+                "{name} in Grossschreibung"
+            );
         }
         // Spot checks that would be expensive in the lab: the remote access
         // and the logon.
@@ -319,7 +387,10 @@ mod tests {
     /// respectively 446 bytes of telemetry to Microsoft.
     #[test]
     fn a_windows_resource_name_still_names_the_process() {
-        assert!(is_critical("EXPLORER.EXE.MUI"), "der Explorer, wie er wirklich hereinkommt");
+        assert!(
+            is_critical("EXPLORER.EXE.MUI"),
+            "der Explorer, wie er wirklich hereinkommt"
+        );
         assert!(is_critical("svchost.exe.mui"));
         assert!(is_critical("LSASS.EXE.MUI"));
         // An ordinary program stays stoppable, suffix or no suffix.
@@ -354,13 +425,29 @@ mod tests {
     fn a_locked_copy_stays_reachable_for_the_service() {
         let s = quarantine_sddl(None);
         assert!(s.starts_with("D:P"), "Vererbung muss aus sein: {s}");
-        assert!(s.contains("(A;;FA;;;SY)"), "SYSTEM muss loeschen koennen: {s}");
-        assert!(s.contains("(A;;FA;;;BA)"), "Administratoren bleiben drin: {s}");
+        assert!(
+            s.contains("(A;;FA;;;SY)"),
+            "SYSTEM muss loeschen koennen: {s}"
+        );
+        assert!(
+            s.contains("(A;;FA;;;BA)"),
+            "Administratoren bleiben drin: {s}"
+        );
         assert_eq!(s.matches("(A;").count(), 2, "niemand sonst: {s}");
         // A dedicated service account is added; the built-in ones not twice.
-        assert!(quarantine_sddl(Some("S-1-5-21-1-2-3-1001")).ends_with("(A;;FA;;;S-1-5-21-1-2-3-1001)"));
-        assert_eq!(quarantine_sddl(Some("S-1-5-18")), s, "SYSTEM steht schon drin");
-        assert_eq!(quarantine_sddl(Some("S-1-5-32-544")), s, "Administratoren stehen schon drin");
+        assert!(
+            quarantine_sddl(Some("S-1-5-21-1-2-3-1001")).ends_with("(A;;FA;;;S-1-5-21-1-2-3-1001)")
+        );
+        assert_eq!(
+            quarantine_sddl(Some("S-1-5-18")),
+            s,
+            "SYSTEM steht schon drin"
+        );
+        assert_eq!(
+            quarantine_sddl(Some("S-1-5-32-544")),
+            s,
+            "Administratoren stehen schon drin"
+        );
     }
 
     /// Pentest 8840/0004 at the function every path goes through, the retry
@@ -379,8 +466,14 @@ mod tests {
         let inside = share.clone();
         let protected: Protected = std::sync::Arc::new(move |p: &Path| p.starts_with(&inside));
         let via = dir.join("in").join("a.docx");
-        assert_eq!(lock_copy(&via, &protected).unwrap(), Outcome::Refused(share.join("a.docx")));
-        assert_eq!(delete_copy(&via, &protected).unwrap(), Outcome::Refused(share.join("a.docx")));
+        assert_eq!(
+            lock_copy(&via, &protected).unwrap(),
+            Outcome::Refused(share.join("a.docx"))
+        );
+        assert_eq!(
+            delete_copy(&via, &protected).unwrap(),
+            Outcome::Refused(share.join("a.docx"))
+        );
         assert!(share.join("a.docx").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -393,11 +486,19 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let f = dir.join("kopie.txt");
         let none: Protected = std::sync::Arc::new(|_: &Path| false);
-        assert_eq!(delete_copy(&f, &none).unwrap(), Outcome::Gone, "nicht vorhanden");
+        assert_eq!(
+            delete_copy(&f, &none).unwrap(),
+            Outcome::Gone,
+            "nicht vorhanden"
+        );
         std::fs::write(&f, b"geheim").unwrap();
         assert_eq!(delete_copy(&f, &none).unwrap(), Outcome::Done, "vorhanden");
         assert!(!f.exists(), "die Kopie ist weg");
-        assert_eq!(delete_copy(&f, &none).unwrap(), Outcome::Gone, "und bleibt weg");
+        assert_eq!(
+            delete_copy(&f, &none).unwrap(),
+            Outcome::Gone,
+            "und bleibt weg"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

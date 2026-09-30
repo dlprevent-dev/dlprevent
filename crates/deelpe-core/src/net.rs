@@ -8,7 +8,10 @@
 //! credentials live and how the file is protected against onlookers — that
 //! each agent does for itself.
 
-use crate::central::{AgentKind, EnrollRequest, EnrollResponse, RenewRequest, RenewResponse, Report, ReportResponse, API_VERSION};
+use crate::central::{
+    AgentKind, EnrollRequest, EnrollResponse, RenewRequest, RenewResponse, Report, ReportResponse,
+    API_VERSION,
+};
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Utc};
 use std::time::Duration;
@@ -37,13 +40,20 @@ pub struct Credentials {
 
 pub fn sha256_hex(data: &[u8]) -> String {
     use sha2::{Digest, Sha256};
-    Sha256::digest(data).iter().map(|b| format!("{b:02x}")).collect()
+    Sha256::digest(data)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 fn pem_first_der(pem: &str) -> Result<Vec<u8>> {
     let mut r = std::io::Cursor::new(pem.as_bytes());
     let certs: Vec<_> = rustls_pemfile::certs(&mut r).collect::<std::result::Result<_, _>>()?;
-    certs.into_iter().next().map(|c| c.to_vec()).ok_or_else(|| anyhow!("no certificate in the PEM"))
+    certs
+        .into_iter()
+        .next()
+        .map(|c| c.to_vec())
+        .ok_or_else(|| anyhow!("no certificate in the PEM"))
 }
 
 /// Expiry of the agent's own certificate. The agent reads it from the
@@ -51,8 +61,10 @@ fn pem_first_der(pem: &str) -> Result<Vec<u8>> {
 /// decides whether the connection still comes about.
 pub fn cert_not_after(cert_pem: &str) -> Result<DateTime<Utc>> {
     let der = pem_first_der(cert_pem)?;
-    let (_, cert) = x509_parser::parse_x509_certificate(&der).map_err(|e| anyhow!("certificate unreadable: {e}"))?;
-    DateTime::from_timestamp(cert.validity().not_after.timestamp(), 0).ok_or_else(|| anyhow!("certificate has an impossible expiry"))
+    let (_, cert) = x509_parser::parse_x509_certificate(&der)
+        .map_err(|e| anyhow!("certificate unreadable: {e}"))?;
+    DateTime::from_timestamp(cert.validity().not_after.timestamp(), 0)
+        .ok_or_else(|| anyhow!("certificate has an impossible expiry"))
 }
 
 /// Is it time to renew the certificate? An unreadable certificate says no:
@@ -88,15 +100,27 @@ impl Client {
             .timeout(TIMEOUT)
             .user_agent(ua.to_string())
             .build()?;
-        Ok(Self { http, url: c.url.trim_end_matches('/').to_string() })
+        Ok(Self {
+            http,
+            url: c.url.trim_end_matches('/').to_string(),
+        })
     }
 
     pub async fn report(&self, r: &Report) -> Result<ReportResponse> {
-        let resp = self.http.post(format!("{}/agent/report", self.url)).json(r).send().await.context("Verbindung")?;
+        let resp = self
+            .http
+            .post(format!("{}/agent/report", self.url))
+            .json(r)
+            .send()
+            .await
+            .context("Verbindung")?;
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            bail!("central server answers {status}: {}", body.chars().take(200).collect::<String>());
+            bail!(
+                "central server answers {status}: {}",
+                body.chars().take(200).collect::<String>()
+            );
         }
         resp.json().await.context("answer")
     }
@@ -116,11 +140,24 @@ impl Client {
         // Its own timeout: the twenty seconds for a report are enough for
         // four and a half megabytes only on a fast line, and on a slow one
         // the agent would otherwise never get past the download.
-        let resp = self.http.get(format!("{}/agent/binary?arch={}", self.url, crate::central::arch())).timeout(BINARY_TIMEOUT).send().await.context("Verbindung")?;
+        let resp = self
+            .http
+            .get(format!(
+                "{}/agent/binary?arch={}",
+                self.url,
+                crate::central::arch()
+            ))
+            .timeout(BINARY_TIMEOUT)
+            .send()
+            .await
+            .context("Verbindung")?;
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            bail!("central server does not hand out the agent program ({status}): {}", body.chars().take(200).collect::<String>());
+            bail!(
+                "central server does not hand out the agent program ({status}): {}",
+                body.chars().take(200).collect::<String>()
+            );
         }
         let statement = resp
             .headers()
@@ -138,14 +175,28 @@ impl Client {
     pub async fn renew(&self, hostname: &str) -> Result<(String, String, DateTime<Utc>)> {
         let key = rcgen::KeyPair::generate().context("generate key")?;
         let mut params = rcgen::CertificateParams::new(Vec::<String>::new())?;
-        params.distinguished_name.push(rcgen::DnType::CommonName, hostname);
+        params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, hostname);
         let csr = params.serialize_request(&key)?;
-        let req = RenewRequest { api_version: API_VERSION, csr_pem: csr.pem()? };
-        let resp = self.http.post(format!("{}/agent/renew", self.url)).json(&req).send().await.context("Verbindung")?;
+        let req = RenewRequest {
+            api_version: API_VERSION,
+            csr_pem: csr.pem()?,
+        };
+        let resp = self
+            .http
+            .post(format!("{}/agent/renew", self.url))
+            .json(&req)
+            .send()
+            .await
+            .context("Verbindung")?;
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            bail!("central server refuses the renewal ({status}): {}", body.chars().take(200).collect::<String>());
+            bail!(
+                "central server refuses the renewal ({status}): {}",
+                body.chars().take(200).collect::<String>()
+            );
         }
         let rr: RenewResponse = resp.json().await.context("renewal answer")?;
         Ok((rr.cert_pem, key.serialize_pem(), rr.not_after))
@@ -159,17 +210,35 @@ impl Client {
 /// The saving is the caller's job — only after that may it rebuild the
 /// client. If the saving goes wrong, it keeps the old credentials and gets
 /// in once more during the central server's grace period.
-pub async fn renew_if_due(client: &Client, creds: &Credentials, hostname: &str) -> Result<Option<(Credentials, DateTime<Utc>)>> {
+pub async fn renew_if_due(
+    client: &Client,
+    creds: &Credentials,
+    hostname: &str,
+) -> Result<Option<(Credentials, DateTime<Utc>)>> {
     if !needs_renewal(&creds.cert_pem) {
         return Ok(None);
     }
     let (cert_pem, key_pem, not_after) = client.renew(hostname).await?;
-    Ok(Some((Credentials { cert_pem, key_pem, ..creds.clone() }, not_after)))
+    Ok(Some((
+        Credentials {
+            cert_pem,
+            key_pem,
+            ..creds.clone()
+        },
+        not_after,
+    )))
 }
 
 /// Enrollment with the central server. `ca_sha256` is the fingerprint from
 /// the dashboard; without a match nothing happens.
-pub async fn enroll(url: &str, token: &str, ca_sha256: &str, hostname: &str, kind: AgentKind, version: &str) -> Result<Credentials> {
+pub async fn enroll(
+    url: &str,
+    token: &str,
+    ca_sha256: &str,
+    hostname: &str,
+    kind: AgentKind,
+    version: &str,
+) -> Result<Credentials> {
     let url = url.trim_end_matches('/');
     let expected = ca_sha256.trim().to_lowercase().replace(':', "");
     if expected.len() != 64 {
@@ -177,8 +246,18 @@ pub async fn enroll(url: &str, token: &str, ca_sha256: &str, hostname: &str, kin
     }
     // Step 1: fetch the CA. The connection is not trustworthy yet, the
     // fingerprint decides.
-    let probe = reqwest::Client::builder().danger_accept_invalid_certs(true).timeout(TIMEOUT).build()?;
-    let ca_pem = probe.get(format!("{url}/agent/ca")).send().await.context("central server not reachable")?.error_for_status()?.text().await?;
+    let probe = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .timeout(TIMEOUT)
+        .build()?;
+    let ca_pem = probe
+        .get(format!("{url}/agent/ca"))
+        .send()
+        .await
+        .context("central server not reachable")?
+        .error_for_status()?
+        .text()
+        .await?;
     let der = pem_first_der(&ca_pem).context("CA of the central server")?;
     let got = sha256_hex(&der);
     if got != expected {
@@ -186,10 +265,15 @@ pub async fn enroll(url: &str, token: &str, ca_sha256: &str, hostname: &str, kin
     }
     // Step 2: on with the checked CA.
     let ca = reqwest::Certificate::from_pem(ca_pem.as_bytes())?;
-    let http = reqwest::Client::builder().add_root_certificate(ca).timeout(TIMEOUT).build()?;
+    let http = reqwest::Client::builder()
+        .add_root_certificate(ca)
+        .timeout(TIMEOUT)
+        .build()?;
     let key = rcgen::KeyPair::generate().context("generate key")?;
     let mut params = rcgen::CertificateParams::new(Vec::<String>::new())?;
-    params.distinguished_name.push(rcgen::DnType::CommonName, hostname);
+    params
+        .distinguished_name
+        .push(rcgen::DnType::CommonName, hostname);
     let csr = params.serialize_request(&key)?;
     let req = EnrollRequest {
         api_version: API_VERSION,
@@ -199,17 +283,31 @@ pub async fn enroll(url: &str, token: &str, ca_sha256: &str, hostname: &str, kin
         version: version.to_string(),
         csr_pem: csr.pem()?,
     };
-    let resp = http.post(format!("{url}/agent/enroll")).json(&req).send().await.context("enrollment request")?;
+    let resp = http
+        .post(format!("{url}/agent/enroll"))
+        .json(&req)
+        .send()
+        .await
+        .context("enrollment request")?;
     let status = resp.status();
     if !status.is_success() {
         let body: serde_json::Value = resp.json().await.unwrap_or_default();
-        bail!("enrollment rejected ({status}): {}", body.get("error").and_then(|e| e.as_str()).unwrap_or("?"));
+        bail!(
+            "enrollment rejected ({status}): {}",
+            body.get("error").and_then(|e| e.as_str()).unwrap_or("?")
+        );
     }
     let er: EnrollResponse = resp.json().await.context("enrollment answer")?;
     if er.ca_pem.trim() != ca_pem.trim() {
         bail!("the central server returns a different CA than before");
     }
-    Ok(Credentials { url: url.to_string(), agent_id: er.agent_id, ca_pem, cert_pem: er.cert_pem, key_pem: key.serialize_pem() })
+    Ok(Credentials {
+        url: url.to_string(),
+        agent_id: er.agent_id,
+        ca_pem,
+        cert_pem: er.cert_pem,
+        key_pem: key.serialize_pem(),
+    })
 }
 
 #[cfg(test)]

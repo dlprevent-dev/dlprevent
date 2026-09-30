@@ -24,16 +24,20 @@
 use anyhow::{bail, Context, Result};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{LocalFree, HLOCAL, NTSTATUS};
-use windows::Win32::Security::PSID;
 use windows::Win32::Security::Authentication::Identity::{
-    LsaAddAccountRights, LsaClose, LsaEnumerateAccountRights, LsaFreeMemory, LsaNtStatusToWinError, LsaOpenPolicy, LsaRemoveAccountRights,
-    LSA_HANDLE, LSA_OBJECT_ATTRIBUTES, LSA_UNICODE_STRING, POLICY_CREATE_ACCOUNT, POLICY_LOOKUP_NAMES, POLICY_VIEW_LOCAL_INFORMATION,
+    LsaAddAccountRights, LsaClose, LsaEnumerateAccountRights, LsaFreeMemory, LsaNtStatusToWinError,
+    LsaOpenPolicy, LsaRemoveAccountRights, LSA_HANDLE, LSA_OBJECT_ATTRIBUTES, LSA_UNICODE_STRING,
+    POLICY_CREATE_ACCOUNT, POLICY_LOOKUP_NAMES, POLICY_VIEW_LOCAL_INFORMATION,
 };
+use windows::Win32::Security::PSID;
 
 /// The rights the agent actually uses.
 pub const NEEDED: &[(&str, &str)] = &[
     ("SeServiceLogonRight", "start as a service"),
-    ("SeSecurityPrivilege", "set audit policy and SACL, read the security event log"),
+    (
+        "SeSecurityPrivilege",
+        "set audit policy and SACL, read the security event log",
+    ),
 ];
 
 /// SID of the built-in group "Event Log Readers"; by SID, because the name
@@ -72,7 +76,15 @@ fn account_sid(account: &str) -> Result<(Vec<u8>, String)> {
     let mut kind = SID_NAME_USE::default();
     unsafe {
         // The first call only determines the sizes and fails as expected.
-        let _ = LookupAccountNameW(PCWSTR::null(), PCWSTR(name.as_ptr()), None, &mut sid_len, None, &mut dom_len, &mut kind);
+        let _ = LookupAccountNameW(
+            PCWSTR::null(),
+            PCWSTR(name.as_ptr()),
+            None,
+            &mut sid_len,
+            None,
+            &mut dom_len,
+            &mut kind,
+        );
     }
     if sid_len == 0 {
         bail!("account '{account}' does not exist (spelling: DOMAIN\\name, gMSA ends with $)");
@@ -124,7 +136,9 @@ pub fn grant(account: &str) -> Result<()> {
     let bufs: Vec<Vec<u16>> = NEEDED.iter().map(|(r, _)| wide(r)).collect();
     let rights: Vec<LSA_UNICODE_STRING> = bufs.iter().map(|b| lsa_str(b)).collect();
     let st = unsafe { LsaAddAccountRights(h, PSID(sid.as_mut_ptr() as *mut _), &rights) };
-    unsafe { let _ = LsaClose(h); }
+    unsafe {
+        let _ = LsaClose(h);
+    }
     check(st, "grant privileges")?;
     for (r, why) in NEEDED {
         println!("  granted: {r:<22} ({why})");
@@ -155,13 +169,21 @@ pub fn grant(account: &str) -> Result<()> {
 /// not need it and should not get it.
 pub fn allow_self_update(account: &str) -> Result<()> {
     let exe = std::env::current_exe().context("own path")?;
-    let dir = exe.parent().ok_or_else(|| anyhow::anyhow!("{} has no folder", exe.display()))?;
+    let dir = exe
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("{} has no folder", exe.display()))?;
     grant_modify(dir, account)?;
     println!("account {account} may now replace {}", exe.display());
-    println!("  granted: modify on {} (create the new file, rename the running one aside)", dir.display());
+    println!(
+        "  granted: modify on {} (create the new file, rename the running one aside)",
+        dir.display()
+    );
     println!();
     println!("check it:   icacls \"{}\"", dir.display());
-    println!("undo it:    icacls \"{}\" /remove:g \"{account}\"", dir.display());
+    println!(
+        "undo it:    icacls \"{}\" /remove:g \"{account}\"",
+        dir.display()
+    );
     Ok(())
 }
 
@@ -171,8 +193,12 @@ pub fn revoke(account: &str) -> Result<()> {
     let h = policy(POLICY_CREATE_ACCOUNT | POLICY_LOOKUP_NAMES)?;
     let bufs: Vec<Vec<u16>> = NEEDED.iter().map(|(r, _)| wide(r)).collect();
     let rights: Vec<LSA_UNICODE_STRING> = bufs.iter().map(|b| lsa_str(b)).collect();
-    let st = unsafe { LsaRemoveAccountRights(h, PSID(sid.as_mut_ptr() as *mut _), false, Some(&rights)) };
-    unsafe { let _ = LsaClose(h); }
+    let st = unsafe {
+        LsaRemoveAccountRights(h, PSID(sid.as_mut_ptr() as *mut _), false, Some(&rights))
+    };
+    unsafe {
+        let _ = LsaClose(h);
+    }
     check(st, "revoke privileges")?;
     println!("privileges of {account} revoked.");
     Ok(())
@@ -184,7 +210,9 @@ pub fn show(account: &str) -> Result<()> {
     let h = policy(POLICY_LOOKUP_NAMES | POLICY_VIEW_LOCAL_INFORMATION)?;
     let mut buf: *mut LSA_UNICODE_STRING = std::ptr::null_mut();
     let mut count = 0u32;
-    let st = unsafe { LsaEnumerateAccountRights(h, PSID(sid.as_mut_ptr() as *mut _), &mut buf, &mut count) };
+    let st = unsafe {
+        LsaEnumerateAccountRights(h, PSID(sid.as_mut_ptr() as *mut _), &mut buf, &mut count)
+    };
     let have: Vec<String> = if st.0 == 0 && !buf.is_null() {
         let items = unsafe { std::slice::from_raw_parts(buf, count as usize) };
         let v = items
@@ -192,26 +220,39 @@ pub fn show(account: &str) -> Result<()> {
             .map(|u| unsafe { std::slice::from_raw_parts(u.Buffer.0, (u.Length / 2) as usize) })
             .map(String::from_utf16_lossy)
             .collect();
-        unsafe { let _ = LsaFreeMemory(Some(buf as *mut _)); }
+        unsafe {
+            let _ = LsaFreeMemory(Some(buf as *mut _));
+        }
         v
     } else {
         Vec::new()
     };
-    unsafe { let _ = LsaClose(h); }
+    unsafe {
+        let _ = LsaClose(h);
+    }
 
     println!("account {account} ({sid_text}):");
     for (r, why) in NEEDED {
         let ok = have.iter().any(|h| h.eq_ignore_ascii_case(r));
         println!("  [{}] {r:<22} {why}", if ok { "x" } else { " " });
     }
-    println!("\nother privileges of this account: {}", if have.is_empty() { "none".into() } else { have.join(", ") });
+    println!(
+        "\nother privileges of this account: {}",
+        if have.is_empty() {
+            "none".into()
+        } else {
+            have.join(", ")
+        }
+    );
     Ok(())
 }
 
 /// Add the account to the built-in group of event log readers.
 /// `Ok(false)` means: was already in it.
 fn add_to_event_log_readers(sid: &mut [u8]) -> Result<bool> {
-    use windows::Win32::NetworkManagement::NetManagement::{NetLocalGroupAddMembers, LOCALGROUP_MEMBERS_INFO_0};
+    use windows::Win32::NetworkManagement::NetManagement::{
+        NetLocalGroupAddMembers, LOCALGROUP_MEMBERS_INFO_0,
+    };
     use windows::Win32::Security::Authorization::ConvertStringSidToSidW;
 
     const ERROR_MEMBER_IN_ALIAS: u32 = 1378;
@@ -220,9 +261,21 @@ fn add_to_event_log_readers(sid: &mut [u8]) -> Result<bool> {
     unsafe { ConvertStringSidToSidW(PCWSTR(s.as_ptr()), &mut group_sid).context("group SID")? };
     let name = crate::rights::group_name_of(group_sid)?;
     let group = wide(&name);
-    let member = LOCALGROUP_MEMBERS_INFO_0 { lgrmi0_sid: PSID(sid.as_mut_ptr() as *mut _) };
-    let rc = unsafe { NetLocalGroupAddMembers(PCWSTR::null(), PCWSTR(group.as_ptr()), 0, &member as *const _ as *const u8, 1) };
-    unsafe { let _ = LocalFree(Some(HLOCAL(group_sid.0 as *mut _))); }
+    let member = LOCALGROUP_MEMBERS_INFO_0 {
+        lgrmi0_sid: PSID(sid.as_mut_ptr() as *mut _),
+    };
+    let rc = unsafe {
+        NetLocalGroupAddMembers(
+            PCWSTR::null(),
+            PCWSTR(group.as_ptr()),
+            0,
+            &member as *const _ as *const u8,
+            1,
+        )
+    };
+    unsafe {
+        let _ = LocalFree(Some(HLOCAL(group_sid.0 as *mut _)));
+    }
     match rc {
         0 => Ok(true),
         ERROR_MEMBER_IN_ALIAS => Ok(false),
@@ -237,7 +290,15 @@ fn group_name_of(sid: PSID) -> Result<String> {
     let mut dom_len = 0u32;
     let mut kind = SID_NAME_USE::default();
     unsafe {
-        let _ = LookupAccountSidW(PCWSTR::null(), sid, None, &mut name_len, None, &mut dom_len, &mut kind);
+        let _ = LookupAccountSidW(
+            PCWSTR::null(),
+            sid,
+            None,
+            &mut name_len,
+            None,
+            &mut dom_len,
+            &mut kind,
+        );
     }
     if name_len == 0 {
         bail!("no group found for the SID");
@@ -280,29 +341,50 @@ fn grant_file(path: &std::path::Path, account: &str, modify: bool) -> Result<()>
     use windows::core::{HSTRING, PWSTR};
     use windows::Win32::Foundation::{LocalFree, HLOCAL};
     use windows::Win32::Security::Authorization::{
-        GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W, GRANT_ACCESS, SE_FILE_OBJECT, TRUSTEE_IS_NAME,
-        TRUSTEE_IS_USER, TRUSTEE_W,
+        GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W,
+        GRANT_ACCESS, SE_FILE_OBJECT, TRUSTEE_IS_NAME, TRUSTEE_IS_USER, TRUSTEE_W,
     };
-    use windows::Win32::Security::{ACL, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, OBJECT_INHERIT_ACE, PSECURITY_DESCRIPTOR};
-    use windows::Win32::Storage::FileSystem::{FILE_GENERIC_EXECUTE, FILE_GENERIC_READ, FILE_GENERIC_WRITE};
+    use windows::Win32::Security::{
+        ACL, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, OBJECT_INHERIT_ACE,
+        PSECURITY_DESCRIPTOR,
+    };
+    use windows::Win32::Storage::FileSystem::{
+        FILE_GENERIC_EXECUTE, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
+    };
 
     let p = HSTRING::from(path.as_os_str());
     let mut old: *mut ACL = std::ptr::null_mut();
     let mut psd = PSECURITY_DESCRIPTOR::default();
-    let rc = unsafe { GetNamedSecurityInfoW(&p, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, None, None, Some(&mut old), None, &mut psd) };
+    let rc = unsafe {
+        GetNamedSecurityInfoW(
+            &p,
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            None,
+            None,
+            Some(&mut old),
+            None,
+            &mut psd,
+        )
+    };
     if rc.is_err() {
         bail!("read permissions of {}: {rc:?}", path.display());
     }
     let mut name: Vec<u16> = account.encode_utf16().chain(std::iter::once(0)).collect();
     let ea = EXPLICIT_ACCESS_W {
         grfAccessPermissions: if modify {
-            FILE_GENERIC_READ.0 | FILE_GENERIC_WRITE.0 | FILE_GENERIC_EXECUTE.0 | 0x0001_0000 /* DELETE */
+            FILE_GENERIC_READ.0 | FILE_GENERIC_WRITE.0 | FILE_GENERIC_EXECUTE.0 | 0x0001_0000
+        /* DELETE */
         } else {
             FILE_GENERIC_READ.0 | FILE_GENERIC_EXECUTE.0
         },
         grfAccessMode: GRANT_ACCESS,
         // Folders inherit onto their contents, files do not.
-        grfInheritance: if modify { OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE } else { windows::Win32::Security::ACE_FLAGS(0) },
+        grfInheritance: if modify {
+            OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE
+        } else {
+            windows::Win32::Security::ACE_FLAGS(0)
+        },
         Trustee: TRUSTEE_W {
             TrusteeForm: TRUSTEE_IS_NAME,
             TrusteeType: TRUSTEE_IS_USER,
@@ -313,10 +395,24 @@ fn grant_file(path: &std::path::Path, account: &str, modify: bool) -> Result<()>
     let mut new: *mut ACL = std::ptr::null_mut();
     let rc = unsafe { SetEntriesInAclW(Some(&[ea]), Some(old), &mut new) };
     if rc.is_err() || new.is_null() {
-        unsafe { if !psd.is_invalid() { let _ = LocalFree(Some(HLOCAL(psd.0))); } }
+        unsafe {
+            if !psd.is_invalid() {
+                let _ = LocalFree(Some(HLOCAL(psd.0)));
+            }
+        }
         bail!("build access list for {account}: {rc:?}");
     }
-    let rc = unsafe { SetNamedSecurityInfoW(&p, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, None, None, Some(new), None) };
+    let rc = unsafe {
+        SetNamedSecurityInfoW(
+            &p,
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            None,
+            None,
+            Some(new),
+            None,
+        )
+    };
     unsafe {
         let _ = LocalFree(Some(HLOCAL(new as *mut _)));
         if !psd.is_invalid() {

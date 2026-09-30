@@ -24,17 +24,29 @@ async fn serve<E: RustEmbed>(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
     let path = if path.is_empty() { "index.html" } else { path };
     match E::get(path) {
-        Some(f) => file(path, f.data.into_owned(), path != "index.html" && path.starts_with("assets/")),
+        Some(f) => file(
+            path,
+            f.data.into_owned(),
+            path != "index.html" && path.starts_with("assets/"),
+        ),
         None => match E::get("index.html") {
             Some(f) => file("index.html", f.data.into_owned(), false),
-            None => (StatusCode::NOT_FOUND, "user interface not embedded (ui-dist missing)").into_response(),
+            None => (
+                StatusCode::NOT_FOUND,
+                "user interface not embedded (ui-dist missing)",
+            )
+                .into_response(),
         },
     }
 }
 
 fn file(path: &str, data: Vec<u8>, immutable: bool) -> Response {
     let mime = mime_guess::from_path(path).first_or_octet_stream();
-    let cache = if immutable { "public, max-age=31536000, immutable" } else { "no-cache" };
+    let cache = if immutable {
+        "public, max-age=31536000, immutable"
+    } else {
+        "no-cache"
+    };
     Response::builder()
         .header(header::CONTENT_TYPE, mime.as_ref())
         .header(header::CACHE_CONTROL, cache)

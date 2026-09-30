@@ -13,10 +13,10 @@ pub trait Sensor: Send {
     async fn run(self: Box<Self>, tx: mpsc::Sender<Event>) -> anyhow::Result<()>;
 }
 
-#[cfg(target_os = "macos")]
-pub mod macos;
 #[cfg(target_os = "linux")]
 pub mod linux;
+#[cfg(target_os = "macos")]
+pub mod macos;
 #[cfg(windows)]
 pub mod windows;
 // Pure conversion of Windows paths and number formats. Not restricted to
@@ -30,9 +30,9 @@ pub mod filter;
 // Reads a log, no system call of any platform: built and tested everywhere,
 // run where the host sensors fill in the command lines it is joined on.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-pub mod hermes;
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub mod guardlog;
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub mod hermes;
 
 /// Blueprint for a sensor: the service restarts it after a failure (say
 /// when eslogger dies, or when disk access only comes through later), hence
@@ -63,7 +63,10 @@ pub enum Watch<'a> {
     ///
     /// An empty list means "no file events at all" — the right state as
     /// long as there is no rule.
-    Folders { paths: &'a [String], taint_ttl: std::time::Duration },
+    Folders {
+        paths: &'a [String],
+        taint_ttl: std::time::Duration,
+    },
 }
 
 /// Set the sensors' filter.
@@ -76,7 +79,9 @@ pub enum Watch<'a> {
 pub fn set_watched(watch: Watch<'_>) {
     match watch {
         Watch::All => filter::set_file_filter(None, filter::DEFAULT_TAINT_TTL),
-        Watch::Folders { paths, taint_ttl } => filter::set_file_filter(Some(paths.to_vec()), taint_ttl),
+        Watch::Folders { paths, taint_ttl } => {
+            filter::set_file_filter(Some(paths.to_vec()), taint_ttl)
+        }
     }
 }
 
@@ -98,24 +103,48 @@ pub fn platform_sensors() -> Vec<SensorSpec> {
     #[cfg(target_os = "macos")]
     {
         vec![
-            SensorSpec { name: "eslogger", make: |_| Box::new(macos::eslogger::EsLogger::default()) },
-            SensorSpec { name: "nettop", make: |s| Box::new(macos::nettop::NetTop::new(s)) },
+            SensorSpec {
+                name: "eslogger",
+                make: |_| Box::new(macos::eslogger::EsLogger::default()),
+            },
+            SensorSpec {
+                name: "nettop",
+                make: |s| Box::new(macos::nettop::NetTop::new(s)),
+            },
         ]
     }
     #[cfg(target_os = "linux")]
     {
         vec![
-            SensorSpec { name: "fanotify", make: |_| Box::new(linux::fanotify::Fanotify::default()) },
-            SensorSpec { name: "procnet", make: |s| Box::new(linux::procnet::ProcNet::new(s)) },
-            SensorSpec { name: "hermes", make: |_| Box::new(hermes::Hermes) },
-            SensorSpec { name: "llm guard", make: |_| Box::new(guardlog::GuardLog) },
-            SensorSpec { name: "open guard", make: |_| Box::new(linux::guard::OpenGuard) },
+            SensorSpec {
+                name: "fanotify",
+                make: |_| Box::new(linux::fanotify::Fanotify::default()),
+            },
+            SensorSpec {
+                name: "procnet",
+                make: |s| Box::new(linux::procnet::ProcNet::new(s)),
+            },
+            SensorSpec {
+                name: "hermes",
+                make: |_| Box::new(hermes::Hermes),
+            },
+            SensorSpec {
+                name: "llm guard",
+                make: |_| Box::new(guardlog::GuardLog),
+            },
+            SensorSpec {
+                name: "open guard",
+                make: |_| Box::new(linux::guard::OpenGuard),
+            },
         ]
     }
     #[cfg(windows)]
     {
         // One session for both providers: file and network events come out
         // of the same stream, in the order in which they happened.
-        vec![SensorSpec { name: "etw", make: |_| Box::new(windows::etw::Etw) }]
+        vec![SensorSpec {
+            name: "etw",
+            make: |_| Box::new(windows::etw::Etw),
+        }]
     }
 }

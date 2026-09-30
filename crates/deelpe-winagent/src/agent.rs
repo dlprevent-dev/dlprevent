@@ -10,9 +10,12 @@ use crate::evtlog::{self, FILE_READ_DATA};
 use anyhow::{Context, Result};
 use chrono::Utc;
 use deelpe_core::access::{AccessMeter, AccessParams, Aggregator, RuleView};
-use deelpe_core::central::{AccessAlert, AgentConfig, AgentStatus, Report, Rule, SensorHealth, ShareInfo, UserRef, API_VERSION};
-use deelpe_core::session::Session;
+use deelpe_core::central::{
+    AccessAlert, AgentConfig, AgentStatus, Report, Rule, SensorHealth, ShareInfo, UserRef,
+    API_VERSION,
+};
 use deelpe_core::rules::rule_matches;
+use deelpe_core::session::Session;
 use std::collections::HashMap;
 use tracing::{info, warn};
 
@@ -21,9 +24,15 @@ const MAX_EVENTS_PER_ROUND: usize = 20_000;
 /// Runs until `stop` goes `true` (service stop) or — with `run` on the
 /// command line — until Ctrl-C.
 pub async fn run(mut stop: tokio::sync::watch::Receiver<bool>) -> Result<()> {
-    let cfg = CentralConfig::load()?.context("not enrolled — run `deelpe-winagent enroll` first")?;
+    let cfg =
+        CentralConfig::load()?.context("not enrolled — run `deelpe-winagent enroll` first")?;
     const UA: &str = concat!("deelpe-winagent/", env!("CARGO_PKG_VERSION"));
-    let mut session = Session::new(cfg.credentials(), crate::config::hostname(), UA, Box::new(cfg.clone()))?;
+    let mut session = Session::new(
+        cfg.credentials(),
+        crate::config::hostname(),
+        UA,
+        Box::new(cfg.clone()),
+    )?;
     let mut st = AgentState::load();
     // Counts the update attempts per checksum; see `update::Updater`.
     let mut updater = crate::update::Updater::default();
@@ -64,7 +73,11 @@ pub async fn run(mut stop: tokio::sync::watch::Receiver<bool>) -> Result<()> {
     let mut alerts: Vec<AccessAlert> = std::mem::take(&mut st.pending_alerts);
     agg.restore_counts(std::mem::take(&mut st.pending_counts));
     if !agg.is_empty() || !alerts.is_empty() {
-        info!(counts = agg.len(), alerts = alerts.len(), "carrying over what the central has not accepted yet");
+        info!(
+            counts = agg.len(),
+            alerts = alerts.len(),
+            "carrying over what the central has not accepted yet"
+        );
     }
     loop {
         // Every round, not only on a new configuration: a folder that was
@@ -72,7 +85,11 @@ pub async fn run(mut stop: tokio::sync::watch::Receiver<bool>) -> Result<()> {
         // armed again until somebody touches a rule.
         arm(&rules, &mut st, &mut not_armed);
 
-        match if configured { evtlog::read_since(st.last_record_id, MAX_EVENTS_PER_ROUND) } else { Ok(Vec::new()) } {
+        match if configured {
+            evtlog::read_since(st.last_record_id, MAX_EVENTS_PER_ROUND)
+        } else {
+            Ok(Vec::new())
+        } {
             Ok(events) => {
                 for e in events {
                     st.last_record_id = st.last_record_id.max(e.record_id);
@@ -108,7 +125,7 @@ pub async fn run(mut stop: tokio::sync::watch::Receiver<bool>) -> Result<()> {
             generation: (!rules.is_empty()).then_some(st.generation),
             status: Some(AgentStatus {
                 version: env!("CARGO_PKG_VERSION").into(),
-                    build: deelpe_core::central::build_fingerprint().into(),
+                build: deelpe_core::central::build_fingerprint().into(),
                 hostname: crate::config::hostname(),
                 fqdn: crate::config::fqdn(),
                 started_at: started,
@@ -135,9 +152,7 @@ pub async fn run(mut stop: tokio::sync::watch::Receiver<bool>) -> Result<()> {
         // Log lines, error counters, the wait time and the renewal of the
         // certificate are the session's business; what stays here is what
         // only this agent knows.
-        let sent = session
-            .send(&mut report)
-            .await;
+        let sent = session.send(&mut report).await;
         match sent {
             Ok(resp) => {
                 // Taken completely apart, without `..`: a new field in the
@@ -207,7 +222,11 @@ pub async fn run(mut stop: tokio::sync::watch::Receiver<bool>) -> Result<()> {
             // ring, and the dashboard would show only a version that changed
             // without explanation. In a product that keeps evidence, exactly
             // that belongs in the central log.
-            let mut last = Report { api_version: Some(API_VERSION), generation: Some(st.generation), ..Default::default() };
+            let mut last = Report {
+                api_version: Some(API_VERSION),
+                generation: Some(st.generation),
+                ..Default::default()
+            };
             if let Err(e) = session.send(&mut last).await {
                 warn!("the last report before the restart did not get through: {e:#}");
             }
@@ -228,7 +247,10 @@ pub async fn run(mut stop: tokio::sync::watch::Receiver<bool>) -> Result<()> {
 }
 
 fn learn_phase(meters: &HashMap<String, AccessMeter>, learn_days: u32) -> String {
-    let p = AccessParams { learn_days, ..Default::default() };
+    let p = AccessParams {
+        learn_days,
+        ..Default::default()
+    };
     let now = Utc::now();
     if meters.is_empty() || meters.values().any(|m| m.is_learning(&p, now)) {
         "learning".into()
@@ -252,11 +274,16 @@ fn apply(c: &AgentConfig, rules: &mut Vec<Rule>, learn_days: &mut u32, st: &mut 
     // security log reports whichever spelling the client opened. Asked once
     // here, never per event.
     add_rule_aliases(rules, crate::config::short_name);
-    info!(generation = c.generation, rules = rules.len(), "configuration applied");
+    info!(
+        generation = c.generation,
+        rules = rules.len(),
+        "configuration applied"
+    );
 
     // Rules that are gone lose their meter.
     let ids: std::collections::HashSet<&str> = rules.iter().map(|r| r.id.as_str()).collect();
-    st.meters.retain(|k, _| ids.contains(k.split('|').next().unwrap_or("")));
+    st.meters
+        .retain(|k, _| ids.contains(k.split('|').next().unwrap_or("")));
 }
 
 /// Add a rule for every other spelling its folder is reachable under.
@@ -275,15 +302,23 @@ fn apply(c: &AgentConfig, rules: &mut Vec<Rule>, learn_days: &mut u32, st: &mut 
 /// `alias` is passed in rather than called here because the answer comes from
 /// Win32 — this half stays pure and gets tested on the machine the agent is
 /// built on.
-fn add_rule_aliases(rules: &mut Vec<Rule>, alias: impl Fn(&std::path::Path) -> Option<std::path::PathBuf>) {
+fn add_rule_aliases(
+    rules: &mut Vec<Rule>,
+    alias: impl Fn(&std::path::Path) -> Option<std::path::PathBuf>,
+) {
     let mut extra: Vec<Rule> = Vec::new();
     for r in rules.iter() {
-        let Some(short) = alias(std::path::Path::new(&r.path)) else { continue };
+        let Some(short) = alias(std::path::Path::new(&r.path)) else {
+            continue;
+        };
         let short = short.to_string_lossy().to_string();
         if short == r.path || rules.iter().chain(extra.iter()).any(|o| o.path == short) {
             continue;
         }
-        extra.push(Rule { path: short, ..r.clone() });
+        extra.push(Rule {
+            path: short,
+            ..r.clone()
+        });
     }
     rules.extend(extra);
 }
@@ -299,27 +334,49 @@ const MAX_PENDING_ALERTS: usize = 2_000;
 fn trim(agg: &mut Aggregator, alerts: &mut Vec<AccessAlert>) {
     let dropped = agg.trim_counts(MAX_PENDING_COUNTS);
     if dropped > 0 {
-        warn!(dropped, "central unreachable for too long, dropping the oldest counts");
+        warn!(
+            dropped,
+            "central unreachable for too long, dropping the oldest counts"
+        );
     }
     if alerts.len() > MAX_PENDING_ALERTS {
         let drop = alerts.len() - MAX_PENDING_ALERTS;
         alerts.drain(..drop);
-        warn!(dropped = drop, "central unreachable for too long, dropping the oldest alerts");
+        warn!(
+            dropped = drop,
+            "central unreachable for too long, dropping the oldest alerts"
+        );
     }
 }
 
 /// Report to the central: one entry per watched folder. Without it the
 /// dashboard shows a green agent while the folders it is supposed to guard
 /// produce no events at all.
-fn sensors(policy: &Option<String>, armed: &[String], not_armed: &HashMap<String, String>) -> Vec<SensorHealth> {
+fn sensors(
+    policy: &Option<String>,
+    armed: &[String],
+    not_armed: &HashMap<String, String>,
+) -> Vec<SensorHealth> {
     let mut out = vec![
-        SensorHealth { name: "security-eventlog".into(), ok: policy.is_none(), error: policy.clone() },
+        SensorHealth {
+            name: "security-eventlog".into(),
+            ok: policy.is_none(),
+            error: policy.clone(),
+        },
         crate::update::readiness(),
     ];
     let mut rest: Vec<SensorHealth> = armed
         .iter()
-        .map(|p| SensorHealth { name: format!("file audit {p}"), ok: true, error: None })
-        .chain(not_armed.iter().map(|(p, e)| SensorHealth { name: format!("file audit {p}"), ok: false, error: Some(e.clone()) }))
+        .map(|p| SensorHealth {
+            name: format!("file audit {p}"),
+            ok: true,
+            error: None,
+        })
+        .chain(not_armed.iter().map(|(p, e)| SensorHealth {
+            name: format!("file audit {p}"),
+            ok: false,
+            error: Some(e.clone()),
+        }))
         .collect();
     rest.sort_by(|a, b| a.name.cmp(&b.name));
     out.extend(rest);
@@ -342,7 +399,9 @@ fn resolve(rule_path: &str, shares: &[ShareInfo]) -> Vec<String> {
     }
     let mut out = Vec::new();
     for s in shares {
-        let Some(root) = s.path.as_deref().map(|p| p.trim_end_matches('\\')) else { continue };
+        let Some(root) = s.path.as_deref().map(|p| p.trim_end_matches('\\')) else {
+            continue;
+        };
         if s.name.eq_ignore_ascii_case(rule_path) {
             out.push(root.to_string());
         } else {
@@ -373,7 +432,10 @@ fn arm(rules: &[Rule], st: &mut AgentState, not_armed: &mut HashMap<String, Stri
     for r in rules.iter() {
         let paths = resolve(&r.path, &shares);
         if paths.is_empty() {
-            bad.insert(r.path.clone(), format!("no folder found for rule \"{}\"", r.path));
+            bad.insert(
+                r.path.clone(),
+                format!("no folder found for rule \"{}\"", r.path),
+            );
             continue;
         }
         for p in paths {
@@ -419,7 +481,10 @@ pub struct Access {
 }
 
 pub fn access_from(e: &evtlog::RawEvent) -> Option<Access> {
-    if e.get("ObjectType").map(|t| !t.eq_ignore_ascii_case("File")).unwrap_or(false) {
+    if e.get("ObjectType")
+        .map(|t| !t.eq_ignore_ascii_case("File"))
+        .unwrap_or(false)
+    {
         return None;
     }
     let mask = evtlog::parse_mask(e.get("AccessMask")?);
@@ -439,11 +504,17 @@ pub fn access_from(e: &evtlog::RawEvent) -> Option<Access> {
     }
     let name = e.get("SubjectUserName")?;
     // Machine accounts and the service itself are not a human being.
-    if name.ends_with('$') || name.eq_ignore_ascii_case("SYSTEM") || name.eq_ignore_ascii_case("ANONYMOUS LOGON") {
+    if name.ends_with('$')
+        || name.eq_ignore_ascii_case("SYSTEM")
+        || name.eq_ignore_ascii_case("ANONYMOUS LOGON")
+    {
         return None;
     }
     let full = match e.event_id {
-        5145 => evtlog::share_path(e.get("ShareLocalPath")?, e.get("RelativeTargetName").unwrap_or("")),
+        5145 => evtlog::share_path(
+            e.get("ShareLocalPath")?,
+            e.get("RelativeTargetName").unwrap_or(""),
+        ),
         4663 => e.get("ObjectName")?.to_string(),
         _ => return None,
     };
@@ -466,8 +537,21 @@ pub fn access_from(e: &evtlog::RawEvent) -> Option<Access> {
     })
 }
 
-fn observe(a: Access, rules: &[Rule], learn_days: u32, meters: &mut HashMap<String, AccessMeter>, agg: &mut Aggregator, alerts: &mut Vec<AccessAlert>) {
-    let Access { path, user, client_ip, read, write } = a;
+fn observe(
+    a: Access,
+    rules: &[Rule],
+    learn_days: u32,
+    meters: &mut HashMap<String, AccessMeter>,
+    agg: &mut Aggregator,
+    alerts: &mut Vec<AccessAlert>,
+) {
+    let Access {
+        path,
+        user,
+        client_ip,
+        read,
+        write,
+    } = a;
     let now = Utc::now();
     // Asked at the first matching rule, not for every event: a `stat` on
     // a file nobody has a rule for is a syscall for nothing.
@@ -477,10 +561,19 @@ fn observe(a: Access, rules: &[Rule], learn_days: u32, meters: &mut HashMap<Stri
         let rule = RuleView {
             id: &r.id,
             path: &r.path,
-            params: AccessParams { hard_max_files: r.hard_max_files.max(1), window_secs: r.window_secs.max(1), learn_days },
+            params: AccessParams {
+                hard_max_files: r.hard_max_files.max(1),
+                window_secs: r.window_secs.max(1),
+                learn_days,
+            },
         };
         let arrived = *arrived.get_or_insert_with(|| {
-            write && deelpe_core::inbound::just_created(std::path::Path::new(&path), std::time::SystemTime::now(), deelpe_core::inbound::FRESH)
+            write
+                && deelpe_core::inbound::just_created(
+                    std::path::Path::new(&path),
+                    std::time::SystemTime::now(),
+                    deelpe_core::inbound::FRESH,
+                )
         });
         if arrived {
             if let Some(alert) = agg.inbound(&rule, &user, &path, client_ip.as_deref(), now) {
@@ -494,10 +587,15 @@ fn observe(a: Access, rules: &[Rule], learn_days: u32, meters: &mut HashMap<Stri
         }
         // One meter per rule: a newly distributed rule gets its own learning
         // phase that way, instead of inheriting the device's.
-        let meter = meters.entry(r.id.clone()).or_insert_with(|| AccessMeter::new(now));
+        let meter = meters
+            .entry(r.id.clone())
+            .or_insert_with(|| AccessMeter::new(now));
         // The file server knows no bytes: the security log says *that*
         // something was read, not how much.
-        let Some(alert) = agg.observe(meter, &rule, &user, &path, 0, client_ip.as_deref(), now) else { continue };
+        let Some(alert) = agg.observe(meter, &rule, &user, &path, 0, client_ip.as_deref(), now)
+        else {
+            continue;
+        };
         let reason = alert.reason.clone().unwrap_or_default();
         if push(alerts, alert) {
             warn!(user = %user.display(), path = %r.path, "mass access: {reason}");
@@ -509,7 +607,10 @@ fn observe(a: Access, rules: &[Rule], learn_days: u32, meters: &mut HashMap<Stri
 /// Returns `true` if this one is the first of its kind in the round — the
 /// log line hangs off that, otherwise every further file writes one.
 fn push(alerts: &mut Vec<AccessAlert>, alert: AccessAlert) -> bool {
-    match alerts.iter_mut().find(|x| x.external_id == alert.external_id) {
+    match alerts
+        .iter_mut()
+        .find(|x| x.external_id == alert.external_id)
+    {
         Some(prev) => {
             *prev = alert;
             false
@@ -526,7 +627,12 @@ mod tests {
     use super::*;
 
     fn share(name: &str, path: &str) -> ShareInfo {
-        ShareInfo { name: name.into(), path: Some(path.into()), remark: None, path_from: Some("enum".into()) }
+        ShareInfo {
+            name: name.into(),
+            path: Some(path.into()),
+            remark: None,
+            path_from: Some("enum".into()),
+        }
     }
 
     #[test]
@@ -535,7 +641,10 @@ mod tests {
         assert!(is_absolute(r"\\srv\daten"));
         assert!(is_absolute("/volume1/daten"));
         assert!(!is_absolute("Finance"));
-        assert_eq!(resolve(r"C:\Freigaben\GL", &[]), vec![r"C:\Freigaben\GL".to_string()]);
+        assert_eq!(
+            resolve(r"C:\Freigaben\GL", &[]),
+            vec![r"C:\Freigaben\GL".to_string()]
+        );
     }
 
     fn raw(mask: &str, path: &str) -> evtlog::RawEvent {
@@ -552,7 +661,11 @@ mod tests {
             data.insert(k.to_string(), v.to_string());
         }
         data.insert("RelativeTargetName".into(), path.into());
-        evtlog::RawEvent { event_id: 5145, record_id: 1, data }
+        evtlog::RawEvent {
+            event_id: 5145,
+            record_id: 1,
+            data,
+        }
     }
 
     /// Until now the agent threw away everything that was not a read — and
@@ -595,16 +708,30 @@ mod tests {
         };
         let mut rules = vec![rule("a", r"C:\Freigaben\GL"), rule("b", r"C:\Kurz")];
         add_rule_aliases(&mut rules, alias);
-        assert_eq!(rules.len(), 3, "nur der lange Name bekommt eine Zweitschreibweise");
-        let short = rules.iter().find(|r| r.path == r"C:\FREIG~1\GL").expect("Alias fehlt");
+        assert_eq!(
+            rules.len(),
+            3,
+            "nur der lange Name bekommt eine Zweitschreibweise"
+        );
+        let short = rules
+            .iter()
+            .find(|r| r.path == r"C:\FREIG~1\GL")
+            .expect("Alias fehlt");
         assert_eq!(short.id, "a", "gleiche Regel, gleicher Zaehler");
         assert_eq!(short.hard_max_files, 100);
         // The short name now matches, and the long one still does.
-        assert!(rules.iter().any(|r| rule_matches(&r.path, r"C:\FREIG~1\GL\zahlen.xlsx")));
-        assert!(rules.iter().any(|r| rule_matches(&r.path, r"C:\Freigaben\GL\zahlen.xlsx")));
+        assert!(rules
+            .iter()
+            .any(|r| rule_matches(&r.path, r"C:\FREIG~1\GL\zahlen.xlsx")));
+        assert!(rules
+            .iter()
+            .any(|r| rule_matches(&r.path, r"C:\Freigaben\GL\zahlen.xlsx")));
         // A single access must not count against both entries, or every
         // threshold would be reached at half the files.
-        let hits = rules.iter().filter(|r| rule_matches(&r.path, r"C:\FREIG~1\GL\zahlen.xlsx")).count();
+        let hits = rules
+            .iter()
+            .filter(|r| rule_matches(&r.path, r"C:\FREIG~1\GL\zahlen.xlsx"))
+            .count();
         assert_eq!(hits, 1, "eine Schreibweise trifft eine Regel");
         // Applied twice — a ruleset arrives on every change — stays the same.
         add_rule_aliases(&mut rules, alias);
@@ -640,32 +767,68 @@ mod tests {
 
         let access = |write: bool, path: &std::path::Path| Access {
             path: path.to_string_lossy().to_string(),
-            user: UserRef { source: "srv".into(), name: "dl-anna".into(), domain: Some("CORP".into()), sid: None },
+            user: UserRef {
+                source: "srv".into(),
+                name: "dl-anna".into(),
+                domain: Some("CORP".into()),
+                sid: None,
+            },
             client_ip: Some("192.0.2.10".into()),
             read: !write,
             write,
         };
 
-        observe(access(true, &file), &rules, 7, &mut meters, &mut agg, &mut alerts);
+        observe(
+            access(true, &file),
+            &rules,
+            7,
+            &mut meters,
+            &mut agg,
+            &mut alerts,
+        );
         assert_eq!(alerts.len(), 1, "{alerts:?}");
         assert_eq!(alerts[0].verdict.label(), "inbound");
         assert_eq!(alerts[0].files, 1);
-        assert_eq!(alerts[0].sample_files, vec![file.to_string_lossy().to_string()]);
+        assert_eq!(
+            alerts[0].sample_files,
+            vec![file.to_string_lossy().to_string()]
+        );
 
         // The same file once more: one alert, still one file.
-        observe(access(true, &file), &rules, 7, &mut meters, &mut agg, &mut alerts);
+        observe(
+            access(true, &file),
+            &rules,
+            7,
+            &mut meters,
+            &mut agg,
+            &mut alerts,
+        );
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].files, 1);
 
         // A second file counts up in the same alert.
         let second = dir.join("noch-eine.xlsx");
         std::fs::write(&second, b"x").unwrap();
-        observe(access(true, &second), &rules, 7, &mut meters, &mut agg, &mut alerts);
+        observe(
+            access(true, &second),
+            &rules,
+            7,
+            &mut meters,
+            &mut agg,
+            &mut alerts,
+        );
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].files, 2);
 
         // Reading produces no arrival — that is the counter's business.
-        observe(access(false, &file), &rules, 7, &mut meters, &mut agg, &mut alerts);
+        observe(
+            access(false, &file),
+            &rules,
+            7,
+            &mut meters,
+            &mut agg,
+            &mut alerts,
+        );
         assert_eq!(alerts.len(), 1);
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -674,8 +837,14 @@ mod tests {
     /// SACL was ever set, so no event ever arrived.
     #[test]
     fn relative_rule_resolves_via_share_table() {
-        let shares = vec![share("Finance", r"C:\Freigaben\Finance"), share("GL", r"C:\Freigaben\GL\")];
-        assert_eq!(resolve("finance", &shares), vec![r"C:\Freigaben\Finance".to_string()]);
+        let shares = vec![
+            share("Finance", r"C:\Freigaben\Finance"),
+            share("GL", r"C:\Freigaben\GL\"),
+        ];
+        assert_eq!(
+            resolve("finance", &shares),
+            vec![r"C:\Freigaben\Finance".to_string()]
+        );
         assert_eq!(resolve("GL", &shares), vec![r"C:\Freigaben\GL".to_string()]);
         assert!(resolve("Personal", &shares).is_empty());
     }

@@ -90,7 +90,11 @@ impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Error::InvalidKey => write!(f, "AbuseIPDB: API key invalid or revoked."),
-            Error::RateLimited(Some(s)) if *s > 0 => write!(f, "AbuseIPDB: daily quota exhausted, resuming in {} min.", s / 60 + 1),
+            Error::RateLimited(Some(s)) if *s > 0 => write!(
+                f,
+                "AbuseIPDB: daily quota exhausted, resuming in {} min.",
+                s / 60 + 1
+            ),
             Error::RateLimited(_) => write!(f, "AbuseIPDB: daily quota exhausted."),
             Error::PrivateAddress => write!(f, "AbuseIPDB: private address."),
             Error::Http(code, m) => write!(f, "AbuseIPDB: HTTP {code} {m}"),
@@ -148,7 +152,12 @@ struct ErrorItem {
 
 /// Evaluates status code and body. Kept apart from `check` so that it can
 /// be checked without a network.
-pub fn parse(status: u16, body: &[u8], retry_after: Option<&str>, now: DateTime<Utc>) -> Result<Reputation, Error> {
+pub fn parse(
+    status: u16,
+    body: &[u8],
+    retry_after: Option<&str>,
+    now: DateTime<Utc>,
+) -> Result<Reputation, Error> {
     match status {
         200 => {
             let env: Envelope = serde_json::from_slice(body).map_err(|_| Error::Malformed)?;
@@ -173,7 +182,11 @@ pub fn parse(status: u16, body: &[u8], retry_after: Option<&str>, now: DateTime<
         422 => Err(Error::PrivateAddress),
         429 => Err(Error::RateLimited(retry_after.and_then(|v| v.parse().ok()))),
         code => {
-            let detail = serde_json::from_slice::<ErrorEnvelope>(body).ok().and_then(|e| e.errors.into_iter().next()).and_then(|e| e.detail).unwrap_or_default();
+            let detail = serde_json::from_slice::<ErrorEnvelope>(body)
+                .ok()
+                .and_then(|e| e.errors.into_iter().next())
+                .and_then(|e| e.detail)
+                .unwrap_or_default();
             Err(Error::Http(code, detail))
         }
     }
@@ -192,8 +205,15 @@ pub async fn check(client: &reqwest::Client, ip: &str, key: &str) -> Result<Repu
         .await
         .map_err(|e| Error::Network(e.to_string()))?;
     let status = resp.status().as_u16();
-    let retry_after = resp.headers().get("retry-after").and_then(|v| v.to_str().ok()).map(str::to_string);
-    let body = resp.bytes().await.map_err(|e| Error::Network(e.to_string()))?;
+    let retry_after = resp
+        .headers()
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let body = resp
+        .bytes()
+        .await
+        .map_err(|e| Error::Network(e.to_string()))?;
     parse(status, &body, retry_after.as_deref(), Utc::now())
 }
 
@@ -260,10 +280,12 @@ fn is_public_v6(a: Ipv6Addr) -> bool {
 // ---------- Cache ----------
 
 pub async fn cached(pool: &PgPool, ips: &[String]) -> Result<Vec<Reputation>> {
-    Ok(sqlx::query_as(sqlx::AssertSqlSafe(format!("SELECT {REPUTATION_COLS} FROM ip_reputations WHERE ip = ANY($1)")))
-        .bind(ips)
-        .fetch_all(pool)
-        .await?)
+    Ok(sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT {REPUTATION_COLS} FROM ip_reputations WHERE ip = ANY($1)"
+    )))
+    .bind(ips)
+    .fetch_all(pool)
+    .await?)
 }
 
 pub async fn store(pool: &PgPool, r: &Reputation) -> Result<()> {
@@ -305,15 +327,22 @@ pub async fn config(pool: &PgPool) -> Result<Option<(String, i64)>> {
     if !db::setting_bool(pool, "abuseipdb_enabled", false).await? {
         return Ok(None);
     }
-    let key = db::setting_str(pool, "abuseipdb_key").await?.unwrap_or_default();
+    let key = db::setting_str(pool, "abuseipdb_key")
+        .await?
+        .unwrap_or_default();
     if key.is_empty() {
         return Ok(None);
     }
-    Ok(Some((key, db::setting_i64(pool, "abuseipdb_daily_limit", 1000).await?)))
+    Ok(Some((
+        key,
+        db::setting_i64(pool, "abuseipdb_daily_limit", 1000).await?,
+    )))
 }
 
 pub fn client() -> Result<reqwest::Client> {
-    Ok(reqwest::Client::builder().timeout(Duration::from_secs(15)).build()?)
+    Ok(reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()?)
 }
 
 // ---------- Worker ----------
@@ -336,7 +365,11 @@ pub async fn run(state: Shared, stop: CancellationToken) -> Result<()> {
     }
 }
 
-async fn sweep(state: &Shared, client: &reqwest::Client, failed: &mut HashMap<String, Instant>) -> Result<()> {
+async fn sweep(
+    state: &Shared,
+    client: &reqwest::Client,
+    failed: &mut HashMap<String, Instant>,
+) -> Result<()> {
     let Some((key, daily_limit)) = config(&state.pool).await? else {
         return Ok(());
     };
@@ -399,7 +432,11 @@ async fn sweep(state: &Shared, client: &reqwest::Client, failed: &mut HashMap<St
 
 /// Public addresses out of the alerts of the last 30 days that are neither
 /// fresh in the cache nor currently on an error pause.
-async fn missing(pool: &PgPool, limit: i64, failed: &HashMap<String, Instant>) -> Result<Vec<String>> {
+async fn missing(
+    pool: &PgPool,
+    limit: i64,
+    failed: &HashMap<String, Instant>,
+) -> Result<Vec<String>> {
     // The column `remote` carries non-addresses too; the filtering
     // therefore happens in Rust, not in SQL. 30 days, because nobody looks
     // at older alerts any more.
@@ -432,7 +469,11 @@ async fn missing(pool: &PgPool, limit: i64, failed: &HashMap<String, Instant>) -
         .fetch_all(pool)
         .await?;
     let fresh: std::collections::HashSet<String> = fresh.into_iter().map(|(ip,)| ip).collect();
-    Ok(ips.into_iter().filter(|ip| !fresh.contains(ip)).take(limit as usize).collect())
+    Ok(ips
+        .into_iter()
+        .filter(|ip| !fresh.contains(ip))
+        .take(limit as usize)
+        .collect())
 }
 
 #[cfg(test)]
@@ -454,9 +495,9 @@ mod tests {
             "192.168.1.1",
             "127.0.0.1",
             "169.254.1.1",
-            "100.64.0.1",   // CGNAT
-            "198.18.0.1",   // Benchmark
-            "192.0.2.7",    // TEST-NET-1
+            "100.64.0.1", // CGNAT
+            "198.18.0.1", // Benchmark
+            "192.0.2.7",  // TEST-NET-1
             "0.0.0.0",
             "224.0.0.1",
             "240.0.0.1",
@@ -494,16 +535,38 @@ mod tests {
         assert_eq!(r.checked_at, now);
 
         assert_eq!(parse(401, b"", None, now).unwrap_err(), Error::InvalidKey);
-        assert_eq!(parse(422, b"", None, now).unwrap_err(), Error::PrivateAddress);
-        assert_eq!(parse(429, b"", Some("120"), now).unwrap_err(), Error::RateLimited(Some(120)));
-        assert_eq!(parse(429, b"", None, now).unwrap_err(), Error::RateLimited(None));
-        assert_eq!(parse(200, b"nonsense", None, now).unwrap_err(), Error::Malformed);
         assert_eq!(
-            parse(503, br#"{"errors":[{"detail":"Service unavailable"}]}"#, None, now).unwrap_err(),
+            parse(422, b"", None, now).unwrap_err(),
+            Error::PrivateAddress
+        );
+        assert_eq!(
+            parse(429, b"", Some("120"), now).unwrap_err(),
+            Error::RateLimited(Some(120))
+        );
+        assert_eq!(
+            parse(429, b"", None, now).unwrap_err(),
+            Error::RateLimited(None)
+        );
+        assert_eq!(
+            parse(200, b"nonsense", None, now).unwrap_err(),
+            Error::Malformed
+        );
+        assert_eq!(
+            parse(
+                503,
+                br#"{"errors":[{"detail":"Service unavailable"}]}"#,
+                None,
+                now
+            )
+            .unwrap_err(),
             Error::Http(503, "Service unavailable".into())
         );
         // A private address despite 200: AbuseIPDB reports it as `isPublic: false`.
-        let private = br#"{"data":{"ipAddress":"10.0.0.1","isPublic":false,"abuseConfidenceScore":0}}"#;
-        assert_eq!(parse(200, private, None, now).unwrap_err(), Error::PrivateAddress);
+        let private =
+            br#"{"data":{"ipAddress":"10.0.0.1","isPublic":false,"abuseConfidenceScore":0}}"#;
+        assert_eq!(
+            parse(200, private, None, now).unwrap_err(),
+            Error::PrivateAddress
+        );
     }
 }

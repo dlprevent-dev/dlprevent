@@ -83,12 +83,19 @@ pub fn endpoint_rule_path(rule_path: &str, server: Option<(&str, &[ShareInfo])>)
         // The rest is cut out of the original so it keeps its spelling. By
         // folder, not by byte: `norm` keeps the number of components but not
         // their length (case, Unicode form, a Windows trailing dot).
-        let rest: String = rule_path.split(['/', '\\']).skip(local.split('/').count()).map(|c| format!("\\{c}")).collect();
+        let rest: String = rule_path
+            .split(['/', '\\'])
+            .skip(local.split('/').count())
+            .map(|c| format!("\\{c}"))
+            .collect();
         return Some(format!("\\\\{name}\\{}{}", s.name, rest));
     }
     // Share name instead of path: `GL` means the share `GL`.
     if !is_absolute(&r) {
-        if let Some(s) = shares.iter().find(|s| s.name.eq_ignore_ascii_case(rule_path)) {
+        if let Some(s) = shares
+            .iter()
+            .find(|s| s.name.eq_ignore_ascii_case(rule_path))
+        {
             return Some(format!("\\\\{name}\\{}", s.name));
         }
     }
@@ -100,7 +107,12 @@ mod tests {
     use super::*;
 
     fn share(name: &str, path: Option<&str>) -> ShareInfo {
-        ShareInfo { name: name.into(), path: path.map(str::to_string), remark: None, path_from: None }
+        ShareInfo {
+            name: name.into(),
+            path: path.map(str::to_string),
+            remark: None,
+            path_from: None,
+        }
     }
 
     fn dc() -> Vec<ShareInfo> {
@@ -117,19 +129,32 @@ mod tests {
     fn a_file_server_rule_becomes_a_unc_path_for_the_endpoint() {
         let s = dc();
         let sv = Some(("FS-01", &s[..]));
-        assert_eq!(endpoint_rule_path(r"C:\Freigaben\GL", sv).unwrap(), r"\\FS-01\GL");
+        assert_eq!(
+            endpoint_rule_path(r"C:\Freigaben\GL", sv).unwrap(),
+            r"\\FS-01\GL"
+        );
         // The subfolder is kept, with its spelling.
-        assert_eq!(endpoint_rule_path(r"C:\Freigaben\GL\Vertraege\2026", sv).unwrap(), r"\\FS-01\Vertraege\2026");
+        assert_eq!(
+            endpoint_rule_path(r"C:\Freigaben\GL\Vertraege\2026", sv).unwrap(),
+            r"\\FS-01\Vertraege\2026"
+        );
         // Share name instead of path.
         assert_eq!(endpoint_rule_path("GL", sv).unwrap(), r"\\FS-01\GL");
-        assert_eq!(endpoint_rule_path("gl", sv).unwrap(), r"\\FS-01\GL", "Freigaben schreibt jeder anders");
+        assert_eq!(
+            endpoint_rule_path("gl", sv).unwrap(),
+            r"\\FS-01\GL",
+            "Freigaben schreibt jeder anders"
+        );
     }
 
     #[test]
     fn the_deeper_share_wins() {
         let s = dc();
         // Without "longest path first" this ended up under the share GL.
-        assert_eq!(endpoint_rule_path(r"C:\Freigaben\GL\Vertraege", Some(("SRV", &s[..]))).unwrap(), r"\\SRV\Vertraege");
+        assert_eq!(
+            endpoint_rule_path(r"C:\Freigaben\GL\Vertraege", Some(("SRV", &s[..]))).unwrap(),
+            r"\\SRV\Vertraege"
+        );
     }
 
     /// `norm` folds a name into one Unicode form and drops a Windows trailing
@@ -138,11 +163,23 @@ mod tests {
     /// decomposed name ends up glued to the share.
     #[test]
     fn the_subfolder_is_cut_off_by_folder_not_by_byte() {
-        let s = [share("Uebersicht", Some("C:\\Freigaben\\U\u{308}bersicht")), share("GL", Some(r"C:\Freigaben\GL"))];
+        let s = [
+            share("Uebersicht", Some("C:\\Freigaben\\U\u{308}bersicht")),
+            share("GL", Some(r"C:\Freigaben\GL")),
+        ];
         let sv = Some(("SRV", &s[..]));
-        assert_eq!(endpoint_rule_path("C:\\Freigaben\\U\u{308}bersicht\\2026", sv).unwrap(), r"\\SRV\Uebersicht\2026");
-        assert_eq!(endpoint_rule_path(r"C:\Freigaben\GL.\Vertraege", sv).unwrap(), r"\\SRV\GL\Vertraege");
-        assert_eq!(endpoint_rule_path("C:\\Freigaben\\GL\\", sv).unwrap(), r"\\SRV\GL\");
+        assert_eq!(
+            endpoint_rule_path("C:\\Freigaben\\U\u{308}bersicht\\2026", sv).unwrap(),
+            r"\\SRV\Uebersicht\2026"
+        );
+        assert_eq!(
+            endpoint_rule_path(r"C:\Freigaben\GL.\Vertraege", sv).unwrap(),
+            r"\\SRV\GL\Vertraege"
+        );
+        assert_eq!(
+            endpoint_rule_path("C:\\Freigaben\\GL\\", sv).unwrap(),
+            r"\\SRV\GL\"
+        );
     }
 
     #[test]
@@ -155,16 +192,28 @@ mod tests {
         // A share without a known path is only good as a name.
         assert_eq!(endpoint_rule_path("Ohne", sv).unwrap(), r"\\SRV\Ohne");
         assert_eq!(endpoint_rule_path("", sv), None);
-        assert_eq!(endpoint_rule_path(r"C:\Freigaben\GL", Some(("", &s[..]))), None);
+        assert_eq!(
+            endpoint_rule_path(r"C:\Freigaben\GL", Some(("", &s[..]))),
+            None
+        );
     }
 
     #[test]
     fn rules_without_a_file_server_stay_as_they_are() {
         // A folder on the workstation itself: pass it through unchanged.
-        assert_eq!(endpoint_rule_path(r"C:\Users\Public", None).unwrap(), r"C:\Users\Public");
-        assert_eq!(endpoint_rule_path("/Users/eva/Steuern", None).unwrap(), "/Users/eva/Steuern");
+        assert_eq!(
+            endpoint_rule_path(r"C:\Users\Public", None).unwrap(),
+            r"C:\Users\Public"
+        );
+        assert_eq!(
+            endpoint_rule_path("/Users/eva/Steuern", None).unwrap(),
+            "/Users/eva/Steuern"
+        );
         // Already UNC: nothing to translate, not even with a share table.
-        assert_eq!(endpoint_rule_path(r"\\srv01\GL", None).unwrap(), r"\\srv01\GL");
+        assert_eq!(
+            endpoint_rule_path(r"\\srv01\GL", None).unwrap(),
+            r"\\srv01\GL"
+        );
         // A share name without a server cannot be resolved at the endpoint.
         assert_eq!(endpoint_rule_path("GL", None), None);
     }

@@ -119,7 +119,14 @@ pub struct AppState {
 pub const ALERT_RETAIN_MAX_DAYS: i64 = 3650;
 
 impl AppState {
-    pub fn new(pool: PgPool, pki: Arc<Pki>, ui_https: bool, agent_port: u16, trust_proxy: bool, data_dir: std::path::PathBuf) -> Self {
+    pub fn new(
+        pool: PgPool,
+        pki: Arc<Pki>,
+        ui_https: bool,
+        agent_port: u16,
+        trust_proxy: bool,
+        data_dir: std::path::PathBuf,
+    ) -> Self {
         Self {
             pool,
             pki,
@@ -266,7 +273,10 @@ pub fn client_ip(peer: SocketAddr, forwarded: Option<&str>, trust_proxy: bool) -
             if let Ok(sa) = first.parse::<SocketAddr>() {
                 return sa.ip();
             }
-            if let Ok(ip) = first.trim_matches(|c| c == '[' || c == ']').parse::<IpAddr>() {
+            if let Ok(ip) = first
+                .trim_matches(|c| c == '[' || c == ']')
+                .parse::<IpAddr>()
+            {
                 return ip;
             }
         }
@@ -279,8 +289,14 @@ pub fn client_ip(peer: SocketAddr, forwarded: Option<&str>, trust_proxy: bool) -
 /// then `X-Forwarded-Host` counts — only with `trust_proxy`, otherwise every
 /// check on it could be dodged with a header from the network.
 pub fn public_host(headers: &HeaderMap, trust_proxy: bool) -> Option<&str> {
-    let h = |n| headers.get(n).and_then(|v: &axum::http::HeaderValue| v.to_str().ok());
-    h("x-forwarded-host").filter(|_| trust_proxy).or_else(|| h("host"))
+    let h = |n| {
+        headers
+            .get(n)
+            .and_then(|v: &axum::http::HeaderValue| v.to_str().ok())
+    };
+    h("x-forwarded-host")
+        .filter(|_| trust_proxy)
+        .or_else(|| h("host"))
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -296,10 +312,23 @@ mod tests {
 
     #[test]
     fn forwarded_header_needs_trust() {
-        assert_eq!(client_ip(peer(), Some("1.2.3.4"), false), peer().ip(), "ohne trust_proxy zählt die Verbindung");
-        assert_eq!(client_ip(peer(), Some("1.2.3.4, 10.0.0.1"), true).to_string(), "1.2.3.4");
-        assert_eq!(client_ip(peer(), Some("[2001:db8::1]:443"), true).to_string(), "2001:db8::1");
-        assert_eq!(client_ip(peer(), Some("2001:db8::1"), true).to_string(), "2001:db8::1");
+        assert_eq!(
+            client_ip(peer(), Some("1.2.3.4"), false),
+            peer().ip(),
+            "ohne trust_proxy zählt die Verbindung"
+        );
+        assert_eq!(
+            client_ip(peer(), Some("1.2.3.4, 10.0.0.1"), true).to_string(),
+            "1.2.3.4"
+        );
+        assert_eq!(
+            client_ip(peer(), Some("[2001:db8::1]:443"), true).to_string(),
+            "2001:db8::1"
+        );
+        assert_eq!(
+            client_ip(peer(), Some("2001:db8::1"), true).to_string(),
+            "2001:db8::1"
+        );
         assert_eq!(client_ip(peer(), Some("kaputt"), true), peer().ip());
         assert_eq!(client_ip(peer(), None, true), peer().ip());
     }
@@ -308,9 +337,17 @@ mod tests {
     fn forwarded_host_needs_trust() {
         let mut h = HeaderMap::new();
         h.insert("host", "zentrale.intern:8443".parse().unwrap());
-        assert_eq!(public_host(&h, true), Some("zentrale.intern:8443"), "ohne Proxy-Kopf bleibt es beim Host");
+        assert_eq!(
+            public_host(&h, true),
+            Some("zentrale.intern:8443"),
+            "ohne Proxy-Kopf bleibt es beim Host"
+        );
         h.insert("x-forwarded-host", "dlp.firma.ch".parse().unwrap());
-        assert_eq!(public_host(&h, false), Some("zentrale.intern:8443"), "ohne trust_proxy zählt der Kopf nicht");
+        assert_eq!(
+            public_host(&h, false),
+            Some("zentrale.intern:8443"),
+            "ohne trust_proxy zählt der Kopf nicht"
+        );
         assert_eq!(public_host(&h, true), Some("dlp.firma.ch"));
     }
 }

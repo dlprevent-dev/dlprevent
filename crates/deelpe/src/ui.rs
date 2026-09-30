@@ -1,7 +1,7 @@
 //! Colored tables for the CLI.
 
-use deelpe::ipc::Response;
 use comfy_table::{presets::UTF8_FULL_CONDENSED, Cell, Color, Table};
+use deelpe::ipc::Response;
 use deelpe_core::correlate::{Alert, Target};
 use deelpe_core::learn::{LearnStatus, PairState, Phase, Verdict};
 use owo_colors::OwoColorize;
@@ -78,10 +78,27 @@ fn print_alerts(al: &[Alert]) {
             Cell::new(a.id),
             Cell::new(a.at.with_timezone(&chrono::Local).format("%d %b %H:%M:%S")),
             Cell::new(verdict_text(a.verdict)).fg(verdict_color(a.verdict)),
-            Cell::new(a.identity.short()).fg(if a.identity.is_trusted_form() { Color::Reset } else { Color::Red }),
-            Cell::new(a.files.first().map(|f| f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()).unwrap_or_default()),
+            Cell::new(a.identity.short()).fg(if a.identity.is_trusted_form() {
+                Color::Reset
+            } else {
+                Color::Red
+            }),
+            Cell::new(
+                a.files
+                    .first()
+                    .map(|f| {
+                        f.file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_default()
+                    })
+                    .unwrap_or_default(),
+            ),
             Cell::new(target_text(a)),
-            Cell::new(match a.target() { Target::Net { bytes, .. } => human_bytes(bytes), _ => "–".to_string() }).fg(Color::Yellow),
+            Cell::new(match a.target() {
+                Target::Net { bytes, .. } => human_bytes(bytes),
+                _ => "–".to_string(),
+            })
+            .fg(Color::Yellow),
         ]);
     }
     println!("{t}");
@@ -89,13 +106,27 @@ fn print_alerts(al: &[Alert]) {
 
 fn print_alert(a: &Alert) {
     println!("{} #{}", "Alert".red().bold(), a.id);
-    println!("  time      {}", a.at.with_timezone(&chrono::Local).format("%d %b %Y %H:%M:%S"));
+    println!(
+        "  time      {}",
+        a.at.with_timezone(&chrono::Local)
+            .format("%d %b %Y %H:%M:%S")
+    );
     println!("  process   {} (pid {})", a.identity, a.pid);
-    println!("  verdict   {}{}", verdict_text(a.verdict), a.reason.as_deref().map(|r| format!(": {r}")).unwrap_or_default());
+    println!(
+        "  verdict   {}{}",
+        verdict_text(a.verdict),
+        a.reason
+            .as_deref()
+            .map(|r| format!(": {r}"))
+            .unwrap_or_default()
+    );
     println!("  target    {}", target_text(a));
     println!("  sent      {}", human_bytes(a.bytes_out).yellow());
     if let Some(l) = a.last_at {
-        println!("  until     {} (total since the first report)", l.with_timezone(&chrono::Local).format("%d %b %Y %H:%M:%S"));
+        println!(
+            "  until     {} (total since the first report)",
+            l.with_timezone(&chrono::Local).format("%d %b %Y %H:%M:%S")
+        );
     }
     if let Some(v) = &a.via {
         println!("  via       {v}");
@@ -142,12 +173,19 @@ fn verdict_color(v: Verdict) -> Color {
 fn print_learn(st: &LearnStatus) {
     let phase = match st.phase {
         Phase::Learning => "learning phase".yellow().to_string(),
-        Phase::Review => "review: check the list, then `deelpe learn confirm`".red().to_string(),
-        Phase::Active => "active: only new and deviating traffic is reported".green().to_string(),
+        Phase::Review => "review: check the list, then `deelpe learn confirm`"
+            .red()
+            .to_string(),
+        Phase::Active => "active: only new and deviating traffic is reported"
+            .green()
+            .to_string(),
     };
     println!("{phase}");
     if let Some(u) = st.until {
-        println!("  learning phase until {}", u.with_timezone(&chrono::Local).format("%d %b %Y %H:%M"));
+        println!(
+            "  learning phase until {}",
+            u.with_timezone(&chrono::Local).format("%d %b %Y %H:%M")
+        );
     }
     if st.pairs.is_empty() {
         println!("  No pairs.");
@@ -168,7 +206,11 @@ fn print_learn(st: &LearnStatus) {
             Cell::new(format!("{}:{}", p.destination, p.port.unwrap_or(0))),
             Cell::new(p.count),
             Cell::new(human_bytes(p.bytes_max)),
-            Cell::new(p.last_seen.with_timezone(&chrono::Local).format("%d %b %H:%M")),
+            Cell::new(
+                p.last_seen
+                    .with_timezone(&chrono::Local)
+                    .format("%d %b %H:%M"),
+            ),
             Cell::new(&p.key).fg(Color::DarkGrey),
         ]);
     }
@@ -179,5 +221,9 @@ pub use deelpe_core::learn::human_bytes;
 
 fn human_secs(s: u64) -> String {
     let (h, m) = (s / 3600, (s % 3600) / 60);
-    if h > 0 { format!("{h}h {m}m") } else { format!("{m}m {}s", s % 60) }
+    if h > 0 {
+        format!("{h}h {m}m")
+    } else {
+        format!("{m}m {}s", s % 60)
+    }
 }

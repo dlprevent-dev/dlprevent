@@ -36,7 +36,11 @@ pub(super) struct IpsQuery {
 /// a time and can load more; twice that is enough with room to spare.
 const MAX_IPS: usize = 500;
 
-pub(super) async fn reputation(State(st): State<Shared>, _u: User, Query(q): Query<IpsQuery>) -> R<ReputationView> {
+pub(super) async fn reputation(
+    State(st): State<Shared>,
+    _u: User,
+    Query(q): Query<IpsQuery>,
+) -> R<ReputationView> {
     let ips: Vec<String> = q
         .ips
         .unwrap_or_default()
@@ -45,8 +49,14 @@ pub(super) async fn reputation(State(st): State<Shared>, _u: User, Query(q): Que
         .map(|ip| ip.to_string())
         .take(MAX_IPS)
         .collect();
-    let items = if ips.is_empty() { Vec::new() } else { abuseipdb::cached(&st.pool, &ips).await? };
-    let (cached,): (i64,) = sqlx::query_as("SELECT count(*) FROM ip_reputations").fetch_one(&st.pool).await?;
+    let items = if ips.is_empty() {
+        Vec::new()
+    } else {
+        abuseipdb::cached(&st.pool, &ips).await?
+    };
+    let (cached,): (i64,) = sqlx::query_as("SELECT count(*) FROM ip_reputations")
+        .fetch_one(&st.pool)
+        .await?;
     let status = st.abuse.lock().unwrap().clone();
     Ok(Json(ReputationView {
         active: abuseipdb::config(&st.pool).await?.is_some(),
@@ -63,12 +73,18 @@ pub(super) async fn reputation(State(st): State<Shared>, _u: User, Query(q): Que
 /// „Check again“: asks right away, without waiting for the worker. Counts
 /// against the same daily budget, so that a twitchy finger cannot trip the
 /// lockout.
-pub(super) async fn refresh(State(st): State<Shared>, Admin(user): Admin, Path(ip): Path<String>) -> R<Reputation> {
+pub(super) async fn refresh(
+    State(st): State<Shared>,
+    Admin(user): Admin,
+    Path(ip): Path<String>,
+) -> R<Reputation> {
     let Some(addr) = abuseipdb::ip_of(&ip) else {
         return Err(bad("not an IP address"));
     };
     if !abuseipdb::is_public(addr) {
-        return Err(bad("private or reserved address, AbuseIPDB does not know it"));
+        return Err(bad(
+            "private or reserved address, AbuseIPDB does not know it",
+        ));
     }
     let Some((key, daily_limit)) = abuseipdb::config(&st.pool).await? else {
         return Err(bad("AbuseIPDB is off or has no API key (Settings)"));
@@ -76,12 +92,16 @@ pub(super) async fn refresh(State(st): State<Shared>, Admin(user): Admin, Path(i
     if abuseipdb::lookups_today(&st.pool).await? >= daily_limit {
         return Err(bad("daily lookup budget spent, try again tomorrow"));
     }
-    let r = abuseipdb::check(&abuseipdb::client().map_err(|e| bad(&e.to_string()))?, &addr.to_string(), &key)
-        .await
-        .map_err(|e| {
-            st.abuse.lock().unwrap().last_error = Some(e.to_string());
-            bad(&e.to_string())
-        })?;
+    let r = abuseipdb::check(
+        &abuseipdb::client().map_err(|e| bad(&e.to_string()))?,
+        &addr.to_string(),
+        &key,
+    )
+    .await
+    .map_err(|e| {
+        st.abuse.lock().unwrap().last_error = Some(e.to_string());
+        bad(&e.to_string())
+    })?;
     abuseipdb::store(&st.pool, &r).await?;
     {
         let mut s = st.abuse.lock().unwrap();
@@ -89,6 +109,12 @@ pub(super) async fn refresh(State(st): State<Shared>, Admin(user): Admin, Path(i
         s.last_error = None;
         s.paused_until = None;
     }
-    db::audit(&st.pool, (&user).into(), "reputation_refresh", json!({ "ip": r.ip, "score": r.score })).await;
+    db::audit(
+        &st.pool,
+        (&user).into(),
+        "reputation_refresh",
+        json!({ "ip": r.ip, "score": r.score }),
+    )
+    .await;
     Ok(Json(r))
 }

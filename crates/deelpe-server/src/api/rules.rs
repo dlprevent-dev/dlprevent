@@ -68,8 +68,18 @@ impl RuleBody {
         if !(10..=3600).contains(&self.window_secs) {
             return Err(bad("window: 10 to 3600 seconds"));
         }
-        self.allowed_groups = self.allowed_groups.iter().map(|g| g.trim().to_string()).filter(|g| !g.is_empty()).collect();
-        self.allow_destinations = self.allow_destinations.iter().map(|d| d.trim().to_string()).filter(|d| !d.is_empty()).collect();
+        self.allowed_groups = self
+            .allowed_groups
+            .iter()
+            .map(|g| g.trim().to_string())
+            .filter(|g| !g.is_empty())
+            .collect();
+        self.allow_destinations = self
+            .allow_destinations
+            .iter()
+            .map(|d| d.trim().to_string())
+            .filter(|d| !d.is_empty())
+            .collect();
         for d in &self.allow_destinations {
             deelpe_core::allow::validate(d).map_err(bad)?;
         }
@@ -87,7 +97,11 @@ pub(super) async fn rules(State(st): State<Shared>, _u: Admin) -> R<Vec<RuleRow>
     Ok(Json(db::all_rules(&st.pool).await?))
 }
 
-pub(super) async fn create_rule(State(st): State<Shared>, Admin(user): Admin, Json(mut b): Json<RuleBody>) -> R<RuleRow> {
+pub(super) async fn create_rule(
+    State(st): State<Shared>,
+    Admin(user): Admin,
+    Json(mut b): Json<RuleBody>,
+) -> R<RuleRow> {
     b.validate()?;
     let row: RuleRow = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "INSERT INTO rules (name, path, scope, agent_id, source_id, allowed_groups, lockdown, strict, allow_destinations, enforce, hard_max_files, window_secs, ad_lock, enabled) \
@@ -110,11 +124,22 @@ pub(super) async fn create_rule(State(st): State<Shared>, Admin(user): Admin, Js
     .fetch_one(&st.pool)
     .await?;
     db::bump_generation(&st.pool).await?;
-    db::audit(&st.pool, (&user).into(), "rule_create", serde_json::to_value(&row).unwrap_or_default()).await;
+    db::audit(
+        &st.pool,
+        (&user).into(),
+        "rule_create",
+        serde_json::to_value(&row).unwrap_or_default(),
+    )
+    .await;
     Ok(Json(row))
 }
 
-pub(super) async fn update_rule(State(st): State<Shared>, Admin(user): Admin, Path(id): Path<Uuid>, Json(mut b): Json<RuleBody>) -> R<RuleRow> {
+pub(super) async fn update_rule(
+    State(st): State<Shared>,
+    Admin(user): Admin,
+    Path(id): Path<Uuid>,
+    Json(mut b): Json<RuleBody>,
+) -> R<RuleRow> {
     b.validate()?;
     let row: Option<RuleRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "UPDATE rules SET name = $2, path = $3, scope = $4, agent_id = $5, source_id = $6, allowed_groups = $7, lockdown = $8, strict = $9, allow_destinations = $10, enforce = $11, hard_max_files = $12, window_secs = $13, ad_lock = $14, enabled = $15, updated_at = now() \
@@ -139,12 +164,26 @@ pub(super) async fn update_rule(State(st): State<Shared>, Admin(user): Admin, Pa
     .await?;
     let row = row.ok_or_else(not_found)?;
     db::bump_generation(&st.pool).await?;
-    db::audit(&st.pool, (&user).into(), "rule_update", serde_json::to_value(&row).unwrap_or_default()).await;
+    db::audit(
+        &st.pool,
+        (&user).into(),
+        "rule_update",
+        serde_json::to_value(&row).unwrap_or_default(),
+    )
+    .await;
     Ok(Json(row))
 }
 
-pub(super) async fn delete_rule(State(st): State<Shared>, Admin(user): Admin, Path(id): Path<Uuid>) -> Result<StatusCode, ApiError> {
-    let n = sqlx::query("DELETE FROM rules WHERE id = $1").bind(id).execute(&st.pool).await?.rows_affected();
+pub(super) async fn delete_rule(
+    State(st): State<Shared>,
+    Admin(user): Admin,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    let n = sqlx::query("DELETE FROM rules WHERE id = $1")
+        .bind(id)
+        .execute(&st.pool)
+        .await?
+        .rows_affected();
     if n == 0 {
         return Err(not_found());
     }

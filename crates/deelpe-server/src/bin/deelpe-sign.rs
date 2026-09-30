@@ -49,11 +49,17 @@ fn main() -> ExitCode {
         Some("pubkey") if args.len() == 3 => pubkey(&args[2]),
         _ => {
             eprintln!("deelpe-sign keygen <key-file>");
-            eprintln!("deelpe-sign sign <key-file> <file> <version>   writes <file>.sig next to it");
+            eprintln!(
+                "deelpe-sign sign <key-file> <file> <version>   writes <file>.sig next to it"
+            );
             eprintln!("deelpe-sign pubkey <key-file>                   prints the public key");
             eprintln!();
-            eprintln!("The public key goes into the central server (Settings, Interfaces), or into");
-            eprintln!("the build as DEELPE_UPDATE_PUBKEY. The private key stays with whoever releases.");
+            eprintln!(
+                "The public key goes into the central server (Settings, Interfaces), or into"
+            );
+            eprintln!(
+                "the build as DEELPE_UPDATE_PUBKEY. The private key stays with whoever releases."
+            );
             ExitCode::FAILURE
         }
     }
@@ -113,18 +119,26 @@ fn load(key_path: &str) -> Option<Ed25519KeyPair> {
 }
 
 fn pubkey(key_path: &str) -> ExitCode {
-    let Some(kp) = load(key_path) else { return ExitCode::FAILURE };
+    let Some(kp) = load(key_path) else {
+        return ExitCode::FAILURE;
+    };
     println!("{}", b64(kp.public_key().as_ref()));
     ExitCode::SUCCESS
 }
 
 fn sign(key_path: &str, file: &str, version: &str) -> ExitCode {
     let version = version.strip_prefix('v').unwrap_or(version);
-    if version.is_empty() || !version.split('.').all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())) {
+    if version.is_empty()
+        || !version
+            .split('.')
+            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+    {
         eprintln!("{version:?} is not a version (digits and dots, e.g. 0.1.8)");
         return ExitCode::FAILURE;
     }
-    let Some(kp) = load(key_path) else { return ExitCode::FAILURE };
+    let Some(kp) = load(key_path) else {
+        return ExitCode::FAILURE;
+    };
     let bytes = match std::fs::read(file) {
         Ok(b) => b,
         Err(e) => {
@@ -132,15 +146,28 @@ fn sign(key_path: &str, file: &str, version: &str) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let Some(name) = std::path::Path::new(file).file_name().and_then(|n| n.to_str()) else {
+    let Some(name) = std::path::Path::new(file)
+        .file_name()
+        .and_then(|n| n.to_str())
+    else {
         eprintln!("{file}: no file name");
         return ExitCode::FAILURE;
     };
-    let sha: String = ring::digest::digest(&ring::digest::SHA256, &bytes).as_ref().iter().map(|b| format!("{b:02x}")).collect();
+    let sha: String = ring::digest::digest(&ring::digest::SHA256, &bytes)
+        .as_ref()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
     // Must stay byte for byte what `release::statement` builds.
     let statement = format!("deelpe-release-v1\nfile: {name}\nversion: {version}\nsha256: {sha}\n");
     let out = format!("{file}.sig");
-    if let Err(e) = std::fs::write(&out, format!("{statement}sig: {}\n", b64(kp.sign(statement.as_bytes()).as_ref()))) {
+    if let Err(e) = std::fs::write(
+        &out,
+        format!(
+            "{statement}sig: {}\n",
+            b64(kp.sign(statement.as_bytes()).as_ref())
+        ),
+    ) {
         eprintln!("{out}: {e}");
         return ExitCode::FAILURE;
     }

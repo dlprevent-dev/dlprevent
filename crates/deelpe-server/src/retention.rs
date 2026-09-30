@@ -31,7 +31,10 @@ async fn sweep(p: &sqlx::PgPool) -> Result<()> {
     // weeks are enough, and without a limit, at 200 lines per report, it
     // fills the disk faster than anything else.
     let log_days = db::setting_i64(p, "log_retain_days", 14).await?;
-    let sessions = sqlx::query("DELETE FROM sessions WHERE expires_at < now()").execute(p).await?.rows_affected();
+    let sessions = sqlx::query("DELETE FROM sessions WHERE expires_at < now()")
+        .execute(p)
+        .await?
+        .rows_affected();
     // Never used: a week after expiry. Used: kept a month for the record,
     // counted from when it stopped working — the last enrollment or the
     // expiry, whichever came first. LEAST skips the NULL of a token that is
@@ -45,19 +48,35 @@ async fn sweep(p: &sqlx::PgPool) -> Result<()> {
         .rows_affected();
     // Under legal hold: kept, however old.
     let alerts = sqlx::query("DELETE FROM alerts WHERE NOT legal_hold AND COALESCE(last_at, at) < now() - ($1::bigint * interval '1 day')").bind(alert_days).execute(p).await?.rows_affected();
-    let counts = sqlx::query("DELETE FROM access_counts WHERE bucket < now() - ($1::bigint * interval '1 day')").bind(count_days).execute(p).await?.rows_affected();
-    let log = sqlx::query("DELETE FROM agent_log WHERE at < now() - ($1::bigint * interval '1 day')").bind(log_days).execute(p).await?.rows_affected();
+    let counts = sqlx::query(
+        "DELETE FROM access_counts WHERE bucket < now() - ($1::bigint * interval '1 day')",
+    )
+    .bind(count_days)
+    .execute(p)
+    .await?
+    .rows_affected();
+    let log =
+        sqlx::query("DELETE FROM agent_log WHERE at < now() - ($1::bigint * interval '1 day')")
+            .bind(log_days)
+            .execute(p)
+            .await?
+            .rows_affected();
     // IP reputation: an address that still turns up in alerts is fetched
     // afresh weekly anyway (abuseipdb::CACHE_TTL_SECS). Whatever has not
     // been touched for a multiple of that does not turn up any more —
     // otherwise the cache would be the one table that grows without bound.
-    let reputations = sqlx::query("DELETE FROM ip_reputations WHERE checked_at < now() - ($1::bigint * interval '1 second')")
-        .bind(abuseipdb::CACHE_TTL_SECS * 12)
-        .execute(p)
-        .await?
-        .rows_affected();
+    let reputations = sqlx::query(
+        "DELETE FROM ip_reputations WHERE checked_at < now() - ($1::bigint * interval '1 second')",
+    )
+    .bind(abuseipdb::CACHE_TTL_SECS * 12)
+    .execute(p)
+    .await?
+    .rows_affected();
     if sessions + tokens + alerts + counts + log + reputations > 0 {
-        info!(sessions, tokens, alerts, counts, log, reputations, "cleaned up");
+        info!(
+            sessions,
+            tokens, alerts, counts, log, reputations, "cleaned up"
+        );
     }
     Ok(())
 }
@@ -77,7 +96,14 @@ mod tests {
         let held = old(true).fetch_one(&pool).await.unwrap();
         old(false).fetch_one(&pool).await.unwrap();
         sweep(&pool).await.unwrap();
-        let left: Vec<i64> = sqlx::query_scalar("SELECT id FROM alerts").fetch_all(&pool).await.unwrap();
-        assert_eq!(left, vec![held], "past the default 730 days, only the held alert stays");
+        let left: Vec<i64> = sqlx::query_scalar("SELECT id FROM alerts")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            left,
+            vec![held],
+            "past the default 730 days, only the held alert stays"
+        );
     }
 }

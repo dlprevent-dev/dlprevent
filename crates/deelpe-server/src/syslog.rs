@@ -64,9 +64,15 @@ static TCP_FULL_SAID: AtomicU64 = AtomicU64::new(0);
 /// Whether a warning that can repeat per line may go out now: a flood shows
 /// in the log without flooding it.
 fn loud(said: &AtomicU64) -> bool {
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     let prev = said.load(Ordering::Relaxed);
-    now >= prev + LOUD_EVERY_SECS && said.compare_exchange(prev, now, Ordering::Relaxed, Ordering::Relaxed).is_ok()
+    now >= prev + LOUD_EVERY_SECS
+        && said
+            .compare_exchange(prev, now, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
 }
 
 /// A line that did not fit into the queue: counted, and said now and then.
@@ -125,14 +131,19 @@ pub fn split_header(line: &str) -> (Option<String>, &str) {
         return (host.filter(|h| h != "-"), msg.trim_start());
     }
     // RFC 3164: "Mon dd HH:MM:SS HOST MSG"
-    let months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let months = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
     if months.iter().any(|m| s.starts_with(m)) {
         let mut it = s.split_whitespace();
         let _mon = it.next();
         let _day = it.next();
         let _time = it.next();
         let host = it.next().map(str::to_string);
-        let rest_start = it.next().map(|tok| s.find(tok).unwrap_or(0)).unwrap_or(s.len());
+        let rest_start = it
+            .next()
+            .map(|tok| s.find(tok).unwrap_or(0))
+            .unwrap_or(s.len());
         return (host, s[rest_start..].trim_start());
     }
     (None, s)
@@ -141,8 +152,15 @@ pub fn split_header(line: &str) -> (Option<String>, &str) {
 /// Returns the event if one of the parsers understands the line.
 pub fn parse_line(line: &str) -> Option<AccessEvent> {
     let (host, msg) = split_header(line);
-    let mut ev = parse_synology(msg).or_else(|| parse_qnap(msg)).or_else(|| parse_samba(msg))?;
-    if ev.kind == "samba" && host.as_deref().map(|h| h.to_lowercase().contains("truenas")).unwrap_or(false) {
+    let mut ev = parse_synology(msg)
+        .or_else(|| parse_qnap(msg))
+        .or_else(|| parse_samba(msg))?;
+    if ev.kind == "samba"
+        && host
+            .as_deref()
+            .map(|h| h.to_lowercase().contains("truenas"))
+            .unwrap_or(false)
+    {
         ev.kind = "truenas";
     }
     ev.host = host;
@@ -174,7 +192,11 @@ pub fn parse_size(s: &str) -> u64 {
     let mut it = s.split_whitespace();
     // `1e400` parses as infinity and casts to u64::MAX, which overflowed the
     // byte counter downstream (vuln-0009).
-    let num: f64 = it.next().and_then(|n| n.replace(',', "").parse().ok()).filter(|n: &f64| n.is_finite()).unwrap_or(0.0);
+    let num: f64 = it
+        .next()
+        .and_then(|n| n.replace(',', "").parse().ok())
+        .filter(|n: &f64| n.is_finite())
+        .unwrap_or(0.0);
     let unit = it.next().unwrap_or("B").to_ascii_uppercase();
     let mult = match unit.as_str() {
         "KB" | "K" | "KIB" => 1024.0,
@@ -216,28 +238,61 @@ fn parse_synology(msg: &str) -> Option<AccessEvent> {
     let path = kv_after(msg, KEYS, "Path:")?.to_string();
     let user = kv_after(msg, KEYS, "User:")?;
     let size = kv_after(msg, KEYS, "Size:").map(parse_size).unwrap_or(0);
-    let ip = kv_after(msg, KEYS, "IP:").map(|s| s.trim_end_matches('.').to_string()).filter(|s| !s.is_empty());
-    let folder = kv_after(msg, KEYS, "File/Folder:").map(|s| s.eq_ignore_ascii_case("folder")).unwrap_or(false);
+    let ip = kv_after(msg, KEYS, "IP:")
+        .map(|s| s.trim_end_matches('.').to_string())
+        .filter(|s| !s.is_empty());
+    let folder = kv_after(msg, KEYS, "File/Folder:")
+        .map(|s| s.eq_ignore_ascii_case("folder"))
+        .unwrap_or(false);
     if folder {
         return None;
     }
     let (domain, name) = split_user(user);
-    Some(AccessEvent { kind: "synology", host: None, user: name, domain, path, action: action_from(event), bytes: size, client_ip: ip })
+    Some(AccessEvent {
+        kind: "synology",
+        host: None,
+        user: name,
+        domain,
+        path,
+        action: action_from(event),
+        bytes: size,
+        client_ip: ip,
+    })
 }
 
 /// QNAP QTS/QuTS, connection log via syslog (field names as in Log Center):
 /// `... Users: hans, Source IP: 10.0.0.5, Computer name: PC1, Connection type: SAMBA, Accessed resources: /GL/x.docx, Action: Read`
 fn parse_qnap(msg: &str) -> Option<AccessEvent> {
-    const KEYS: &[&str] = &["Users:", "Source IP:", "Computer name:", "Connection type:", "Accessed resources:", "Action:"];
+    const KEYS: &[&str] = &[
+        "Users:",
+        "Source IP:",
+        "Computer name:",
+        "Connection type:",
+        "Accessed resources:",
+        "Action:",
+    ];
     if !msg.contains("Accessed resources:") || !msg.contains("Users:") {
         return None;
     }
     let user = kv_after(msg, KEYS, "Users:")?;
     let path = kv_after(msg, KEYS, "Accessed resources:")?.to_string();
-    let action = kv_after(msg, KEYS, "Action:").map(action_from).unwrap_or(Action::Other);
-    let ip = kv_after(msg, KEYS, "Source IP:").map(str::to_string).filter(|s| !s.is_empty());
+    let action = kv_after(msg, KEYS, "Action:")
+        .map(action_from)
+        .unwrap_or(Action::Other);
+    let ip = kv_after(msg, KEYS, "Source IP:")
+        .map(str::to_string)
+        .filter(|s| !s.is_empty());
     let (domain, name) = split_user(user);
-    Some(AccessEvent { kind: "qnap", host: None, user: name, domain, path, action, bytes: 0, client_ip: ip })
+    Some(AccessEvent {
+        kind: "qnap",
+        host: None,
+        user: name,
+        domain,
+        path,
+        action,
+        bytes: 0,
+        client_ip: ip,
+    })
 }
 
 /// Samba `vfs_full_audit` (TrueNAS, Linux):
@@ -261,7 +316,14 @@ fn parse_samba(msg: &str) -> Option<AccessEvent> {
         "open" | "openat" => {
             let mode = f.get(6).copied().unwrap_or("");
             let file = f.get(7).copied().unwrap_or("");
-            (if mode.contains('w') { Action::Write } else { Action::Read }, file)
+            (
+                if mode.contains('w') {
+                    Action::Write
+                } else {
+                    Action::Read
+                },
+                file,
+            )
         }
         "pread" | "read" | "pread_recv" => (Action::Read, f.get(6).copied().unwrap_or("")),
         "pwrite" | "write" | "pwrite_recv" => (Action::Write, f.get(6).copied().unwrap_or("")),
@@ -271,7 +333,16 @@ fn parse_samba(msg: &str) -> Option<AccessEvent> {
     if file.is_empty() || file == "." {
         return None;
     }
-    Some(AccessEvent { kind: "samba", host: None, user: name, domain, path: format!("/{share}/{}", file.trim_start_matches("./")), action, bytes: 0, client_ip: ip })
+    Some(AccessEvent {
+        kind: "samba",
+        host: None,
+        user: name,
+        domain,
+        path: format!("/{share}/{}", file.trim_start_matches("./")),
+        action,
+        bytes: 0,
+        client_ip: ip,
+    })
 }
 
 // ---------- Rule matching ----------
@@ -339,7 +410,9 @@ pub async fn run(state: Shared, addr: SocketAddr, stop: CancellationToken) -> Re
                 Ok(()) => error!(%addr, "syslog receiver stopped, starting it again"),
             }
         }
-        let want = db::setting_bool(&state.pool, "syslog_enabled", true).await.unwrap_or(true);
+        let want = db::setting_bool(&state.pool, "syslog_enabled", true)
+            .await
+            .unwrap_or(true);
         match (want, running.is_some()) {
             (true, false) => {
                 let child = stop.child_token();
@@ -347,11 +420,14 @@ pub async fn run(state: Shared, addr: SocketAddr, stop: CancellationToken) -> Re
                 match listen(addr).await {
                     Ok(sockets) => {
                         info!(%addr, "Syslog (UDP+TCP)");
-                        running = Some((child, tokio::spawn(async move {
-                            if let Err(e) = session(st, sockets, c).await {
-                                warn!("syslog listener stopped: {e:#}");
-                            }
-                        })));
+                        running = Some((
+                            child,
+                            tokio::spawn(async move {
+                                if let Err(e) = session(st, sockets, c).await {
+                                    warn!("syslog listener stopped: {e:#}");
+                                }
+                            }),
+                        ));
                     }
                     // Port already taken: once more on the next tick.
                     Err(e) => warn!(%addr, "syslog listener not bound: {e:#}"),
@@ -373,18 +449,26 @@ async fn listen(addr: SocketAddr) -> Result<(UdpSocket, TcpListener)> {
     Ok((UdpSocket::bind(addr).await?, TcpListener::bind(addr).await?))
 }
 
-async fn session(state: Shared, (udp, tcp): (UdpSocket, TcpListener), stop: CancellationToken) -> Result<()> {
+async fn session(
+    state: Shared,
+    (udp, tcp): (UdpSocket, TcpListener),
+    stop: CancellationToken,
+) -> Result<()> {
     let (tx, rx) = mpsc::channel::<(IpAddr, String)>(10_000);
     let t1 = tx.clone();
     let s1 = stop.clone();
     tokio::spawn(async move {
         let mut buf = vec![0u8; 65535];
         loop {
-            let r = tokio::select! { r = udp.recv_from(&mut buf) => r, _ = s1.cancelled() => return };
+            let r =
+                tokio::select! { r = udp.recv_from(&mut buf) => r, _ = s1.cancelled() => return };
             if let Ok((n, peer)) = r {
                 let text = String::from_utf8_lossy(&buf[..n]);
                 for line in text.lines() {
-                    if !line.trim().is_empty() && line.len() <= MAX_LINE_BYTES && t1.try_send((peer.ip(), line.to_string())).is_err() {
+                    if !line.trim().is_empty()
+                        && line.len() <= MAX_LINE_BYTES
+                        && t1.try_send((peer.ip(), line.to_string())).is_err()
+                    {
                         dropped(peer.ip());
                     }
                 }
@@ -396,7 +480,12 @@ async fn session(state: Shared, (udp, tcp): (UdpSocket, TcpListener), stop: Canc
 }
 
 /// Accepts TCP senders, at most `max` at a time.
-async fn tcp_accept(tcp: TcpListener, tx: mpsc::Sender<(IpAddr, String)>, stop: CancellationToken, max: usize) {
+async fn tcp_accept(
+    tcp: TcpListener,
+    tx: mpsc::Sender<(IpAddr, String)>,
+    stop: CancellationToken,
+    max: usize,
+) {
     let slots = std::sync::Arc::new(tokio::sync::Semaphore::new(max));
     loop {
         let r = tokio::select! { r = tcp.accept() => r, _ = stop.cancelled() => return };
@@ -418,7 +507,14 @@ async fn tcp_accept(tcp: TcpListener, tx: mpsc::Sender<(IpAddr, String)>, stop: 
         };
         let (tx, stop) = (tx.clone(), stop.clone());
         tokio::spawn(async move {
-            tcp_lines(stream, peer, tx, stop, std::time::Duration::from_secs(TCP_IDLE_SECS)).await;
+            tcp_lines(
+                stream,
+                peer,
+                tx,
+                stop,
+                std::time::Duration::from_secs(TCP_IDLE_SECS),
+            )
+            .await;
             drop(slot);
         });
     }
@@ -426,7 +522,13 @@ async fn tcp_accept(tcp: TcpListener, tx: mpsc::Sender<(IpAddr, String)>, stop: 
 
 /// One TCP connection, line by line: at most `MAX_LINE_BYTES` per line, and
 /// closed after `idle` without one.
-async fn tcp_lines<S: tokio::io::AsyncRead + Unpin>(stream: S, peer: SocketAddr, tx: mpsc::Sender<(IpAddr, String)>, stop: CancellationToken, idle: std::time::Duration) {
+async fn tcp_lines<S: tokio::io::AsyncRead + Unpin>(
+    stream: S,
+    peer: SocketAddr,
+    tx: mpsc::Sender<(IpAddr, String)>,
+    stop: CancellationToken,
+    idle: std::time::Duration,
+) {
     let mut reader = tokio::io::BufReader::new(stream);
     let mut buf = Vec::new();
     loop {
@@ -450,7 +552,9 @@ async fn tcp_lines<S: tokio::io::AsyncRead + Unpin>(stream: S, peer: SocketAddr,
                 return;
             }
             Ok(Ok(_)) => {
-                let line = String::from_utf8_lossy(&buf).trim_end_matches(['\r', '\n']).to_string();
+                let line = String::from_utf8_lossy(&buf)
+                    .trim_end_matches(['\r', '\n'])
+                    .to_string();
                 if !line.trim().is_empty() && tx.send((peer.ip(), line)).await.is_err() {
                     return;
                 }
@@ -459,7 +563,11 @@ async fn tcp_lines<S: tokio::io::AsyncRead + Unpin>(stream: S, peer: SocketAddr,
     }
 }
 
-async fn process(state: Shared, mut rx: mpsc::Receiver<(IpAddr, String)>, stop: CancellationToken) -> Result<()> {
+async fn process(
+    state: Shared,
+    mut rx: mpsc::Receiver<(IpAddr, String)>,
+    stop: CancellationToken,
+) -> Result<()> {
     let mut ctx: HashMap<IpAddr, SourceCtx> = HashMap::new();
     let mut flush = tokio::time::interval(std::time::Duration::from_secs(FLUSH_SECS));
     loop {
@@ -482,9 +590,26 @@ async fn process(state: Shared, mut rx: mpsc::Receiver<(IpAddr, String)>, stop: 
 
 /// The context of the source at `ip`; a new address becomes an unconfirmed
 /// source. `None` when `MAX_UNCONFIRMED_SOURCES` are already waiting.
-async fn load_ctx(state: &Shared, ip: IpAddr, host: Option<&str>, kind: &str) -> Result<Option<SourceCtx>> {
-    let row: Option<(Uuid, String, String, Option<serde_json::Value>, i64, i64, bool)> =
-        sqlx::query_as("SELECT id, name, kind, meter, lines, unparsed, confirmed FROM sources WHERE address = $1").bind(ip.to_string()).fetch_optional(&state.pool).await?;
+async fn load_ctx(
+    state: &Shared,
+    ip: IpAddr,
+    host: Option<&str>,
+    kind: &str,
+) -> Result<Option<SourceCtx>> {
+    let row: Option<(
+        Uuid,
+        String,
+        String,
+        Option<serde_json::Value>,
+        i64,
+        i64,
+        bool,
+    )> = sqlx::query_as(
+        "SELECT id, name, kind, meter, lines, unparsed, confirmed FROM sources WHERE address = $1",
+    )
+    .bind(ip.to_string())
+    .fetch_optional(&state.pool)
+    .await?;
     let (id, name, kind, meter, lines, unparsed, confirmed) = match row {
         Some(r) => r,
         None => {
@@ -495,10 +620,20 @@ async fn load_ctx(state: &Shared, ip: IpAddr, host: Option<&str>, kind: &str) ->
             // 10.0.0.66 passes for the device at 10.0.0.5.
             let taken = match host {
                 Some(h) if h.parse::<IpAddr>().is_ok_and(|a| a != ip) => true,
-                Some(h) => sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM sources WHERE lower(name) = lower($1))").bind(h).fetch_one(&state.pool).await?,
+                Some(h) => {
+                    sqlx::query_scalar(
+                        "SELECT EXISTS (SELECT 1 FROM sources WHERE lower(name) = lower($1))",
+                    )
+                    .bind(h)
+                    .fetch_one(&state.pool)
+                    .await?
+                }
                 None => false,
             };
-            let name = host.filter(|_| !taken).map(str::to_string).unwrap_or_else(|| ip.to_string());
+            let name = host
+                .filter(|_| !taken)
+                .map(str::to_string)
+                .unwrap_or_else(|| ip.to_string());
             let id: Option<Uuid> = sqlx::query_scalar(
                 "INSERT INTO sources (name, kind, address, last_seen) SELECT $1, $2, $3, now() \
                  WHERE (SELECT count(*) FROM sources WHERE NOT confirmed) < $4 RETURNING id",
@@ -518,13 +653,33 @@ async fn load_ctx(state: &Shared, ip: IpAddr, host: Option<&str>, kind: &str) ->
             (id, name, kind.to_string(), None, 0, 0, false)
         }
     };
-    let meter = meter.and_then(|v| serde_json::from_value(v).ok()).unwrap_or_else(|| AccessMeter::new(Utc::now()));
+    let meter = meter
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_else(|| AccessMeter::new(Utc::now()));
     let rules = db::rules_for_source(&state.pool, id).await?;
     let learn_days = db::setting_i64(&state.pool, "learn_days", 7).await? as u32;
-    Ok(Some(SourceCtx { id, name, kind, meter, rules, rules_at: Utc::now(), agg: Aggregator::new(), learn_days, lines, unparsed, dirty: false, confirmed }))
+    Ok(Some(SourceCtx {
+        id,
+        name,
+        kind,
+        meter,
+        rules,
+        rules_at: Utc::now(),
+        agg: Aggregator::new(),
+        learn_days,
+        lines,
+        unparsed,
+        dirty: false,
+        confirmed,
+    }))
 }
 
-async fn handle_line(state: &Shared, ctx: &mut HashMap<IpAddr, SourceCtx>, ip: IpAddr, line: &str) -> Result<()> {
+async fn handle_line(
+    state: &Shared,
+    ctx: &mut HashMap<IpAddr, SourceCtx>,
+    ip: IpAddr,
+    line: &str,
+) -> Result<()> {
     let parsed = parse_line(line);
     if let std::collections::hash_map::Entry::Vacant(e) = ctx.entry(ip) {
         let (host, kind) = match &parsed {
@@ -551,7 +706,11 @@ async fn handle_line(state: &Shared, ctx: &mut HashMap<IpAddr, SourceCtx>, ip: I
     };
     if c.kind == "unknown" && ev.kind != "unknown" {
         c.kind = ev.kind.to_string();
-        sqlx::query("UPDATE sources SET kind = $2 WHERE id = $1").bind(c.id).bind(&c.kind).execute(&state.pool).await?;
+        sqlx::query("UPDATE sources SET kind = $2 WHERE id = $1")
+            .bind(c.id)
+            .bind(&c.kind)
+            .execute(&state.pool)
+            .await?;
     }
     if ev.action != Action::Read {
         return Ok(());
@@ -561,14 +720,28 @@ async fn handle_line(state: &Shared, ctx: &mut HashMap<IpAddr, SourceCtx>, ip: I
         c.rules = db::rules_for_source(&state.pool, c.id).await?;
         c.learn_days = db::setting_i64(&state.pool, "learn_days", 7).await? as u32;
         // Gone from the table counts as unconfirmed; `flush_all` forgets it.
-        c.confirmed = sqlx::query_scalar("SELECT confirmed FROM sources WHERE id = $1").bind(c.id).fetch_optional(&state.pool).await?.unwrap_or(false);
+        c.confirmed = sqlx::query_scalar("SELECT confirmed FROM sources WHERE id = $1")
+            .bind(c.id)
+            .fetch_optional(&state.pool)
+            .await?
+            .unwrap_or(false);
         c.rules_at = now;
     }
     if !c.confirmed {
         return Ok(());
     }
-    let user = UserRef { source: c.name.clone(), name: ev.user.clone(), domain: ev.domain.clone(), sid: None };
-    let rules: Vec<RuleRow> = c.rules.iter().filter(|r| rule_matches(&r.path, &ev.path)).cloned().collect();
+    let user = UserRef {
+        source: c.name.clone(),
+        name: ev.user.clone(),
+        domain: ev.domain.clone(),
+        sid: None,
+    };
+    let rules: Vec<RuleRow> = c
+        .rules
+        .iter()
+        .filter(|r| rule_matches(&r.path, &ev.path))
+        .cloned()
+        .collect();
     for r in rules {
         let id = r.id.to_string();
         if c.meter.user_count() >= MAX_USERS_PER_SOURCE && !c.meter.tracks(&id, &user) {
@@ -580,9 +753,23 @@ async fn handle_line(state: &Shared, ctx: &mut HashMap<IpAddr, SourceCtx>, ip: I
         let rule = RuleView {
             id: &id,
             path: &r.path,
-            params: AccessParams { hard_max_files: r.hard_max_files.max(1) as u32, window_secs: r.window_secs.max(1) as u32, learn_days: c.learn_days },
+            params: AccessParams {
+                hard_max_files: r.hard_max_files.max(1) as u32,
+                window_secs: r.window_secs.max(1) as u32,
+                learn_days: c.learn_days,
+            },
         };
-        let Some(alert) = c.agg.observe(&mut c.meter, &rule, &user, &ev.path, ev.bytes, ev.client_ip.as_deref(), now) else { continue };
+        let Some(alert) = c.agg.observe(
+            &mut c.meter,
+            &rule,
+            &user,
+            &ev.path,
+            ev.bytes,
+            ev.client_ip.as_deref(),
+            now,
+        ) else {
+            continue;
+        };
         let name = c.name.clone();
         let new = db::upsert_access_alert(&state.pool, Origin::Source(c.id), &name, &alert).await?;
         if new {
@@ -627,7 +814,6 @@ async fn flush_all(state: &Shared, ctx: &mut HashMap<IpAddr, SourceCtx>) {
         ctx.remove(&ip);
     }
 }
-
 
 #[cfg(test)]
 pub(crate) mod tests {
@@ -719,7 +905,13 @@ pub(crate) mod tests {
     /// vuln-0009: a size is bounded, whatever the line claims.
     #[test]
     fn absurd_sizes_are_bounded() {
-        for s in ["1e400 B", "inf", "NaN", "18446744073709551615 B", "1000000000000 TB"] {
+        for s in [
+            "1e400 B",
+            "inf",
+            "NaN",
+            "18446744073709551615 B",
+            "1000000000000 TB",
+        ] {
             assert!(parse_size(s) <= MAX_SIZE_BYTES, "{s}: {}", parse_size(s));
         }
         assert_eq!(parse_size("1e400 B"), 0, "not a number is no size");
@@ -728,15 +920,27 @@ pub(crate) mod tests {
 
     /// A shared state on the test database, as `api::tests` builds it.
     pub(crate) fn state(pool: sqlx::PgPool) -> Shared {
-        rustls::crypto::ring::default_provider().install_default().ok();
+        rustls::crypto::ring::default_provider()
+            .install_default()
+            .ok();
         let dir = std::env::temp_dir().join(format!("deelpe-syslog-test-{}", Uuid::new_v4()));
         let pki = crate::pki::Pki::load_or_create(&dir, &["localhost".into()]).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
-        std::sync::Arc::new(crate::state::AppState::new(pool, std::sync::Arc::new(pki), false, 8444, false, dir))
+        std::sync::Arc::new(crate::state::AppState::new(
+            pool,
+            std::sync::Arc::new(pki),
+            false,
+            8444,
+            false,
+            dir,
+        ))
     }
 
     fn free_port() -> SocketAddr {
-        std::net::UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap()
+        std::net::UdpSocket::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
     }
 
     fn read_line(user: &str, file: &str, size: &str) -> String {
@@ -744,7 +948,11 @@ pub(crate) mod tests {
     }
 
     async fn alerts_for(pool: &sqlx::PgPool, user: &str) -> i64 {
-        sqlx::query_scalar("SELECT count(*) FROM alerts WHERE user_display = $1").bind(user).fetch_one(pool).await.unwrap()
+        sqlx::query_scalar("SELECT count(*) FROM alerts WHERE user_display = $1")
+            .bind(user)
+            .fetch_one(pool)
+            .await
+            .unwrap()
     }
 
     /// vuln-0010: a datagram from an address nobody knows used to create a
@@ -757,18 +965,33 @@ pub(crate) mod tests {
         let mut ctx = HashMap::new();
         let ip: IpAddr = "10.0.0.66".parse().unwrap();
         for f in ["a", "b", "c"] {
-            handle_line(&st, &mut ctx, ip, &read_line("hans", f, "1 KB")).await.unwrap();
+            handle_line(&st, &mut ctx, ip, &read_line("hans", f, "1 KB"))
+                .await
+                .unwrap();
         }
-        assert_eq!(alerts_for(&pool, "hans").await, 0, "an unconfirmed source raised an alert");
-        let (confirmed,): (bool,) = sqlx::query_as("SELECT confirmed FROM sources WHERE address = '10.0.0.66'").fetch_one(&pool).await.unwrap();
+        assert_eq!(
+            alerts_for(&pool, "hans").await,
+            0,
+            "an unconfirmed source raised an alert"
+        );
+        let (confirmed,): (bool,) =
+            sqlx::query_as("SELECT confirmed FROM sources WHERE address = '10.0.0.66'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert!(!confirmed);
         assert_eq!(ctx[&ip].lines, 3, "its lines are still counted");
 
         // Confirmed in the dashboard; the intake notices with the next refresh.
-        sqlx::query("UPDATE sources SET confirmed = true WHERE address = '10.0.0.66'").execute(&pool).await.unwrap();
+        sqlx::query("UPDATE sources SET confirmed = true WHERE address = '10.0.0.66'")
+            .execute(&pool)
+            .await
+            .unwrap();
         ctx.get_mut(&ip).unwrap().rules_at -= chrono::Duration::seconds(RULES_REFRESH_SECS + 1);
         for f in ["d", "e"] {
-            handle_line(&st, &mut ctx, ip, &read_line("hans", f, "1 KB")).await.unwrap();
+            handle_line(&st, &mut ctx, ip, &read_line("hans", f, "1 KB"))
+                .await
+                .unwrap();
         }
         assert_eq!(alerts_for(&pool, "hans").await, 1);
     }
@@ -784,12 +1007,29 @@ pub(crate) mod tests {
             .unwrap();
         let st = state(pool.clone());
         let mut ctx = HashMap::new();
-        handle_line(&st, &mut ctx, "10.2.0.1".parse().unwrap(), &read_line("hans", "a", "1 KB")).await.unwrap();
-        let n: i64 = sqlx::query_scalar("SELECT count(*) FROM sources").fetch_one(&pool).await.unwrap();
+        handle_line(
+            &st,
+            &mut ctx,
+            "10.2.0.1".parse().unwrap(),
+            &read_line("hans", "a", "1 KB"),
+        )
+        .await
+        .unwrap();
+        let n: i64 = sqlx::query_scalar("SELECT count(*) FROM sources")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
         assert_eq!(n, MAX_UNCONFIRMED_SOURCES);
         assert!(ctx.is_empty());
         // A source already known still gets in.
-        handle_line(&st, &mut ctx, "10.1.0.1".parse().unwrap(), &read_line("hans", "a", "1 KB")).await.unwrap();
+        handle_line(
+            &st,
+            &mut ctx,
+            "10.1.0.1".parse().unwrap(),
+            &read_line("hans", "a", "1 KB"),
+        )
+        .await
+        .unwrap();
         assert_eq!(ctx.len(), 1);
     }
 
@@ -797,24 +1037,44 @@ pub(crate) mod tests {
     /// users already followed keep being counted.
     #[sqlx::test(migrations = "./migrations")]
     async fn a_source_follows_a_bounded_number_of_users(pool: sqlx::PgPool) {
-        sqlx::query("INSERT INTO rules (name, path) VALUES ('GL', '/volume1/GL')").execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO rules (name, path) VALUES ('GL', '/volume1/GL')")
+            .execute(&pool)
+            .await
+            .unwrap();
         sqlx::query("INSERT INTO sources (name, kind, address, confirmed) VALUES ('NAS01', 'synology', '10.0.0.5', true)").execute(&pool).await.unwrap();
         let st = state(pool.clone());
         let mut ctx = HashMap::new();
         let ip: IpAddr = "10.0.0.5".parse().unwrap();
-        handle_line(&st, &mut ctx, ip, &read_line("known", "a", "1 KB")).await.unwrap();
+        handle_line(&st, &mut ctx, ip, &read_line("known", "a", "1 KB"))
+            .await
+            .unwrap();
         let c = ctx.get_mut(&ip).unwrap();
-        let p = AccessParams { hard_max_files: 1000, window_secs: 60, learn_days: 7 };
+        let p = AccessParams {
+            hard_max_files: 1000,
+            window_secs: 60,
+            learn_days: 7,
+        };
         for i in c.meter.user_count()..MAX_USERS_PER_SOURCE {
             c.meter.observe(&format!("r|u{i}"), "f", 0, &p, Utc::now());
         }
-        handle_line(&st, &mut ctx, ip, &read_line("fresh", "a", "1 KB")).await.unwrap();
-        handle_line(&st, &mut ctx, ip, &read_line("known", "b", "1 KB")).await.unwrap();
+        handle_line(&st, &mut ctx, ip, &read_line("fresh", "a", "1 KB"))
+            .await
+            .unwrap();
+        handle_line(&st, &mut ctx, ip, &read_line("known", "b", "1 KB"))
+            .await
+            .unwrap();
         let c = &ctx[&ip];
         assert_eq!(c.meter.user_count(), MAX_USERS_PER_SOURCE);
         let counts = c.agg.counts();
         assert!(counts.iter().all(|b| b.user.name != "fresh"));
-        assert_eq!(counts.iter().filter(|b| b.user.name == "known").map(|b| b.files).sum::<u32>(), 2);
+        assert_eq!(
+            counts
+                .iter()
+                .filter(|b| b.user.name == "known")
+                .map(|b| b.files)
+                .sum::<u32>(),
+            2
+        );
     }
 
     /// vuln-0011: a TCP line has a ceiling, and a silent connection does
@@ -826,15 +1086,30 @@ pub(crate) mod tests {
         let peer: SocketAddr = "10.0.0.5:40000".parse().unwrap();
         let (tx, mut rx) = mpsc::channel(10);
         let (mut client, server) = tokio::io::duplex(64 * 1024);
-        let task = tokio::spawn(tcp_lines(server, peer, tx.clone(), CancellationToken::new(), std::time::Duration::from_secs(60)));
+        let task = tokio::spawn(tcp_lines(
+            server,
+            peer,
+            tx.clone(),
+            CancellationToken::new(),
+            std::time::Duration::from_secs(60),
+        ));
         client.write_all(b"first line\r\n").await.unwrap();
         assert_eq!(rx.recv().await.unwrap().1, "first line");
-        client.write_all(&vec![b'x'; MAX_LINE_BYTES + 10]).await.unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(1), task).await.expect("an endless line keeps the connection").unwrap();
+        client
+            .write_all(&vec![b'x'; MAX_LINE_BYTES + 10])
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), task)
+            .await
+            .expect("an endless line keeps the connection")
+            .unwrap();
 
         let (_client, server) = tokio::io::duplex(1024);
         let task = tokio::spawn(tcp_lines(server, peer, tx, CancellationToken::new(), idle));
-        tokio::time::timeout(idle * 10, task).await.expect("an idle connection stays open").unwrap();
+        tokio::time::timeout(idle * 10, task)
+            .await
+            .expect("an idle connection stays open")
+            .unwrap();
     }
 
     /// vuln-0010: the name of a known source cannot be claimed from another
@@ -846,16 +1121,44 @@ pub(crate) mod tests {
         let mut ctx = HashMap::new();
         // The header says "nas01" — the same name, spelled differently.
         let line = read_line("hans", "a", "1 KB").replace("NAS01", "nas01");
-        handle_line(&st, &mut ctx, "10.0.0.66".parse().unwrap(), &line).await.unwrap();
-        let (name, confirmed): (String, bool) = sqlx::query_as("SELECT name, confirmed FROM sources WHERE address = '10.0.0.66'").fetch_one(&pool).await.unwrap();
+        handle_line(&st, &mut ctx, "10.0.0.66".parse().unwrap(), &line)
+            .await
+            .unwrap();
+        let (name, confirmed): (String, bool) =
+            sqlx::query_as("SELECT name, confirmed FROM sources WHERE address = '10.0.0.66'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!((name.as_str(), confirmed), ("10.0.0.66", false));
         // A name nobody has yet is taken from the header.
-        handle_line(&st, &mut ctx, "10.0.0.67".parse().unwrap(), &line.replace("nas01", "NAS02")).await.unwrap();
-        let (name,): (String,) = sqlx::query_as("SELECT name FROM sources WHERE address = '10.0.0.67'").fetch_one(&pool).await.unwrap();
+        handle_line(
+            &st,
+            &mut ctx,
+            "10.0.0.67".parse().unwrap(),
+            &line.replace("nas01", "NAS02"),
+        )
+        .await
+        .unwrap();
+        let (name,): (String,) =
+            sqlx::query_as("SELECT name FROM sources WHERE address = '10.0.0.67'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(name, "NAS02");
         // Nor the address of another device as a name.
-        handle_line(&st, &mut ctx, "10.0.0.68".parse().unwrap(), &line.replace("nas01", "10.0.0.7")).await.unwrap();
-        let (name,): (String,) = sqlx::query_as("SELECT name FROM sources WHERE address = '10.0.0.68'").fetch_one(&pool).await.unwrap();
+        handle_line(
+            &st,
+            &mut ctx,
+            "10.0.0.68".parse().unwrap(),
+            &line.replace("nas01", "10.0.0.7"),
+        )
+        .await
+        .unwrap();
+        let (name,): (String,) =
+            sqlx::query_as("SELECT name FROM sources WHERE address = '10.0.0.68'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(name, "10.0.0.68");
     }
 
@@ -872,7 +1175,10 @@ pub(crate) mod tests {
         let wait = std::time::Duration::from_millis(300);
         // Open means a read that finds nothing; closed means end of stream.
         async fn closed(c: &mut tokio::net::TcpStream, wait: std::time::Duration) -> bool {
-            matches!(tokio::time::timeout(wait, c.read(&mut [0u8; 1])).await, Ok(Ok(0)) | Ok(Err(_)))
+            matches!(
+                tokio::time::timeout(wait, c.read(&mut [0u8; 1])).await,
+                Ok(Ok(0)) | Ok(Err(_))
+            )
         }
         let mut a = tokio::net::TcpStream::connect(addr).await.unwrap();
         let mut b = tokio::net::TcpStream::connect(addr).await.unwrap();
@@ -882,7 +1188,10 @@ pub(crate) mod tests {
         drop(a);
         tokio::time::sleep(wait).await;
         let mut d = tokio::net::TcpStream::connect(addr).await.unwrap();
-        assert!(!closed(&mut d, wait).await, "a freed slot was not given out again");
+        assert!(
+            !closed(&mut d, wait).await,
+            "a freed slot was not given out again"
+        );
         stop.cancel();
     }
 
@@ -897,18 +1206,33 @@ pub(crate) mod tests {
         let task = tokio::spawn(run(state(pool.clone()), addr, stop.clone()));
         let tx = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
         // Two lines in one datagram: the second addition overflowed.
-        let bomb = format!("{}\n{}", read_line("bomb", "a", "1e400 B"), read_line("bomb", "b", "1e400 B"));
+        let bomb = format!(
+            "{}\n{}",
+            read_line("bomb", "a", "1e400 B"),
+            read_line("bomb", "b", "1e400 B")
+        );
         // The first tick of the supervisor binds right away.
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         tx.send_to(bomb.as_bytes(), addr).await.unwrap();
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(25);
         loop {
-            assert!(tokio::time::Instant::now() < deadline, "the intake never recorded a line after the hostile one");
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the intake never recorded a line after the hostile one"
+            );
             tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-            let after = format!("{}\n{}", read_line("after", "x", "1 KB"), read_line("after", "y", "1 KB"));
+            let after = format!(
+                "{}\n{}",
+                read_line("after", "x", "1 KB"),
+                read_line("after", "y", "1 KB")
+            );
             tx.send_to(after.as_bytes(), addr).await.unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-            let n: i64 = sqlx::query_scalar("SELECT count(*) FROM alerts WHERE user_display = 'after'").fetch_one(&pool).await.unwrap();
+            let n: i64 =
+                sqlx::query_scalar("SELECT count(*) FROM alerts WHERE user_display = 'after'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
             if n > 0 {
                 break;
             }

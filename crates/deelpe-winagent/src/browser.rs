@@ -224,7 +224,11 @@ fn parse_request(buf: &[u8]) -> Option<Request> {
                     match (f, w) {
                         (1, 2) => {
                             let mut url = String::from_utf8_lossy(inner.bytes()?).into_owned();
-                            url.truncate(url.char_indices().nth(MAX_URL).map_or(url.len(), |(i, _)| i));
+                            url.truncate(
+                                url.char_indices()
+                                    .nth(MAX_URL)
+                                    .map_or(url.len(), |(i, _)| i),
+                            );
                             req.url = Some(url);
                         }
                         _ => inner.skip(w)?,
@@ -236,7 +240,11 @@ fn parse_request(buf: &[u8]) -> Option<Request> {
                 r.bytes()?;
                 req.has_text = true;
             }
-            (14, 2) => req.file_path = Some(PathBuf::from(String::from_utf8_lossy(r.bytes()?).into_owned())),
+            (14, 2) => {
+                req.file_path = Some(PathBuf::from(
+                    String::from_utf8_lossy(r.bytes()?).into_owned(),
+                ))
+            }
             _ => r.skip(wire)?,
         }
     }
@@ -375,7 +383,9 @@ fn on_the_share(pipe: &tokio::net::windows::named_pipe::NamedPipeServer, path: &
     use windows::Win32::Storage::FileSystem::QueryDosDeviceW;
     use windows::Win32::System::Pipes::ImpersonateNamedPipeClient;
 
-    let Some((letter, rest)) = drive_of(path) else { return path.to_path_buf() };
+    let Some((letter, rest)) = drive_of(path) else {
+        return path.to_path_buf();
+    };
     let drive = HSTRING::from(format!("{letter}:"));
     let mut buf = [0u16; 1024];
     let n = unsafe {
@@ -390,7 +400,9 @@ fn on_the_share(pipe: &tokio::net::windows::named_pipe::NamedPipeServer, path: &
         return path.to_path_buf();
     }
     let nt = String::from_utf16_lossy(&buf[..n as usize]);
-    let Some(base) = nt_to_share(&nt) else { return path.to_path_buf() };
+    let Some(base) = nt_to_share(&nt) else {
+        return path.to_path_buf();
+    };
     let full = splice(&base, &rest);
     tracing::debug!("content analysis: {} is {}", path.display(), full.display());
     full
@@ -413,10 +425,18 @@ pub fn verdict(cfg: &Config, req: &Request) -> Option<String> {
     if !strict.enforce {
         return None;
     }
-    if req.url.as_deref().is_some_and(|u| deelpe_core::allow::allows_host(&strict.allow, u)) {
+    if req
+        .url
+        .as_deref()
+        .is_some_and(|u| deelpe_core::allow::allows_host(&strict.allow, u))
+    {
         return None;
     }
-    Some(format!("{} may not leave {}", file.display(), strict.path.display()))
+    Some(format!(
+        "{} may not leave {}",
+        file.display(),
+        strict.path.display()
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -483,9 +503,17 @@ pub fn alert_for(b: &Blocked, id: u64) -> Alert {
         last_at: None,
         // Let through is not an alert: `New` appears in the table and in the
         // dashboard but sets off no mail (see `mail::ALARM_VERDICTS`).
-        verdict: if b.blocked { Verdict::Denied } else { Verdict::New },
+        verdict: if b.blocked {
+            Verdict::Denied
+        } else {
+            Verdict::New
+        },
         reason: Some(if b.blocked {
-            format!("{} blocked before sending: {}", connector_name(b.connector), b.reason)
+            format!(
+                "{} blocked before sending: {}",
+                connector_name(b.connector),
+                b.reason
+            )
         } else {
             format!("{} allowed: {}", connector_name(b.connector), b.reason)
         }),
@@ -530,12 +558,20 @@ const PIPE_DACL: &str = "D:(A;OICI;GA;;;CO)(A;OICI;GA;;;BA)(A;OICI;GRGW;;;WD)";
 /// the verdict over it -- [`verdict`], [`alert_for`] -- are checked on every
 /// platform; only the listening needs Windows.
 #[cfg(not(windows))]
-pub async fn serve(_base: &str, _cfg: Arc<RwLock<Config>>, _blocked: tokio::sync::mpsc::Sender<Blocked>) -> Result<()> {
+pub async fn serve(
+    _base: &str,
+    _cfg: Arc<RwLock<Config>>,
+    _blocked: tokio::sync::mpsc::Sender<Blocked>,
+) -> Result<()> {
     Ok(())
 }
 
 #[cfg(windows)]
-pub async fn serve(base: &str, cfg: Arc<RwLock<Config>>, blocked: tokio::sync::mpsc::Sender<Blocked>) -> Result<()> {
+pub async fn serve(
+    base: &str,
+    cfg: Arc<RwLock<Config>>,
+    blocked: tokio::sync::mpsc::Sender<Blocked>,
+) -> Result<()> {
     let path = pipe_path(base);
     tracing::info!(pipe = %path, "content analysis: listening for browsers");
     let mut first = true;
@@ -547,7 +583,10 @@ pub async fn serve(base: &str, cfg: Arc<RwLock<Config>>, blocked: tokio::sync::m
         // not show next to a browser dialog.
         let server = create_pipe(&path, first)?;
         first = false;
-        server.connect().await.with_context(|| format!("accept on {path}"))?;
+        server
+            .connect()
+            .await
+            .with_context(|| format!("accept on {path}"))?;
         let cfg = cfg.clone();
         let blocked = blocked.clone();
         tokio::spawn(async move {
@@ -567,20 +606,34 @@ pub async fn serve(base: &str, cfg: Arc<RwLock<Config>>, blocked: tokio::sync::m
 /// be — a second listener would be either a service started twice or someone
 /// passing themselves off as the watchdog.
 #[cfg(windows)]
-fn create_pipe(path: &str, first: bool) -> Result<tokio::net::windows::named_pipe::NamedPipeServer> {
+fn create_pipe(
+    path: &str,
+    first: bool,
+) -> Result<tokio::net::windows::named_pipe::NamedPipeServer> {
     use tokio::net::windows::named_pipe::{PipeMode, ServerOptions};
     use windows::core::{HSTRING, PCWSTR};
     use windows::Win32::Foundation::{LocalFree, HLOCAL};
-    use windows::Win32::Security::Authorization::{ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1};
+    use windows::Win32::Security::Authorization::{
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+    };
     use windows::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
 
     let sddl = HSTRING::from(PIPE_DACL);
     let mut psd = PSECURITY_DESCRIPTOR::default();
     unsafe {
-        ConvertStringSecurityDescriptorToSecurityDescriptorW(PCWSTR(sddl.as_ptr()), SDDL_REVISION_1, &mut psd, None)
-            .context("DACL for the content-analysis pipe")?;
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            PCWSTR(sddl.as_ptr()),
+            SDDL_REVISION_1,
+            &mut psd,
+            None,
+        )
+        .context("DACL for the content-analysis pipe")?;
     }
-    let mut sa = SECURITY_ATTRIBUTES { nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32, lpSecurityDescriptor: psd.0, bInheritHandle: false.into() };
+    let mut sa = SECURITY_ATTRIBUTES {
+        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: psd.0,
+        bInheritHandle: false.into(),
+    };
     let server = unsafe {
         ServerOptions::new()
             .first_pipe_instance(first)
@@ -604,14 +657,19 @@ fn create_pipe(path: &str, first: bool) -> Result<tokio::net::windows::named_pip
 /// because *this* PID had not asked yet. But a browser asks as a program,
 /// not as a process — and whoever has asked once asks on the next start too.
 fn asking_images() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
-    static I: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
+    static I: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
     I.get_or_init(Default::default)
 }
 
 /// Browsers whose content-analysis connector may speak for their program:
 /// publisher from the signature, original file name from the version
 /// resource. Nothing else earns the exemption.
-const CONNECTOR_BROWSERS: &[(&str, &str)] = &[("Google LLC", "chrome.exe"), ("Microsoft Corporation", "msedge.exe"), ("Mozilla Corporation", "firefox.exe")];
+const CONNECTOR_BROWSERS: &[(&str, &str)] = &[
+    ("Google LLC", "chrome.exe"),
+    ("Microsoft Corporation", "msedge.exe"),
+    ("Mozilla Corporation", "firefox.exe"),
+];
 
 /// May a process with this identity exempt its program from the network
 /// cage by connecting to the pipe?
@@ -624,9 +682,14 @@ const CONNECTOR_BROWSERS: &[(&str, &str)] = &[("Google LLC", "chrome.exe"), ("Mi
 /// alone is not enough either: Microsoft signs `curl.exe` too.
 pub fn may_exempt_its_image(id: &ProcessIdentity) -> bool {
     match id {
-        ProcessIdentity::Signed { team_id, signing_id } => {
+        ProcessIdentity::Signed {
+            team_id,
+            signing_id,
+        } => {
             let name = deelpe_core::identity::image_name(signing_id);
-            CONNECTOR_BROWSERS.iter().any(|(p, n)| team_id == p && name == *n)
+            CONNECTOR_BROWSERS
+                .iter()
+                .any(|(p, n)| team_id == p && name == *n)
         }
         _ => false,
     }
@@ -647,7 +710,9 @@ pub fn note_image(exe: &str) {
 /// Does this **program** ask before it sends? The network cage's question:
 /// it hangs off the EXE, so the exception has to hang off the EXE too.
 pub fn image_asks_before_sending(exe: &str) -> bool {
-    asking_images().lock().is_ok_and(|i| i.contains(&exe.to_lowercase()))
+    asking_images()
+        .lock()
+        .is_ok_and(|i| i.contains(&exe.to_lowercase()))
 }
 
 /// Who is hanging on the other end? Without that, the log says only that
@@ -707,7 +772,10 @@ async fn talk(
             identity = Some(id);
         }
     }
-    tracing::info!(pid = client.unwrap_or(0), "content analysis: browser connected");
+    tracing::info!(
+        pid = client.unwrap_or(0),
+        "content analysis: browser connected"
+    );
     let mut buf = vec![0u8; MAX_MESSAGE];
     loop {
         let n = pipe.read(&mut buf).await?;
@@ -736,7 +804,10 @@ async fn talk(
         // folder decides both, and locking twice would be waiting twice.
         let (block, watched) = {
             let c = cfg.read().await;
-            (verdict(&c, &req), req.file_path.as_deref().is_some_and(|f| c.is_watched(f)))
+            (
+                verdict(&c, &req),
+                req.file_path.as_deref().is_some_and(|f| c.is_watched(f)),
+            )
         };
         // Allowing belongs in the log too. Without this line "never asked"
         // and "asked and let through" look the same, and that is exactly what
@@ -755,7 +826,13 @@ async fn talk(
                 // is the fail-open direction here that ADR 0002 lays down for
                 // this whole building block.
                 let who = identity
-                    .get_or_insert_with(|| client.map(identity_of_pid).unwrap_or(ProcessIdentity::Unknown { path: String::new() }))
+                    .get_or_insert_with(|| {
+                        client
+                            .map(identity_of_pid)
+                            .unwrap_or(ProcessIdentity::Unknown {
+                                path: String::new(),
+                            })
+                    })
                     .clone();
                 let note = Blocked {
                     at: Utc::now(),
@@ -787,7 +864,13 @@ async fn talk(
                 // Whoever blocks nothing still wants to see.
                 if watched {
                     let who = identity
-                        .get_or_insert_with(|| client.map(identity_of_pid).unwrap_or(ProcessIdentity::Unknown { path: String::new() }))
+                        .get_or_insert_with(|| {
+                            client
+                                .map(identity_of_pid)
+                                .unwrap_or(ProcessIdentity::Unknown {
+                                    path: String::new(),
+                                })
+                        })
                         .clone();
                     let note = Blocked {
                         at: Utc::now(),
@@ -868,8 +951,16 @@ fn policy() -> Vec<(&'static str, &'static str, Value)> {
     }
     // Otherwise Firefox sees only `text/plain` on paste and drag — but a
     // file carries other formats, and we are meant to get those too.
-    v.push((r"InterceptionPoints\Clipboard", "PlainTextOnly", Value::Dword(0)));
-    v.push((r"InterceptionPoints\DragAndDrop", "PlainTextOnly", Value::Dword(0)));
+    v.push((
+        r"InterceptionPoints\Clipboard",
+        "PlainTextOnly",
+        Value::Dword(0),
+    ));
+    v.push((
+        r"InterceptionPoints\DragAndDrop",
+        "PlainTextOnly",
+        Value::Dword(0),
+    ));
     v
 }
 
@@ -879,25 +970,50 @@ pub fn install_policy() -> anyhow::Result<()> {
     use anyhow::Context;
     use windows::core::{HSTRING, PCWSTR};
     use windows::Win32::System::Registry::{
-        RegCloseKey, RegCreateKeyExW, RegSetValueExW, HKEY, HKEY_LOCAL_MACHINE, KEY_WRITE, REG_DWORD, REG_OPTION_NON_VOLATILE, REG_SZ,
+        RegCloseKey, RegCreateKeyExW, RegSetValueExW, HKEY, HKEY_LOCAL_MACHINE, KEY_WRITE,
+        REG_DWORD, REG_OPTION_NON_VOLATILE, REG_SZ,
     };
 
     for (sub, name, value) in policy() {
-        let path = if sub.is_empty() { POLICY_KEY.to_string() } else { format!(r"{POLICY_KEY}\{sub}") };
+        let path = if sub.is_empty() {
+            POLICY_KEY.to_string()
+        } else {
+            format!(r"{POLICY_KEY}\{sub}")
+        };
         let wide = HSTRING::from(path.as_str());
         let mut key = HKEY::default();
         unsafe {
-            RegCreateKeyExW(HKEY_LOCAL_MACHINE, PCWSTR(wide.as_ptr()), None, None, REG_OPTION_NON_VOLATILE, KEY_WRITE, None, &mut key, None)
-                .ok()
-                .with_context(|| format!("create HKLM\\{path}"))?;
+            RegCreateKeyExW(
+                HKEY_LOCAL_MACHINE,
+                PCWSTR(wide.as_ptr()),
+                None,
+                None,
+                REG_OPTION_NON_VOLATILE,
+                KEY_WRITE,
+                None,
+                &mut key,
+                None,
+            )
+            .ok()
+            .with_context(|| format!("create HKLM\\{path}"))?;
         }
         let n = HSTRING::from(name);
         let r = unsafe {
             match value {
-                Value::Dword(d) => RegSetValueExW(key, PCWSTR(n.as_ptr()), None, REG_DWORD, Some(&d.to_le_bytes())),
+                Value::Dword(d) => RegSetValueExW(
+                    key,
+                    PCWSTR(n.as_ptr()),
+                    None,
+                    REG_DWORD,
+                    Some(&d.to_le_bytes()),
+                ),
                 Value::Text(t) => {
                     // REG_SZ wants UTF-16 with a trailing zero, as bytes.
-                    let bytes: Vec<u8> = t.encode_utf16().chain(std::iter::once(0)).flat_map(|c| c.to_le_bytes()).collect();
+                    let bytes: Vec<u8> = t
+                        .encode_utf16()
+                        .chain(std::iter::once(0))
+                        .flat_map(|c| c.to_le_bytes())
+                        .collect();
                     RegSetValueExW(key, PCWSTR(n.as_ptr()), None, REG_SZ, Some(&bytes))
                 }
             }
@@ -905,7 +1021,8 @@ pub fn install_policy() -> anyhow::Result<()> {
         unsafe {
             let _ = RegCloseKey(key);
         }
-        r.ok().with_context(|| format!("set {name} under HKLM\\{path}"))?;
+        r.ok()
+            .with_context(|| format!("set {name} under HKLM\\{path}"))?;
     }
     println!("Firefox content-analysis policy written (pipe '{PIPE_NAME}').");
     println!("Firefox reads it at startup — a running browser has to be restarted once.");
@@ -939,14 +1056,23 @@ mod tests {
 
     fn cfg_allowing(enforce: bool, allow: Vec<&str>) -> Config {
         let allow = allow.into_iter().map(String::from).collect();
-        Config { strict: vec![Strict { path: r"\\srv\GL".into(), allow, enforce }], ..Default::default() }
+        Config {
+            strict: vec![Strict {
+                path: r"\\srv\GL".into(),
+                allow,
+                enforce,
+            }],
+            ..Default::default()
+        }
     }
 
     fn blocked() -> Blocked {
         Blocked {
             at: Utc::now(),
             pid: 4242,
-            identity: ProcessIdentity::Unknown { path: r"C:\Program Files\Mozilla Firefox\firefox.exe".into() },
+            identity: ProcessIdentity::Unknown {
+                path: r"C:\Program Files\Mozilla Firefox\firefox.exe".into(),
+            },
             file: PathBuf::from(r"\\srv\GL\Zahlen.xlsx"),
             url: Some("https://chatgpt.com/c/1".into()),
             connector: 2,
@@ -954,7 +1080,6 @@ mod tests {
             blocked: true,
         }
     }
-
 
     /// An upload no rule forbids is still worth a line — but not an alert:
     /// `New` appears in the dashboard and sets off no mail. On 2026-09-09 six
@@ -964,22 +1089,50 @@ mod tests {
     /// any program from the network cage.
     #[test]
     fn only_a_signed_browser_exempts_its_program_from_the_cage() {
-        let signed = |p: &str, n: &str| ProcessIdentity::Signed { team_id: p.into(), signing_id: n.into() };
+        let signed = |p: &str, n: &str| ProcessIdentity::Signed {
+            team_id: p.into(),
+            signing_id: n.into(),
+        };
         assert!(may_exempt_its_image(&signed("Google LLC", "chrome.exe")));
-        assert!(may_exempt_its_image(&signed("Microsoft Corporation", "msedge.exe")));
-        assert!(may_exempt_its_image(&signed("Mozilla Corporation", "FIREFOX.EXE.MUI")), "the name in any spelling Windows hands out");
-        assert!(!may_exempt_its_image(&ProcessIdentity::Unknown { path: r"C:\Users\me\chrome.exe".into() }), "a renamed tool is unsigned");
-        assert!(!may_exempt_its_image(&signed("Microsoft Corporation", "curl.exe")), "the vendor alone is not enough");
-        assert!(!may_exempt_its_image(&signed("Evil LLC", "chrome.exe")), "the name alone is not enough");
+        assert!(may_exempt_its_image(&signed(
+            "Microsoft Corporation",
+            "msedge.exe"
+        )));
+        assert!(
+            may_exempt_its_image(&signed("Mozilla Corporation", "FIREFOX.EXE.MUI")),
+            "the name in any spelling Windows hands out"
+        );
+        assert!(
+            !may_exempt_its_image(&ProcessIdentity::Unknown {
+                path: r"C:\Users\me\chrome.exe".into()
+            }),
+            "a renamed tool is unsigned"
+        );
+        assert!(
+            !may_exempt_its_image(&signed("Microsoft Corporation", "curl.exe")),
+            "the vendor alone is not enough"
+        );
+        assert!(
+            !may_exempt_its_image(&signed("Evil LLC", "chrome.exe")),
+            "the name alone is not enough"
+        );
     }
 
     #[test]
     fn an_allowed_upload_is_visible_but_is_not_an_alarm() {
-        let allowed = Blocked { blocked: false, reason: "watched folder, no rule forbids this destination".into(), ..blocked() };
+        let allowed = Blocked {
+            blocked: false,
+            reason: "watched folder, no rule forbids this destination".into(),
+            ..blocked()
+        };
         let a = alert_for(&allowed, 8);
         assert_eq!(a.verdict, Verdict::New, "durchgelassen ist kein Alarm");
         assert_ne!(a.verdict, Verdict::Denied, "sonst kommt dafuer Mail");
-        assert!(a.reason.as_deref().unwrap().starts_with("upload allowed:"), "{:?}", a.reason);
+        assert!(
+            a.reason.as_deref().unwrap().starts_with("upload allowed:"),
+            "{:?}",
+            a.reason
+        );
         assert_eq!(a.files, vec![PathBuf::from(r"\\srv\GL\Zahlen.xlsx")]);
         assert_eq!(a.upload_url.as_deref(), Some("https://chatgpt.com/c/1"));
     }
@@ -993,9 +1146,17 @@ mod tests {
         assert_eq!(a.id, 7);
         assert_eq!(a.identity.short(), "firefox.exe");
         assert_eq!(a.files, vec![PathBuf::from(r"\\srv\GL\Zahlen.xlsx")]);
-        assert_eq!(a.verdict, Verdict::Denied, "ein strenger Ordner wird nie gelernt");
+        assert_eq!(
+            a.verdict,
+            Verdict::Denied,
+            "ein strenger Ordner wird nie gelernt"
+        );
         assert_eq!(a.target(), Target::Upload("https://chatgpt.com/c/1"));
-        assert!(a.reason.as_deref().unwrap().starts_with("upload blocked before sending:"));
+        assert!(a
+            .reason
+            .as_deref()
+            .unwrap()
+            .starts_with("upload blocked before sending:"));
         // The browser asked and waited — it does not get killed.
         assert!(!a.sender_read_directly);
         assert_eq!(a.bytes_out, 0, "es ging kein Byte hinaus");
@@ -1011,7 +1172,10 @@ mod tests {
         assert_eq!(url.len(), MAX_URL);
         assert!(url.starts_with("https://chatgpt.com/"));
         // And the allow list judges by it unchanged afterwards.
-        assert!(deelpe_core::allow::allows_host(&["chatgpt.com".to_string()], &url));
+        assert!(deelpe_core::allow::allows_host(
+            &["chatgpt.com".to_string()],
+            &url
+        ));
     }
 
     /// The same action twice is one alert, not two.
@@ -1059,7 +1223,11 @@ mod tests {
 
     #[test]
     fn an_upload_request_is_read_field_by_field() {
-        let raw = upload(b"tok-1", r"\\srv\GL\Zahlen.xlsx", "https://gemini.google.com/app");
+        let raw = upload(
+            b"tok-1",
+            r"\\srv\GL\Zahlen.xlsx",
+            "https://gemini.google.com/app",
+        );
         let req = asked(&raw);
         assert_eq!(req.token, b"tok-1");
         assert_eq!(req.connector, 2, "FILE_ATTACHED");
@@ -1103,14 +1271,25 @@ mod tests {
     #[test]
     fn a_file_from_a_strict_folder_is_blocked_whatever_the_destination() {
         let c = cfg(true);
-        let req = asked(&upload(b"t", r"\\srv\GL\Zahlen.xlsx", "https://gemini.google.com/app"));
-        assert!(verdict(&c, &req).is_some(), "Upload aus dem strengen Ordner");
+        let req = asked(&upload(
+            b"t",
+            r"\\srv\GL\Zahlen.xlsx",
+            "https://gemini.google.com/app",
+        ));
+        assert!(
+            verdict(&c, &req).is_some(),
+            "Upload aus dem strengen Ordner"
+        );
 
         // Without enforcement it is only reported, not blocked.
         assert_eq!(verdict(&cfg(false), &req), None);
 
         // File outside: concerns nobody.
-        let other = asked(&upload(b"t", r"C:\Users\eva\Bilder\urlaub.jpg", "https://gemini.google.com/app"));
+        let other = asked(&upload(
+            b"t",
+            r"C:\Users\eva\Bilder\urlaub.jpg",
+            "https://gemini.google.com/app",
+        ));
         assert_eq!(verdict(&c, &other), None);
     }
 
@@ -1120,15 +1299,26 @@ mod tests {
     #[test]
     fn a_whitelisted_destination_may_receive_the_file() {
         let c = cfg_allowing(true, vec!["ethical-ai.example"]);
-        let ok = asked(&upload(b"t", r"\\srv\GL\Zahlen.xlsx", "https://chat.ethical-ai.example/upload"));
+        let ok = asked(&upload(
+            b"t",
+            r"\\srv\GL\Zahlen.xlsx",
+            "https://chat.ethical-ai.example/upload",
+        ));
         assert_eq!(verdict(&c, &ok), None, "freigegebenes Ziel");
 
-        let nope = asked(&upload(b"t", r"\\srv\GL\Zahlen.xlsx", "https://gemini.google.com/app"));
+        let nope = asked(&upload(
+            b"t",
+            r"\\srv\GL\Zahlen.xlsx",
+            "https://gemini.google.com/app",
+        ));
         assert!(verdict(&c, &nope).is_some(), "alles andere bleibt zu");
 
         // An IP in the list allows no name.
         let ip_only = cfg_allowing(true, vec!["10.0.0.7"]);
-        assert!(verdict(&ip_only, &ok).is_some(), "IP-Eintrag deckt keinen Hostnamen");
+        assert!(
+            verdict(&ip_only, &ok).is_some(),
+            "IP-Eintrag deckt keinen Hostnamen"
+        );
     }
 
     /// A paste from the clipboard carries no path. Today we pass no verdict
@@ -1178,15 +1368,27 @@ mod tests {
             // AgentToChrome.response = 1
             let resp = field(&msg, 1).expect("Huelle AgentToChrome fehlt");
             // ContentAnalysisResponse.request_token = 1
-            assert_eq!(field(&resp, 1).as_deref(), Some(&b"tok-1"[..]), "Zeichen fehlt");
+            assert_eq!(
+                field(&resp, 1).as_deref(),
+                Some(&b"tok-1"[..]),
+                "Zeichen fehlt"
+            );
             // results = 4
             let result = field(&resp, 4).expect("results fehlt");
             assert_eq!(field(&result, 1).as_deref(), Some(&b"dlp"[..]), "tag");
             // triggered_rules = 3 only exists on a block
             let rules = field(&result, 3);
-            assert_eq!(rules.is_some(), expect_rule, "triggered_rules bei block={block:?}");
+            assert_eq!(
+                rules.is_some(),
+                expect_rule,
+                "triggered_rules bei block={block:?}"
+            );
             if let Some(tr) = rules {
-                assert_eq!(field(&tr, 2).as_deref(), Some("kein Abfluss aus GL".as_bytes()), "Regelname");
+                assert_eq!(
+                    field(&tr, 2).as_deref(),
+                    Some("kein Abfluss aus GL".as_bytes()),
+                    "Regelname"
+                );
             }
         }
     }
@@ -1197,16 +1399,29 @@ mod tests {
     /// is what the group policy hands it out for.
     #[test]
     fn a_drive_letter_is_taken_apart_and_put_back_on_the_share() {
-        assert_eq!(drive_of(Path::new(r"G:\Zahlen\Zahlen-004.dat")), Some(('G', r"\Zahlen\Zahlen-004.dat".to_string())));
-        assert_eq!(drive_of(Path::new(r"g:\a")), Some(('G', r"\a".to_string())), "kleiner Buchstabe zaehlt auch");
+        assert_eq!(
+            drive_of(Path::new(r"G:\Zahlen\Zahlen-004.dat")),
+            Some(('G', r"\Zahlen\Zahlen-004.dat".to_string()))
+        );
+        assert_eq!(
+            drive_of(Path::new(r"g:\a")),
+            Some(('G', r"\a".to_string())),
+            "kleiner Buchstabe zaehlt auch"
+        );
         // No letter: UNC paths and nonsense stay as they are.
         assert_eq!(drive_of(Path::new(r"\\srv\GL\a.dat")), None);
         assert_eq!(drive_of(Path::new("/tmp/a")), None);
         assert_eq!(drive_of(Path::new("")), None);
 
-        assert_eq!(splice(r"\\fs-01\GL", r"\Zahlen\Zahlen-004.dat"), PathBuf::from(r"\\fs-01\GL\Zahlen\Zahlen-004.dat"));
+        assert_eq!(
+            splice(r"\\fs-01\GL", r"\Zahlen\Zahlen-004.dat"),
+            PathBuf::from(r"\\fs-01\GL\Zahlen\Zahlen-004.dat")
+        );
         // A trailing separator in the registry must not double up.
-        assert_eq!(splice(r"\\fs-01\GL\", r"\Zahlen\a.dat"), PathBuf::from(r"\\fs-01\GL\Zahlen\a.dat"));
+        assert_eq!(
+            splice(r"\\fs-01\GL\", r"\Zahlen\a.dat"),
+            PathBuf::from(r"\\fs-01\GL\Zahlen\a.dat")
+        );
     }
 
     /// Both forms `QueryDosDevice` delivers for a network drive have to lead
@@ -1214,9 +1429,19 @@ mod tests {
     /// and was the reason not to trust `winpath` blindly here.
     #[test]
     fn both_forms_of_a_mapped_drive_lead_to_the_share() {
-        assert_eq!(nt_to_share(r"\??\UNC\fs-01\GL").as_deref(), Some(r"\\fs-01\GL"));
-        assert_eq!(nt_to_share(r"\Device\LanmanRedirector\;G:0000000000123456\fs-01\GL").as_deref(), Some(r"\\fs-01\GL"));
-        assert_eq!(nt_to_share("\\??\\UNC\\srv\\GL\0\0").as_deref(), Some(r"\\srv\GL"), "Nullbytes am Ende stoeren nicht");
+        assert_eq!(
+            nt_to_share(r"\??\UNC\fs-01\GL").as_deref(),
+            Some(r"\\fs-01\GL")
+        );
+        assert_eq!(
+            nt_to_share(r"\Device\LanmanRedirector\;G:0000000000123456\fs-01\GL").as_deref(),
+            Some(r"\\fs-01\GL")
+        );
+        assert_eq!(
+            nt_to_share("\\??\\UNC\\srv\\GL\0\0").as_deref(),
+            Some(r"\\srv\GL"),
+            "Nullbytes am Ende stoeren nicht"
+        );
         // A local drive is no share.
         assert_eq!(nt_to_share(r"\Device\HarddiskVolume3"), None);
     }
@@ -1227,17 +1452,39 @@ mod tests {
     #[test]
     fn the_policy_matches_the_pipe_the_service_opens() {
         let p = policy();
-        let get = |sub: &str, name: &str| p.iter().find(|(s, n, _)| *s == sub && *n == name).map(|(_, _, v)| v);
+        let get = |sub: &str, name: &str| {
+            p.iter()
+                .find(|(s, n, _)| *s == sub && *n == name)
+                .map(|(_, _, v)| v)
+        };
 
-        assert_eq!(get("", "PipePathName"), Some(&Value::Text(PIPE_NAME)), "Richtlinie und Pipe muessen denselben Namen nennen");
-        assert_eq!(get("", "IsPerUser"), Some(&Value::Dword(0)), "unsere Pipe liegt unter ProtectedPrefix\\Administrators, nicht je Benutzer");
+        assert_eq!(
+            get("", "PipePathName"),
+            Some(&Value::Text(PIPE_NAME)),
+            "Richtlinie und Pipe muessen denselben Namen nennen"
+        );
+        assert_eq!(
+            get("", "IsPerUser"),
+            Some(&Value::Dword(0)),
+            "unsere Pipe liegt unter ProtectedPrefix\\Administrators, nicht je Benutzer"
+        );
         assert_eq!(get("", "Enabled"), Some(&Value::Dword(1)));
 
         // All five interception points. On 2026-09-08 two of them were off,
         // and whoever dragged the file into the window was never asked.
-        for point in ["FileUpload", "DragAndDrop", "Clipboard", "Print", "Download"] {
+        for point in [
+            "FileUpload",
+            "DragAndDrop",
+            "Clipboard",
+            "Print",
+            "Download",
+        ] {
             let sub = format!("InterceptionPoints\\{point}");
-            assert_eq!(get(&sub, "Enabled"), Some(&Value::Dword(1)), "{point} muss an sein");
+            assert_eq!(
+                get(&sub, "Enabled"),
+                Some(&Value::Dword(1)),
+                "{point} muss an sein"
+            );
         }
 
         // Fail-open, see ADR 0002: no agent, no standstill.
@@ -1269,13 +1516,23 @@ mod tests {
     /// let through.
     #[test]
     fn a_request_without_its_envelope_is_not_a_question() {
-        let bare = inner_upload(b"t", r"\\srv\GL\Zahlen.xlsx", "https://gemini.google.com/app");
-        assert!(!matches!(parse_message(&bare), Some(Incoming::Ask(_))), "ohne Huelle ist es keine Frage");
+        let bare = inner_upload(
+            b"t",
+            r"\\srv\GL\Zahlen.xlsx",
+            "https://gemini.google.com/app",
+        );
+        assert!(
+            !matches!(parse_message(&bare), Some(Incoming::Ask(_))),
+            "ohne Huelle ist es keine Frage"
+        );
     }
 
     #[test]
     fn the_pipe_lies_where_only_an_administrator_may_create_it() {
-        assert_eq!(pipe_path("deelpe"), r"\\.\pipe\ProtectedPrefix\Administrators\deelpe");
+        assert_eq!(
+            pipe_path("deelpe"),
+            r"\\.\pipe\ProtectedPrefix\Administrators\deelpe"
+        );
         // The browser has to be allowed to read and write, otherwise it does
         // not reach its own watchdog.
         assert!(PIPE_DACL.contains("GRGW;;;WD"));

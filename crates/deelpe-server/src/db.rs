@@ -4,7 +4,9 @@
 use crate::auth;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use deelpe_core::central::{AccessAlert, CountBucket, LearnAction, LearnCommand, LogLine, Rule, ShareInfo};
+use deelpe_core::central::{
+    AccessAlert, CountBucket, LearnAction, LearnCommand, LogLine, Rule, ShareInfo,
+};
 use deelpe_core::correlate::{Alert, Target};
 use serde::Serialize;
 use sqlx::postgres::PgPoolOptions;
@@ -25,13 +27,19 @@ use uuid::Uuid;
 pub const MAX_DB_CONNECTIONS: u32 = 50;
 
 pub async fn connect(url: &str) -> Result<PgPool> {
-    Ok(PgPoolOptions::new().max_connections(MAX_DB_CONNECTIONS).acquire_timeout(std::time::Duration::from_secs(10)).connect(url).await?)
+    Ok(PgPoolOptions::new()
+        .max_connections(MAX_DB_CONNECTIONS)
+        .acquire_timeout(std::time::Duration::from_secs(10))
+        .connect(url)
+        .await?)
 }
 
 /// On the first start: user `admin` with a random password. Returns the
 /// password exactly once (for the log).
 pub async fn ensure_admin(pool: &PgPool) -> Result<Option<String>> {
-    let (n,): (i64,) = sqlx::query_as("SELECT count(*) FROM users").fetch_one(pool).await?;
+    let (n,): (i64,) = sqlx::query_as("SELECT count(*) FROM users")
+        .fetch_one(pool)
+        .await?;
     if n > 0 {
         return Ok(None);
     }
@@ -44,14 +52,22 @@ pub async fn ensure_admin(pool: &PgPool) -> Result<Option<String>> {
 }
 
 pub async fn setting_i64(pool: &PgPool, key: &str, default: i64) -> Result<i64> {
-    let v: Option<(serde_json::Value,)> = sqlx::query_as("SELECT value FROM settings WHERE key = $1").bind(key).fetch_optional(pool).await?;
+    let v: Option<(serde_json::Value,)> =
+        sqlx::query_as("SELECT value FROM settings WHERE key = $1")
+            .bind(key)
+            .fetch_optional(pool)
+            .await?;
     Ok(v.and_then(|(v,)| v.as_i64()).unwrap_or(default))
 }
 
 /// A switch from the settings. If the key is missing, `default` applies —
 /// a server that has never saved anything behaves as it did before.
 pub async fn setting_bool(pool: &PgPool, key: &str, default: bool) -> Result<bool> {
-    let v: Option<(serde_json::Value,)> = sqlx::query_as("SELECT value FROM settings WHERE key = $1").bind(key).fetch_optional(pool).await?;
+    let v: Option<(serde_json::Value,)> =
+        sqlx::query_as("SELECT value FROM settings WHERE key = $1")
+            .bind(key)
+            .fetch_optional(pool)
+            .await?;
     Ok(v.and_then(|(v,)| v.as_bool()).unwrap_or(default))
 }
 
@@ -59,7 +75,11 @@ pub async fn setting_bool(pool: &PgPool, key: &str, default: bool) -> Result<boo
 /// those live in `settings` but never leave through the API again (see
 /// `api::settings`).
 pub async fn setting_str(pool: &PgPool, key: &str) -> Result<Option<String>> {
-    let v: Option<(serde_json::Value,)> = sqlx::query_as("SELECT value FROM settings WHERE key = $1").bind(key).fetch_optional(pool).await?;
+    let v: Option<(serde_json::Value,)> =
+        sqlx::query_as("SELECT value FROM settings WHERE key = $1")
+            .bind(key)
+            .fetch_optional(pool)
+            .await?;
     Ok(v.and_then(|(v,)| v.as_str().map(str::to_string)))
 }
 
@@ -72,9 +92,15 @@ pub async fn setting_str(pool: &PgPool, key: &str) -> Result<Option<String>> {
 ///
 /// A missing key is the normal case, not the error case — the caller
 /// decides the default.
-pub async fn settings_map(pool: &PgPool, keys: &[&str]) -> Result<std::collections::HashMap<String, serde_json::Value>> {
+pub async fn settings_map(
+    pool: &PgPool,
+    keys: &[&str],
+) -> Result<std::collections::HashMap<String, serde_json::Value>> {
     let rows: Vec<(String, serde_json::Value)> =
-        sqlx::query_as("SELECT key, value FROM settings WHERE key = ANY($1)").bind(keys).fetch_all(pool).await?;
+        sqlx::query_as("SELECT key, value FROM settings WHERE key = ANY($1)")
+            .bind(keys)
+            .fetch_all(pool)
+            .await?;
     Ok(rows.into_iter().collect())
 }
 
@@ -132,19 +158,43 @@ pub struct AgentSettings {
 }
 
 pub async fn agent_settings(pool: &PgPool) -> Result<AgentSettings> {
-    const KEYS: [&str; 6] = ["config_generation", "report_interval_secs", "learn_days", "learn_push_enabled", "allow_processes", "agent_update_enabled"];
-    let rows: Vec<(String, serde_json::Value)> = sqlx::query_as("SELECT key, value FROM settings WHERE key = ANY($1)").bind(&KEYS[..]).fetch_all(pool).await?;
+    const KEYS: [&str; 6] = [
+        "config_generation",
+        "report_interval_secs",
+        "learn_days",
+        "learn_push_enabled",
+        "allow_processes",
+        "agent_update_enabled",
+    ];
+    let rows: Vec<(String, serde_json::Value)> =
+        sqlx::query_as("SELECT key, value FROM settings WHERE key = ANY($1)")
+            .bind(&KEYS[..])
+            .fetch_all(pool)
+            .await?;
     // A missing key is the normal case, not the error case: an installation
     // where nobody has ever saved anything does not have most of them. The
     // defaults are the same as in the single queries.
     let get = |k: &str| rows.iter().find(|(n, _)| n == k).map(|(_, v)| v);
     Ok(AgentSettings {
-        generation: get("config_generation").and_then(serde_json::Value::as_i64).unwrap_or(1),
-        report_interval_secs: get("report_interval_secs").and_then(serde_json::Value::as_i64).unwrap_or(30),
-        learn_days: get("learn_days").and_then(serde_json::Value::as_i64).unwrap_or(7),
-        learn_push_enabled: get("learn_push_enabled").and_then(serde_json::Value::as_bool).unwrap_or(false),
-        allow_processes: get("allow_processes").and_then(serde_json::Value::as_str).unwrap_or_default().to_string(),
-        agent_update_enabled: get("agent_update_enabled").and_then(serde_json::Value::as_bool).unwrap_or(false),
+        generation: get("config_generation")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(1),
+        report_interval_secs: get("report_interval_secs")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(30),
+        learn_days: get("learn_days")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(7),
+        learn_push_enabled: get("learn_push_enabled")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
+        allow_processes: get("allow_processes")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        agent_update_enabled: get("agent_update_enabled")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
     })
 }
 
@@ -199,17 +249,22 @@ pub struct Actor<'a> {
 
 impl Actor<'_> {
     /// No logged-in user: the service itself acted.
-    pub const SYSTEM: Actor<'static> = Actor { id: None, name: "system" };
+    pub const SYSTEM: Actor<'static> = Actor {
+        id: None,
+        name: "system",
+    };
 }
 
 pub async fn audit(pool: &PgPool, actor: Actor<'_>, action: &str, detail: serde_json::Value) {
-    let r = sqlx::query("INSERT INTO audit_log (user_id, user_name, action, detail) VALUES ($1, $2, $3, $4)")
-        .bind(actor.id)
-        .bind(actor.name)
-        .bind(action)
-        .bind(detail)
-        .execute(pool)
-        .await;
+    let r = sqlx::query(
+        "INSERT INTO audit_log (user_id, user_name, action, detail) VALUES ($1, $2, $3, $4)",
+    )
+    .bind(actor.id)
+    .bind(actor.name)
+    .bind(action)
+    .bind(detail)
+    .execute(pool)
+    .await;
     if let Err(e) = r {
         tracing::error!("audit: {e}");
     }
@@ -259,7 +314,11 @@ pub const RULE_COLS: &str =
     "id, name, path, scope, agent_id, source_id, allowed_groups, lockdown, strict, allow_destinations, enforce, hard_max_files, window_secs, ad_lock, enabled, created_at, updated_at";
 
 pub async fn all_rules(pool: &PgPool) -> Result<Vec<RuleRow>> {
-    Ok(sqlx::query_as(sqlx::AssertSqlSafe(format!("SELECT {RULE_COLS} FROM rules ORDER BY name"))).fetch_all(pool).await?)
+    Ok(sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT {RULE_COLS} FROM rules ORDER BY name"
+    )))
+    .fetch_all(pool)
+    .await?)
 }
 
 pub async fn rules_for_agent(pool: &PgPool, agent: Uuid) -> Result<Vec<RuleRow>> {
@@ -354,7 +413,11 @@ impl FileServer {
 fn valid_unc_host(h: &str) -> bool {
     h.len() <= 253
         && h.split('.').all(|label| {
-            !label.is_empty() && label.len() <= 63 && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            !label.is_empty()
+                && label.len() <= 63
+                && label
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
         })
 }
 
@@ -403,15 +466,20 @@ pub async fn file_servers(pool: &PgPool) -> Result<Vec<FileServer>> {
             // The name is the host in every `\\<host>\<share>` this server
             // contributes. An empty or unspellable one yields no rule path
             // at all rather than a malformed one.
-            name: Some(name.trim()).filter(|n| valid_unc_host(n)).unwrap_or_default().to_string(),
+            name: Some(name.trim())
+                .filter(|n| valid_unc_host(n))
+                .unwrap_or_default()
+                .to_string(),
             // A server that has never reported has no table — then there
             // is nothing to translate for its rules, and they stay out
             // instead of pointing at a guessed place.
-            shares: usable_shares(status
-                .as_ref()
-                .and_then(|v| v.get("shares").cloned())
-                .and_then(|v| serde_json::from_value(v).ok())
-                .unwrap_or_default()),
+            shares: usable_shares(
+                status
+                    .as_ref()
+                    .and_then(|v| v.get("shares").cloned())
+                    .and_then(|v| serde_json::from_value(v).ok())
+                    .unwrap_or_default(),
+            ),
             // IPv4 only: an IPv6 address does not stand in a UNC path as
             // itself but in the literal form
             // (`2001-db8--1.ipv6-literal.net`). Delivering it raw would
@@ -499,7 +567,8 @@ pub struct SourceRow {
     pub confirmed: bool,
 }
 
-pub const SOURCE_COLS: &str = "id, name, kind, address, first_seen, last_seen, lines, unparsed, confirmed";
+pub const SOURCE_COLS: &str =
+    "id, name, kind, address, first_seen, last_seen, lines, unparsed, confirmed";
 
 #[derive(Debug, Clone, FromRow, Serialize)]
 pub struct AlertRow {
@@ -622,19 +691,29 @@ fn silent_verdict(verdict: &str) -> bool {
 }
 
 /// An alert from the endpoint correlator (Mac/Linux). Returns true if new.
-pub async fn upsert_endpoint_alert(pool: &PgPool, origin: Origin, origin_name: &str, a: &Alert) -> Result<bool> {
+pub async fn upsert_endpoint_alert(
+    pool: &PgPool,
+    origin: Origin,
+    origin_name: &str,
+    a: &Alert,
+) -> Result<bool> {
     let (agent_id, source_id) = origin.cols();
     // The same derivation as in the correlator and in the CLI; only the
     // presentation is that of a column: no destination means NULL, not "?".
     let remote = match a.target() {
         Target::Volume(v) => Some(format!("volume {}", v.display())),
         Target::Copy(c) => Some(format!("copy to {}", c.display())),
-        Target::Net { ip, port: Some(p), .. } => Some(format!("{ip}:{p}")),
+        Target::Net {
+            ip, port: Some(p), ..
+        } => Some(format!("{ip}:{p}")),
         Target::Net { ip, port: None, .. } => Some(ip.to_string()),
         Target::Upload(u) => Some(format!("upload to {u}")),
         Target::Unknown => None,
     };
-    let verdict = serde_json::to_value(a.verdict)?.as_str().unwrap_or("new").to_string();
+    let verdict = serde_json::to_value(a.verdict)?
+        .as_str()
+        .unwrap_or("new")
+        .to_string();
     let files: Vec<String> = a.files.iter().map(|p| p.display().to_string()).collect();
     let (inserted,): (bool,) = sqlx::query_as(ALERT_UPSERT)
         .bind("endpoint")
@@ -662,7 +741,12 @@ pub async fn upsert_endpoint_alert(pool: &PgPool, origin: Origin, origin_name: &
     Ok(inserted)
 }
 
-pub async fn upsert_access_alert(pool: &PgPool, origin: Origin, origin_name: &str, a: &AccessAlert) -> Result<bool> {
+pub async fn upsert_access_alert(
+    pool: &PgPool,
+    origin: Origin,
+    origin_name: &str,
+    a: &AccessAlert,
+) -> Result<bool> {
     let (agent_id, source_id) = origin.cols();
     let rule_id = a.rule_id.as_deref().and_then(|s| Uuid::parse_str(s).ok());
     let (inserted,): (bool,) = sqlx::query_as(ALERT_UPSERT)
@@ -718,15 +802,23 @@ pub struct CountRow {
 /// identical reports produce the same statement.
 fn merge_counts(counts: &[CountBucket]) -> Vec<CountRow> {
     use chrono::Timelike;
-    let mut merged: std::collections::BTreeMap<(String, String, DateTime<Utc>), CountRow> = std::collections::BTreeMap::new();
+    let mut merged: std::collections::BTreeMap<(String, String, DateTime<Utc>), CountRow> =
+        std::collections::BTreeMap::new();
     for c in counts {
         // The same minute as `date_trunc('minute', ...)` in the statement;
         // whoever truncates differently here merges what the table keeps
         // apart (or the other way round).
-        let bucket = c.bucket.with_second(0).and_then(|t| t.with_nanosecond(0)).unwrap_or(c.bucket);
+        let bucket = c
+            .bucket
+            .with_second(0)
+            .and_then(|t| t.with_nanosecond(0))
+            .unwrap_or(c.bucket);
         let rule_id = c.rule_id.as_deref().and_then(|s| Uuid::parse_str(s).ok());
         // Clamped, not cast: a saturated u64 became -1 in the table.
-        let (files, bytes) = (i32::try_from(c.files).unwrap_or(i32::MAX), i64::try_from(c.bytes).unwrap_or(i64::MAX));
+        let (files, bytes) = (
+            i32::try_from(c.files).unwrap_or(i32::MAX),
+            i64::try_from(c.bytes).unwrap_or(i64::MAX),
+        );
         match merged.entry((c.path.clone(), c.user.key(), bucket)) {
             std::collections::btree_map::Entry::Occupied(mut e) => {
                 let row = e.get_mut();
@@ -735,7 +827,15 @@ fn merge_counts(counts: &[CountBucket]) -> Vec<CountRow> {
                 row.rule_id = rule_id.or(row.rule_id);
             }
             std::collections::btree_map::Entry::Vacant(e) => {
-                e.insert(CountRow { rule_id, path: c.path.clone(), user_key: c.user.key(), user_display: c.user.display(), bucket, files, bytes });
+                e.insert(CountRow {
+                    rule_id,
+                    path: c.path.clone(),
+                    user_key: c.user.key(),
+                    user_display: c.user.display(),
+                    bucket,
+                    files,
+                    bytes,
+                });
             }
         }
     }
@@ -786,9 +886,16 @@ pub async fn upsert_counts(pool: &PgPool, origin: Uuid, counts: &[CountBucket]) 
 /// they change, and then as a whole list — so delete and write anew rather
 /// than reconcile: with ten thousand rows that is faster and cannot drift
 /// apart.
-pub async fn replace_agent_groups(pool: &PgPool, agent_id: Uuid, groups: &[deelpe_core::central::GroupInfo]) -> Result<usize> {
+pub async fn replace_agent_groups(
+    pool: &PgPool,
+    agent_id: Uuid,
+    groups: &[deelpe_core::central::GroupInfo],
+) -> Result<usize> {
     let mut tx = pool.begin().await?;
-    sqlx::query("DELETE FROM agent_groups WHERE agent_id = $1").bind(agent_id).execute(&mut *tx).await?;
+    sqlx::query("DELETE FROM agent_groups WHERE agent_id = $1")
+        .bind(agent_id)
+        .execute(&mut *tx)
+        .await?;
     if !groups.is_empty() {
         let names: Vec<String> = groups.iter().map(|g| g.name.clone()).collect();
         let kinds: Vec<String> = groups.iter().map(|g| g.kind.clone()).collect();
@@ -817,7 +924,12 @@ pub struct GroupRow {
 
 /// Search groups. Always with a limit: in a customer environment there are
 /// tens of thousands, and neither the wire nor the browser wants them all.
-pub async fn search_groups(pool: &PgPool, q: Option<&str>, agent: Option<Uuid>, limit: i64) -> Result<Vec<GroupRow>> {
+pub async fn search_groups(
+    pool: &PgPool,
+    q: Option<&str>,
+    agent: Option<Uuid>,
+    limit: i64,
+) -> Result<Vec<GroupRow>> {
     let pattern = format!("%{}%", q.unwrap_or("").trim().to_lowercase());
     Ok(sqlx::query_as(
         "SELECT g.name, g.kind, g.agent_id, a.name AS agent_name \
@@ -856,7 +968,10 @@ pub async fn insert_agent_log(pool: &PgPool, agent_id: Uuid, lines: &[LogLine]) 
     // is no place to park megabytes. Null bytes are thrown out: Postgres
     // does not accept them in `text`, and a single such line would otherwise
     // make every further report from this agent unstorable.
-    let msgs: Vec<String> = lines.iter().map(|l| l.msg.chars().filter(|c| *c != '\0').take(2000).collect()).collect();
+    let msgs: Vec<String> = lines
+        .iter()
+        .map(|l| l.msg.chars().filter(|c| *c != '\0').take(2000).collect())
+        .collect();
     // `DO NOTHING`: if the server accepts the report and the answer gets
     // lost, the agent sends the same lines again — as with alerts and
     // counts, that must not duplicate anything.
@@ -877,7 +992,13 @@ pub async fn insert_agent_log(pool: &PgPool, agent_id: Uuid, lines: &[LogLine]) 
 
 /// The last lines of an agent, newest first. `level` filters on exactly
 /// that level (`info` shows infos only), `q` searches the text.
-pub async fn agent_log(pool: &PgPool, agent_id: Uuid, level: Option<&str>, q: Option<&str>, limit: i64) -> Result<Vec<LogRow>> {
+pub async fn agent_log(
+    pool: &PgPool,
+    agent_id: Uuid,
+    level: Option<&str>,
+    q: Option<&str>,
+    limit: i64,
+) -> Result<Vec<LogRow>> {
     Ok(sqlx::query_as(
         "SELECT id, at, level, target, msg FROM agent_log \
          WHERE agent_id = $1 AND ($2::text IS NULL OR level = $2) \
@@ -888,7 +1009,11 @@ pub async fn agent_log(pool: &PgPool, agent_id: Uuid, level: Option<&str>, q: Op
     .bind(level)
     // Check first, then wrap: `%a%` is three characters long and would
     // otherwise get through every length check.
-    .bind(q.map(str::trim).filter(|q| q.chars().count() > 2).map(|q| format!("%{q}%")))
+    .bind(
+        q.map(str::trim)
+            .filter(|q| q.chars().count() > 2)
+            .map(|q| format!("%{q}%")),
+    )
     .bind(limit)
     .fetch_all(pool)
     .await?)
@@ -910,7 +1035,11 @@ pub async fn pending_learn(pool: &PgPool, agent_id: Uuid) -> Result<Vec<LearnCom
         .map(|(id, alert_id, action)| LearnCommand {
             id,
             alert_id: alert_id.max(0) as u64,
-            action: if action == "flag" { LearnAction::Flag } else { LearnAction::Remember },
+            action: if action == "flag" {
+                LearnAction::Flag
+            } else {
+                LearnAction::Remember
+            },
         })
         .collect())
 }
@@ -930,7 +1059,13 @@ pub async fn mark_learn_applied(pool: &PgPool, agent_id: Uuid, ids: &[i64]) -> R
 }
 
 /// Queue an instruction. If the same one is already open, the old one stays.
-pub async fn queue_learn(pool: &PgPool, agent_id: Uuid, alert_id: i64, action: &str, by: Uuid) -> Result<()> {
+pub async fn queue_learn(
+    pool: &PgPool,
+    agent_id: Uuid,
+    alert_id: i64,
+    action: &str,
+    by: Uuid,
+) -> Result<()> {
     sqlx::query(
         "INSERT INTO learn_commands (agent_id, alert_id, action, created_by) VALUES ($1, $2, $3, $4) \
          ON CONFLICT DO NOTHING",
@@ -949,11 +1084,23 @@ mod tests {
     use super::*;
     use deelpe_core::central::UserRef;
 
-    fn count(path: &str, user: &str, at: &str, files: u32, bytes: u64, rule: Option<&str>) -> CountBucket {
+    fn count(
+        path: &str,
+        user: &str,
+        at: &str,
+        files: u32,
+        bytes: u64,
+        rule: Option<&str>,
+    ) -> CountBucket {
         CountBucket {
             rule_id: rule.map(str::to_string),
             path: path.into(),
-            user: UserRef { source: "SRV".into(), name: user.into(), domain: None, sid: None },
+            user: UserRef {
+                source: "SRV".into(),
+                name: user.into(),
+                domain: None,
+                sid: None,
+            },
             bucket: at.parse().unwrap(),
             files,
             bytes,
@@ -983,7 +1130,14 @@ mod tests {
     /// A saturated count stays the largest number, it does not turn negative.
     #[test]
     fn a_saturated_count_is_not_stored_negative() {
-        let rows = merge_counts(&[count("GL", "hans", "2026-09-10T10:00:05Z", u32::MAX, u64::MAX, None)]);
+        let rows = merge_counts(&[count(
+            "GL",
+            "hans",
+            "2026-09-10T10:00:05Z",
+            u32::MAX,
+            u64::MAX,
+            None,
+        )]);
         assert_eq!((rows[0].files, rows[0].bytes), (i32::MAX, i64::MAX));
     }
 
@@ -1001,20 +1155,53 @@ mod tests {
              VALUES (gen_random_uuid(), 'mac', 'macos', '0.1.0', 'fp', now() + interval '1 day') RETURNING id",
         )
         .fetch_one(&pool).await.unwrap();
-        let admin: Uuid = sqlx::query_scalar("INSERT INTO users (name, pw_hash, role) VALUES ('admin', '', 'admin') RETURNING id").fetch_one(&pool).await.unwrap();
+        let admin: Uuid = sqlx::query_scalar(
+            "INSERT INTO users (name, pw_hash, role) VALUES ('admin', '', 'admin') RETURNING id",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         let upsert = |verdict: &'static str| {
             sqlx::query(ALERT_UPSERT)
-                .bind("endpoint").bind(agent).bind(Option::<Uuid>::None).bind("mac").bind("a1")
-                .bind(Utc::now()).bind(Utc::now()).bind(Option::<String>::None).bind(Option::<String>::None).bind(Option::<Uuid>::None)
-                .bind("/GL/a.txt").bind("curl").bind(serde_json::json!([])).bind(1).bind(1_i64).bind("1.2.3.4:443")
-                .bind(verdict).bind("").bind(serde_json::json!({})).bind(false)
+                .bind("endpoint")
+                .bind(agent)
+                .bind(Option::<Uuid>::None)
+                .bind("mac")
+                .bind("a1")
+                .bind(Utc::now())
+                .bind(Utc::now())
+                .bind(Option::<String>::None)
+                .bind(Option::<String>::None)
+                .bind(Option::<Uuid>::None)
+                .bind("/GL/a.txt")
+                .bind("curl")
+                .bind(serde_json::json!([]))
+                .bind(1)
+                .bind(1_i64)
+                .bind("1.2.3.4:443")
+                .bind(verdict)
+                .bind("")
+                .bind(serde_json::json!({}))
+                .bind(false)
                 .execute(&pool)
         };
-        let open = || sqlx::query_scalar::<_, bool>("SELECT acknowledged_at IS NULL FROM alerts WHERE external_id = 'a1'").fetch_one(&pool);
+        let open = || {
+            sqlx::query_scalar::<_, bool>(
+                "SELECT acknowledged_at IS NULL FROM alerts WHERE external_id = 'a1'",
+            )
+            .fetch_one(&pool)
+        };
         upsert("new").await.unwrap();
-        sqlx::query("UPDATE alerts SET acknowledged_at = now(), acknowledged_by = $1").bind(admin).execute(&pool).await.unwrap();
+        sqlx::query("UPDATE alerts SET acknowledged_at = now(), acknowledged_by = $1")
+            .bind(admin)
+            .execute(&pool)
+            .await
+            .unwrap();
         upsert("new").await.unwrap();
-        assert!(!open().await.unwrap(), "an acknowledged alert stays acknowledged");
+        assert!(
+            !open().await.unwrap(),
+            "an acknowledged alert stays acknowledged"
+        );
         upsert("denied").await.unwrap();
         assert!(open().await.unwrap(), "a denied alarm is never silenced");
         upsert("denied").await.unwrap();
@@ -1037,51 +1224,129 @@ mod tests {
         )
         .fetch_one(&pool).await.unwrap();
         let t0: DateTime<Utc> = "2026-09-06T10:00:00Z".parse().unwrap();
-        let alert = |verdict: AccessVerdict, files: u32, bytes: u64, samples: &[&str], last: i64| AccessAlert {
-            external_id: "access:r1:hans:1".into(),
-            at: t0,
-            last_at: Some(t0 + chrono::Duration::seconds(last)),
-            user: UserRef { source: "srv".into(), name: "hans".into(), domain: None, sid: None },
-            rule_id: None,
-            path: "GL".into(),
-            files,
-            bytes,
-            sample_files: samples.iter().map(|s| s.to_string()).collect(),
-            client_ip: None,
-            verdict,
-            reason: Some(format!("{files} files")),
+        let alert =
+            |verdict: AccessVerdict, files: u32, bytes: u64, samples: &[&str], last: i64| {
+                AccessAlert {
+                    external_id: "access:r1:hans:1".into(),
+                    at: t0,
+                    last_at: Some(t0 + chrono::Duration::seconds(last)),
+                    user: UserRef {
+                        source: "srv".into(),
+                        name: "hans".into(),
+                        domain: None,
+                        sid: None,
+                    },
+                    rule_id: None,
+                    path: "GL".into(),
+                    files,
+                    bytes,
+                    sample_files: samples.iter().map(|s| s.to_string()).collect(),
+                    client_ip: None,
+                    verdict,
+                    reason: Some(format!("{files} files")),
+                }
+            };
+        let stored = || {
+            sqlx::query_as::<_, (String, i32, i64, serde_json::Value, Option<String>, Option<DateTime<Utc>>)>(
+            "SELECT verdict, file_count, bytes, files, reason, last_at FROM alerts WHERE external_id = 'access:r1:hans:1'").fetch_one(&pool)
         };
-        let stored = || sqlx::query_as::<_, (String, i32, i64, serde_json::Value, Option<String>, Option<DateTime<Utc>>)>(
-            "SELECT verdict, file_count, bytes, files, reason, last_at FROM alerts WHERE external_id = 'access:r1:hans:1'").fetch_one(&pool);
         let o = Origin::Agent(agent);
 
         // Growing is what re-reporting is for: learning turns into an alarm,
         // more files, more bytes.
-        upsert_access_alert(&pool, o, "srv", &alert(AccessVerdict::Learning, 50, 500, &["a.docx"], 10)).await.unwrap();
-        upsert_access_alert(&pool, o, "srv", &alert(AccessVerdict::HardLimit { files: 101, limit: 100 }, 101, 2048, &["a.docx", "b.docx"], 20)).await.unwrap();
+        upsert_access_alert(
+            &pool,
+            o,
+            "srv",
+            &alert(AccessVerdict::Learning, 50, 500, &["a.docx"], 10),
+        )
+        .await
+        .unwrap();
+        upsert_access_alert(
+            &pool,
+            o,
+            "srv",
+            &alert(
+                AccessVerdict::HardLimit {
+                    files: 101,
+                    limit: 100,
+                },
+                101,
+                2048,
+                &["a.docx", "b.docx"],
+                20,
+            ),
+        )
+        .await
+        .unwrap();
         let (v, n, b, f, r, _) = stored().await.unwrap();
-        assert_eq!((v.as_str(), n, b, r.as_deref()), ("hard_limit", 101, 2048, Some("101 files")));
+        assert_eq!(
+            (v.as_str(), n, b, r.as_deref()),
+            ("hard_limit", 101, 2048, Some("101 files"))
+        );
         assert_eq!(f, serde_json::json!(["a.docx", "b.docx"]));
 
         // The forged re-report: harmless verdict, nothing read, other files.
-        upsert_access_alert(&pool, o, "srv", &alert(AccessVerdict::Ok, 0, 0, &["decoy.txt"], 5)).await.unwrap();
+        upsert_access_alert(
+            &pool,
+            o,
+            "srv",
+            &alert(AccessVerdict::Ok, 0, 0, &["decoy.txt"], 5),
+        )
+        .await
+        .unwrap();
         let (v, n, b, f, r, last) = stored().await.unwrap();
         assert_eq!(v, "hard_limit", "the verdict does not go down");
         assert_eq!((n, b), (101, 2048), "counts do not go down");
-        assert_eq!(f, serde_json::json!(["a.docx", "b.docx", "decoy.txt"]), "files are added to, not replaced");
-        assert_eq!(r.as_deref(), Some("101 files"), "a lower verdict does not bring its own reason");
-        assert_eq!(last, Some(t0 + chrono::Duration::seconds(20)), "last_at does not go back");
+        assert_eq!(
+            f,
+            serde_json::json!(["a.docx", "b.docx", "decoy.txt"]),
+            "files are added to, not replaced"
+        );
+        assert_eq!(
+            r.as_deref(),
+            Some("101 files"),
+            "a lower verdict does not bring its own reason"
+        );
+        assert_eq!(
+            last,
+            Some(t0 + chrono::Duration::seconds(20)),
+            "last_at does not go back"
+        );
 
         // The list stops growing at its bound; what it holds stays.
         for i in 0..3 {
             let names: Vec<String> = (0..100).map(|j| format!("mass-{i}-{j}.docx")).collect();
             let names: Vec<&str> = names.iter().map(String::as_str).collect();
-            upsert_access_alert(&pool, o, "srv", &alert(AccessVerdict::HardLimit { files: 101, limit: 100 }, 101, 2048, &names, 30)).await.unwrap();
+            upsert_access_alert(
+                &pool,
+                o,
+                "srv",
+                &alert(
+                    AccessVerdict::HardLimit {
+                        files: 101,
+                        limit: 100,
+                    },
+                    101,
+                    2048,
+                    &names,
+                    30,
+                ),
+            )
+            .await
+            .unwrap();
         }
         let (.., f, _, _) = stored().await.unwrap();
         let f = f.as_array().unwrap();
         assert_eq!(f.len(), 200);
-        assert_eq!(&f[..3], &[serde_json::json!("a.docx"), serde_json::json!("b.docx"), serde_json::json!("decoy.txt")]);
+        assert_eq!(
+            &f[..3],
+            &[
+                serde_json::json!("a.docx"),
+                serde_json::json!("b.docx"),
+                serde_json::json!("decoy.txt")
+            ]
+        );
     }
 
     /// At an equal verdict a re-report still brings its own reason and
@@ -1101,31 +1366,68 @@ mod tests {
             external_id: "access:r1:hans:2".into(),
             at: t0,
             last_at: None,
-            user: UserRef { source: "srv".into(), name: "hans".into(), domain: None, sid: None },
+            user: UserRef {
+                source: "srv".into(),
+                name: "hans".into(),
+                domain: None,
+                sid: None,
+            },
             rule_id: None,
             path: "GL".into(),
             files: 101,
             bytes: 2048,
             sample_files: vec!["a.docx".into()],
             client_ip: Some(client_ip.into()),
-            verdict: AccessVerdict::HardLimit { files: 101, limit: 100 },
+            verdict: AccessVerdict::HardLimit {
+                files: 101,
+                limit: 100,
+            },
             reason: Some(reason.into()),
         };
         let o = Origin::Agent(agent);
-        let stored = || sqlx::query_as::<_, (Option<String>, serde_json::Value, Option<String>, Option<serde_json::Value>)>(
-            "SELECT reason, detail, first_reason, first_detail FROM alerts WHERE external_id = 'access:r1:hans:2'").fetch_one(&pool);
+        let stored = || {
+            sqlx::query_as::<_, (Option<String>, serde_json::Value, Option<String>, Option<serde_json::Value>)>(
+            "SELECT reason, detail, first_reason, first_detail FROM alerts WHERE external_id = 'access:r1:hans:2'").fetch_one(&pool)
+        };
 
-        upsert_access_alert(&pool, o, "srv", &alert("101 files from 192.0.2.7", "192.0.2.7")).await.unwrap();
+        upsert_access_alert(
+            &pool,
+            o,
+            "srv",
+            &alert("101 files from 192.0.2.7", "192.0.2.7"),
+        )
+        .await
+        .unwrap();
         let (_, _, first_reason, first_detail) = stored().await.unwrap();
-        assert_eq!((first_reason, first_detail), (None, None), "nothing to keep while nothing changed");
+        assert_eq!(
+            (first_reason, first_detail),
+            (None, None),
+            "nothing to keep while nothing changed"
+        );
 
-        upsert_access_alert(&pool, o, "srv", &alert("routine backup", "192.0.2.99")).await.unwrap();
-        upsert_access_alert(&pool, o, "srv", &alert("still routine", "192.0.2.98")).await.unwrap();
+        upsert_access_alert(&pool, o, "srv", &alert("routine backup", "192.0.2.99"))
+            .await
+            .unwrap();
+        upsert_access_alert(&pool, o, "srv", &alert("still routine", "192.0.2.98"))
+            .await
+            .unwrap();
         let (reason, detail, first_reason, first_detail) = stored().await.unwrap();
-        assert_eq!(reason.as_deref(), Some("still routine"), "the current state is the latest report's");
+        assert_eq!(
+            reason.as_deref(),
+            Some("still routine"),
+            "the current state is the latest report's"
+        );
         assert_eq!(detail["client_ip"], "192.0.2.98");
-        assert_eq!(first_reason.as_deref(), Some("101 files from 192.0.2.7"), "the first reason stays");
-        assert_eq!(first_detail.unwrap()["client_ip"], "192.0.2.7", "and so does the first detail");
+        assert_eq!(
+            first_reason.as_deref(),
+            Some("101 files from 192.0.2.7"),
+            "the first reason stays"
+        );
+        assert_eq!(
+            first_detail.unwrap()["client_ip"],
+            "192.0.2.7",
+            "and so does the first detail"
+        );
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -1136,7 +1438,10 @@ mod tests {
         let n = upsert_counts(
             &pool,
             origin,
-            &[count("GL", "hans", "2026-09-10T10:00:05Z", 5, 500, None), count("HR", "anna", "2026-09-10T10:00:05Z", 2, 200, Some(id))],
+            &[
+                count("GL", "hans", "2026-09-10T10:00:05Z", 5, 500, None),
+                count("HR", "anna", "2026-09-10T10:00:05Z", 2, 200, Some(id)),
+            ],
         )
         .await
         .unwrap();
@@ -1144,11 +1449,23 @@ mod tests {
         // The same minute once more, with smaller numbers and an id handed
         // in late: the larger number stays, the id is added, and no second
         // row comes into being.
-        upsert_counts(&pool, origin, &[count("GL", "hans", "2026-09-10T10:00:41Z", 1, 1, Some(id))]).await.unwrap();
+        upsert_counts(
+            &pool,
+            origin,
+            &[count("GL", "hans", "2026-09-10T10:00:41Z", 1, 1, Some(id))],
+        )
+        .await
+        .unwrap();
         let rows: Vec<(String, i32, i64, Option<Uuid>)> =
-            sqlx::query_as("SELECT path, files, bytes, rule_id FROM access_counts ORDER BY path").fetch_all(&pool).await.unwrap();
+            sqlx::query_as("SELECT path, files, bytes, rule_id FROM access_counts ORDER BY path")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
         assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0], ("GL".to_string(), 5, 500, Some(Uuid::parse_str(id).unwrap())));
+        assert_eq!(
+            rows[0],
+            ("GL".to_string(), 5, 500, Some(Uuid::parse_str(id).unwrap()))
+        );
         assert_eq!(rows[1].3, Some(Uuid::parse_str(id).unwrap()));
     }
 
@@ -1161,15 +1478,31 @@ mod tests {
         // Fresh installation: `0001_init.sql` sets three of the five keys,
         // the other two do not exist at all yet.
         let s = agent_settings(&pool).await.unwrap();
-        assert_eq!((s.generation, s.report_interval_secs, s.learn_days), (1, 30, 7));
+        assert_eq!(
+            (s.generation, s.report_interval_secs, s.learn_days),
+            (1, 30, 7)
+        );
         assert!(!s.learn_push_enabled && s.allow_processes.is_empty());
 
-        set_setting(&pool, "report_interval_secs", serde_json::json!(300)).await.unwrap();
-        set_setting(&pool, "learn_push_enabled", serde_json::json!(true)).await.unwrap();
-        set_setting(&pool, "allow_processes", serde_json::json!("Word.exe\nExcel.exe")).await.unwrap();
+        set_setting(&pool, "report_interval_secs", serde_json::json!(300))
+            .await
+            .unwrap();
+        set_setting(&pool, "learn_push_enabled", serde_json::json!(true))
+            .await
+            .unwrap();
+        set_setting(
+            &pool,
+            "allow_processes",
+            serde_json::json!("Word.exe\nExcel.exe"),
+        )
+        .await
+        .unwrap();
         let g = bump_generation(&pool).await.unwrap();
         let s = agent_settings(&pool).await.unwrap();
-        assert_eq!((s.generation, s.report_interval_secs, s.learn_days), (g, 300, 7));
+        assert_eq!(
+            (s.generation, s.report_interval_secs, s.learn_days),
+            (g, 300, 7)
+        );
         assert!(s.learn_push_enabled);
         assert_eq!(s.allow_processes, "Word.exe\nExcel.exe");
     }
@@ -1179,19 +1512,40 @@ mod tests {
     #[sqlx::test(migrations = "./migrations")]
     async fn a_new_server_build_bumps_the_generation_once(pool: PgPool) {
         // The very first start at all: the build is unknown, so nudge.
-        let g = bump_generation_on_new_build(&pool, "aaaa").await.unwrap().unwrap();
+        let g = bump_generation_on_new_build(&pool, "aaaa")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(g, 2, "aus der Vorgabe 1 der Migration");
         // Restart of the same build: nothing. Otherwise every agent
         // re-applies its policy after every `docker compose up`.
-        assert_eq!(bump_generation_on_new_build(&pool, "aaaa").await.unwrap(), None);
-        assert_eq!(bump_generation_on_new_build(&pool, "aaaa").await.unwrap(), None);
+        assert_eq!(
+            bump_generation_on_new_build(&pool, "aaaa").await.unwrap(),
+            None
+        );
+        assert_eq!(
+            bump_generation_on_new_build(&pool, "aaaa").await.unwrap(),
+            None
+        );
         // Update: nudge once, and the marker moves along.
-        assert_eq!(bump_generation_on_new_build(&pool, "bbbb").await.unwrap(), Some(3));
-        assert_eq!(bump_generation_on_new_build(&pool, "bbbb").await.unwrap(), None);
+        assert_eq!(
+            bump_generation_on_new_build(&pool, "bbbb").await.unwrap(),
+            Some(3)
+        );
+        assert_eq!(
+            bump_generation_on_new_build(&pool, "bbbb").await.unwrap(),
+            None
+        );
         // Own file unreadable: the build is unknown, and then it is better
         // to nudge than to leave a fleet on an old state.
-        assert_eq!(bump_generation_on_new_build(&pool, "").await.unwrap(), Some(4));
-        assert_eq!(bump_generation_on_new_build(&pool, "").await.unwrap(), Some(5));
+        assert_eq!(
+            bump_generation_on_new_build(&pool, "").await.unwrap(),
+            Some(4)
+        );
+        assert_eq!(
+            bump_generation_on_new_build(&pool, "").await.unwrap(),
+            Some(5)
+        );
         // Afterwards the value stands where `agent::report` reads it.
         assert_eq!(agent_settings(&pool).await.unwrap().generation, 5);
     }
@@ -1237,15 +1591,32 @@ mod tests {
         .await;
         let servers = file_servers(&pool).await.unwrap();
         let honest = &servers[0];
-        assert_eq!(honest.hosts().collect::<Vec<_>>(), vec!["SRV_01", "srv_01.corp.example", "192.0.2.201"]);
-        assert_eq!(honest.shares.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), vec!["GL", "C$"]);
+        assert_eq!(
+            honest.hosts().collect::<Vec<_>>(),
+            vec!["SRV_01", "srv_01.corp.example", "192.0.2.201"]
+        );
+        assert_eq!(
+            honest
+                .shares
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["GL", "C$"]
+        );
         let rogue = &servers[1];
         // An empty name yields no path at all (`endpoint_rule_path`), not
         // `\\ZZ\C$\Windows\GL`.
         assert_eq!(rogue.name, "");
         assert_eq!(rogue.fqdn, "");
         assert_eq!(rogue.addrs, vec!["203.0.113.77"]);
-        assert_eq!(rogue.shares.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), vec!["GL"]);
+        assert_eq!(
+            rogue
+                .shares
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["GL"]
+        );
     }
 
     #[test]
