@@ -76,3 +76,6 @@ assets = [
 ]
 maintainer-scripts = "../../packaging/deb"
 systemd-units = { enable = false }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
