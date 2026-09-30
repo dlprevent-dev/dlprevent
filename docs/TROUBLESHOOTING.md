@@ -165,6 +165,23 @@ being watched.
 **Agent cannot reach the server, certificate errors, expired agents.**
 [INSTALL.md → When it goes wrong anyway](INSTALL.md#when-it-goes-wrong-anyway).
 
+**The dashboard shows the old version after an update.** The version in the
+footer is the one compiled into the image, so the build used old code or the
+old image is still running. Check in this order:
+
+- `git status -sb` in the checkout says `ahead N, behind M` — `git pull`
+  refused. The history on GitHub was rewritten once, on 2026-09-30 before the
+  repository went public (commit authors); a checkout from before that still
+  has the old commits under other hashes. If `git status` lists no files of
+  your own, `git fetch origin && git reset --hard origin/main` puts it on the
+  published history. `.env` is not tracked and stays.
+- `grep -m1 '^version' Cargo.toml` in the checkout names the version you
+  expect, before you build.
+- `docker compose up -d` without `--build` starts the image that is already
+  there. With the Docker install that is `--build`; with an image built by hand
+  (the enterprise edition) it is `--no-build`, after the build.
+- The browser holds the old page: reload with Shift.
+
 **No email arrives.** Settings → Notifications → *Save and send a test email*
 saves first and then sends, and shows the mail server's own answer. The three
 usual ones:
