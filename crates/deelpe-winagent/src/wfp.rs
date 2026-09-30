@@ -121,10 +121,10 @@ pub fn may_cage(pid: u32, name: &str, asks_first: bool, name_vouched: bool) -> R
 /// Deliberately lenient — a wrong "no" takes the network from the shell or
 /// a browser. Yes when the file belongs to SYSTEM, TrustedInstaller or the
 /// administrators: Windows itself and whatever an installer put in place, a
-/// standard user cannot create such a file. Yes for a browser signed by its
-/// vendor under its own name, which covers Chrome installed per user. No
-/// only for a file a user owns that merely carries the name — the renamed
-/// tool. Only asked when the name is on a list, and only for a process that
+/// standard user cannot create such a file. Yes for a validly signed file
+/// whose original name is that name ([`signature_vouches_for`]), which covers
+/// every browser installed per user (Chrome, Opera, Vivaldi, Brave). No only
+/// for a file a user owns that merely carries the name — the renamed tool. Only asked when the name is on a list, and only for a process that
 /// has already read a strict folder.
 #[cfg(windows)]
 fn name_is_vouched_for(exe: &str) -> bool {
@@ -132,7 +132,16 @@ fn name_is_vouched_for(exe: &str) -> bool {
         return true;
     }
     let id = deelpe_sensors::windows::signature::SignatureCache::default().identity(exe);
-    crate::browser::may_exempt_its_image(&id)
+    signature_vouches_for(&id, short(exe))
+}
+
+/// A valid signature whose original file name (from the version resource,
+/// which renaming does not change) is `name`. The publisher is not asked:
+/// the lists are about not crippling the program that really is `opera.exe`,
+/// whoever publishes it — and a signed tool renamed keeps its own name.
+pub fn signature_vouches_for(id: &deelpe_core::identity::ProcessIdentity, name: &str) -> bool {
+    use deelpe_core::identity::{image_name, ProcessIdentity};
+    matches!(id, ProcessIdentity::Signed { signing_id, .. } if image_name(signing_id) == image_name(name))
 }
 
 #[cfg(not(windows))]
@@ -646,6 +655,23 @@ mod tests {
         assert!(may_cage(std::process::id(), "x.exe", false, false).is_err(), "nor the agent itself");
         assert!(may_cage(4242, "", false, false).is_err(), "nor what we cannot name");
         assert!(may_cage(1234, "chrome.exe", true, false).is_err(), "a browser that asked is judged by the connector");
+    }
+
+    /// Review 2026-09-30: Opera and Vivaldi install per user, and so does
+    /// Brave without elevation — owned by the user, signed by their vendor.
+    /// Checking against the three connector browsers caged them. Any valid
+    /// signature whose original file name is the protected name vouches;
+    /// a renamed tool keeps its own original name, or has none.
+    #[test]
+    fn a_signature_under_the_same_name_vouches_for_it() {
+        use deelpe_core::identity::ProcessIdentity;
+        let signed = |p: &str, n: &str| ProcessIdentity::Signed { team_id: p.into(), signing_id: n.into() };
+        assert!(signature_vouches_for(&signed("Opera Norway AS", "opera.exe"), "opera.exe"));
+        assert!(signature_vouches_for(&signed("Vivaldi Technologies AS", "vivaldi.exe"), "Vivaldi.exe"));
+        assert!(signature_vouches_for(&signed("Brave Software, Inc.", "brave.exe"), "brave.exe"));
+        assert!(signature_vouches_for(&signed("Microsoft Corporation", "EXPLORER.EXE.MUI"), "explorer.exe"));
+        assert!(!signature_vouches_for(&signed("Microsoft Corporation", "curl.exe"), "chrome.exe"), "a signed tool renamed");
+        assert!(!signature_vouches_for(&ProcessIdentity::Unknown { path: "chrome.exe".into() }, "chrome.exe"), "unsigned");
     }
 
     /// Whoever cages the shell takes the machine's operability away without
