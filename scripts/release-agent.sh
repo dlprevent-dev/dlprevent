@@ -36,7 +36,11 @@ echo "== building ($TAG)"
 ( cd "$ROOT" && cargo build --release -p deelpe-server --bin deelpe-sign >/dev/null )
 DEELPE_UPDATE_PUBKEY="$("$ROOT/target/release/deelpe-sign" pubkey "$KEY")"
 export DEELPE_UPDATE_PUBKEY
-( cd "$ROOT" && cargo build --release --target x86_64-pc-windows-gnu -p deelpe-winagent >/dev/null )
+# A public program should not name the machine it was built on: without
+# this the exe carried ~460 paths under the builder's home directory. The
+# last prefix that matches wins, so the project root comes last.
+REMAP="--remap-path-prefix=$HOME=/build --remap-path-prefix=$ROOT=/src"
+( cd "$ROOT" && RUSTFLAGS="${RUSTFLAGS:-} $REMAP" cargo build --release --target x86_64-pc-windows-gnu -p deelpe-winagent >/dev/null )
 [ -f "$EXE" ] || die "$EXE is missing"
 
 echo "== signing"
@@ -63,7 +67,7 @@ if [ -z "${GITEA_TOKEN:-}" ]; then
   echo "== attaching"
   gh release upload "$TAG" "$EXE" "$EXE.sig" --clobber >/dev/null
 else
-  REPO_API="${DEELPE_RELEASE_REPO:-https://git.example.com/api/v1/repos/owner/dlprevent}"
+  REPO_API="${DEELPE_RELEASE_REPO:?set DEELPE_RELEASE_REPO to the Gitea repository API, e.g. https://git.example.com/api/v1/repos/owner/dlprevent}"
   api() { curl -fsSL -H "Authorization: token $GITEA_TOKEN" "$@"; }
   # Reuse what is there: a second run of the same build should replace the
   # files, not create a second release.

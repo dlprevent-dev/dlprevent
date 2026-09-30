@@ -50,8 +50,13 @@ mkdir -p "$OUT"
 DEELPE_UPDATE_PUBKEY="$("$ROOT/target/release/deelpe-sign" pubkey "$KEY")"
 export DEELPE_UPDATE_PUBKEY
 
+# A public program should not name the machine it was built on: without
+# this the exe carried ~460 paths under the builder's home directory. The
+# last prefix that matches wins, so the project root comes last.
+REMAP="--remap-path-prefix=$HOME=/build --remap-path-prefix=$ROOT=/src"
+
 echo "== windows"
-( cd "$ROOT" && cargo build --release --target x86_64-pc-windows-gnu -p deelpe-winagent >/dev/null )
+( cd "$ROOT" && RUSTFLAGS="${RUSTFLAGS:-} $REMAP" cargo build --release --target x86_64-pc-windows-gnu -p deelpe-winagent >/dev/null )
 cp "$ROOT/target/x86_64-pc-windows-gnu/release/deelpe-winagent.exe" "$OUT/"
 
 echo "== mac"
