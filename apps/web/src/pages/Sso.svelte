@@ -58,7 +58,7 @@
     </div>
     <div class="row">
       <div class="field"><label for="ag">Administrator group</label><input id="ag" bind:value={v.admin_group} placeholder="empty: nobody becomes administrator through SSO" /></div>
-      <div class="field"><label for="vg">Allowed group (read only)</label><input id="vg" bind:value={v.viewer_group} placeholder="empty: everyone the provider lets through" /></div>
+      <div class="field"><label for="vg">Allowed group (read only)</label><input id="vg" bind:value={v.viewer_group} placeholder="empty: administrators only; * for everyone the provider lets through" /></div>
     </div>
     <label class="check"><input type="checkbox" bind:checked={v.auto_create} /> Create an account on its first sign-in</label>
     <p class="hint">Entra ID sends group object IDs, not names: put the IDs here, and add the groups claim under Token configuration. The role follows the groups on every sign-in. A local account with the same name is never taken over, and the provider's MFA replaces the local second factor for these accounts.</p>
