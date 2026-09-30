@@ -46,9 +46,11 @@ const CRITICAL: &[&str] = &[
 ///
 /// The comparison is **exact**, in the form from
 /// [`deelpe_core::identity::image_name`] — lower-cased and without Windows'
-/// `.mui`. Whoever names an EXE of their own `explorer.exe` is therefore
-/// spared; that is the intended direction: reporting an outflow instead of
-/// intervening is the cheaper mistake than crippling a machine.
+/// `.mui`. The name alone would spare an EXE of one's own called
+/// `explorer.exe`; the cage therefore believes it only for a file that
+/// belongs to the system or an installer (`wfp::name_is_vouched_for`). Where
+/// that cannot be told, sparing stays the direction: reporting an outflow
+/// instead of intervening is the cheaper mistake than crippling a machine.
 ///
 /// Without a name the answer is yes. If the signature check yields no image
 /// path, the name is empty -- and an empty name used to be on no list at all,
