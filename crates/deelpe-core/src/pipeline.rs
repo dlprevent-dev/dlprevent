@@ -445,7 +445,13 @@ mod tests {
         l.confirm();
         let a = learn_alert(1, true);
         assert_eq!(
-            apply_learn(&mut l, &[a.clone()], &[cmd(5, 1, LearnAction::Flag)], &[]).done,
+            apply_learn(
+                &mut l,
+                std::slice::from_ref(&a),
+                &[cmd(5, 1, LearnAction::Flag)],
+                &[]
+            )
+            .done,
             vec![5]
         );
         let mut next = a;

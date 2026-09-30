@@ -291,11 +291,15 @@ Work happens on `dev`; `main` carries what has been released. A pull request
 from `dev` to `main` merges it, and `main` takes nothing else.
 
 `.github/workflows/ci.yml` runs on every push and pull request to either
-branch, in three jobs: the workspace (`cargo check` plus `cargo test` against
-a Postgres service container), the Windows agent (`cargo win`, the same
-target triple as on a development machine), and `apps/web` (`npm test`,
-`tsc --noEmit`, `npm run build`).
+branch, in three jobs: the workspace (`cargo fmt --check`, `cargo clippy`
+with `-D warnings`, and `cargo test` against a Postgres service container),
+the Windows agent (`cargo clippy` with `-D warnings` on the same target
+triple as `cargo win`), and `apps/web` (`npm test`, `tsc --noEmit`,
+`npm run build`).
+
+CI uses the current stable Rust, so a new release can bring a new clippy
+lint that a development machine one version behind does not show yet.
+`rustup update` first when CI disagrees with you.
 
 The Swift tests are not part of it — they need a macOS runner. Run them
-locally, as above. `cargo fmt` and `cargo clippy` are not gates either; the
-tree does not satisfy them today, and making it do so is a separate job.
+locally, as above.

@@ -127,6 +127,7 @@ pub(super) async fn request_update(
     Admin(user): Admin,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
+    #[allow(clippy::type_complexity)] // a sqlx row
     let row: Option<(String, String, Option<DateTime<Utc>>, Option<String>)> =
         sqlx::query_as("SELECT name, kind, revoked_at, status->>'arch' FROM agents WHERE id = $1")
             .bind(id)

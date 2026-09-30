@@ -36,10 +36,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
       # The Linux Hermes sensor reads state.db through the system SQLite.
       - run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
-      - run: cargo check --workspace --all-targets
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
 
   windows-agent:
@@ -52,9 +55,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-gnu
+          components: clippy
       - run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64
       - uses: Swatinem/rust-cache@v2
-      - run: cargo win
+      - run: cargo clippy --target x86_64-pc-windows-gnu -p deelpe-winagent -p deelpe-sensors --all-targets -- -D warnings
 
   web:
     runs-on: ubuntu-latest

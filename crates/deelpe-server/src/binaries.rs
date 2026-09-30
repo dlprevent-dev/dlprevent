@@ -480,6 +480,10 @@ fn check_header(platform: &str, bytes: &[u8]) -> anyhow::Result<()> {
     }
 }
 
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
 #[cfg(test)]
 mod tests {
     /// Both sources — file picker and release — run through `install`, and
@@ -507,8 +511,4 @@ mod tests {
         // earlier, at `path_for`.
         assert!(super::check_header("bsd", b"egal").is_ok());
     }
-}
-
-fn hex(b: &[u8]) -> String {
-    b.iter().map(|x| format!("{x:02x}")).collect()
 }

@@ -123,6 +123,7 @@ pub(super) async fn login(
     Json(b): Json<Login>,
 ) -> Result<Response, ApiError> {
     let ip = caller(&st, peer, &headers)?;
+    #[allow(clippy::type_complexity)] // a sqlx row
     let row: Option<(Uuid, String, String, String, bool, Option<Vec<u8>>, bool)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT u.id, u.name, u.role, u.pw_hash, u.disabled, u.totp_secret, {} AND EXISTS (SELECT 1 FROM passkeys p WHERE p.user_id = u.id) FROM users u WHERE u.name = $1",
         auth::SECOND_FACTOR_DEMANDED
@@ -177,6 +178,7 @@ pub(super) async fn login_totp(
     let Some((since, Pending::Totp(id))) = st.pending_take(&key) else {
         return Err(refuse(&st, ip, "?", "totp", "sign in again").await);
     };
+    #[allow(clippy::type_complexity)] // a sqlx row
     let row: Option<(String, String, bool, Option<Vec<u8>>, i64)> = sqlx::query_as(
         "SELECT name, role, disabled, totp_secret, totp_used_step FROM users WHERE id = $1",
     )

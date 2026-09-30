@@ -144,7 +144,7 @@ pub fn parse_line(line: &str) -> Option<Event> {
         let writes = o
             .get("fflag")
             .and_then(Value::as_u64)
-            .map_or(false, |f| f & 2 != 0);
+            .is_some_and(|f| f & 2 != 0);
         (
             str_at(o, &["file", "path"])?,
             if writes {
@@ -169,7 +169,8 @@ pub fn parse_line(line: &str) -> Option<Event> {
             rename_target(r),
             r.get("source"),
         )
-    } else if let Some(l) = event.get("link") {
+    } else {
+        let l = event.get("link")?;
         let target = Some(
             PathBuf::from(str_at(l, &["target_dir", "path"])?)
                 .join(str_at(l, &["target_filename"])?),
@@ -180,8 +181,6 @@ pub fn parse_line(line: &str) -> Option<Event> {
             target,
             l.get("source"),
         )
-    } else {
-        return None;
     };
     let (inode, nlink) = file.map(stat_of).unwrap_or((None, None));
     Some(Event::File(FileEvent {

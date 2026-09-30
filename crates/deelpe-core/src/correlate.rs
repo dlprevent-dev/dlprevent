@@ -259,6 +259,9 @@ impl std::ops::Deref for Outcome {
     }
 }
 
+/// Sender PID, target address and port: what a [`Flow`] is summed per.
+type FlowKey = (u32, Option<IpAddr>, Option<u16>);
+
 /// Amount a touched sender sent to one target, summed over intervals. That
 /// way slow leakage is noticed too (below the threshold per interval, but a
 /// lot over hours), and one large upload produces one alert instead of one
@@ -540,14 +543,14 @@ pub struct Snapshot {
     inodes: Vec<((u64, u64), PathBuf)>,
     /// Totals per sender and target: a restart must not zero out a trickle.
     #[serde(default)]
-    flows: Vec<((u32, Option<IpAddr>, Option<u16>), Flow)>,
+    flows: Vec<(FlowKey, Flow)>,
 }
 
 pub struct Correlator {
     cfg: Config,
     touched: HashMap<u32, Touched>,
     /// (sender PID, target, port) → total since the touch.
-    flows: HashMap<(u32, Option<IpAddr>, Option<u16>), Flow>,
+    flows: HashMap<FlowKey, Flow>,
     /// pid → ppid, learned from all file events.
     parents: HashMap<u32, u32>,
     /// pid → identity from file events, for alerts across process chains.
@@ -1282,7 +1285,7 @@ impl Correlator {
             return Some(d.origin.clone());
         }
         // Hardlink to a protected file: same inode, different name.
-        if nlink.map_or(false, |n| n > 1) {
+        if nlink.is_some_and(|n| n > 1) {
             if let Some(o) = inode.and_then(|i| self.inodes.get(&i)) {
                 return Some(o.clone());
             }
@@ -1339,9 +1342,7 @@ impl Correlator {
             if hops >= CHAIN_DEPTH {
                 return None;
             }
-            let Some(&parent) = self.parents.get(&pid) else {
-                return None;
-            };
+            let &parent = self.parents.get(&pid)?;
             if parent <= 1 || parent == pid {
                 return None;
             }
@@ -3546,10 +3547,10 @@ mod tests {
             now,
         ));
         assert!(
-            c.touched.get(&10).is_none(),
-            "ignorierte zsh wird nicht berührt"
+            !c.touched.contains_key(&10),
+            "an ignored zsh is not touched"
         );
-        assert!(c.touched.get(&9).is_some(), "login dahinter schon");
+        assert!(c.touched.contains_key(&9), "the login behind it is");
         assert!(
             c.ingest(&net(12, "curl", now)).is_some(),
             "curl über login gefunden"

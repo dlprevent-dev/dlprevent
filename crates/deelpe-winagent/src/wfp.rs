@@ -141,6 +141,7 @@ fn name_is_vouched_for(exe: &str) -> bool {
 /// which renaming does not change) is `name`. The publisher is not asked:
 /// the lists are about not crippling the program that really is `opera.exe`,
 /// whoever publishes it — and a signed tool renamed keeps its own name.
+#[cfg_attr(not(windows), allow(dead_code))] // the caller is Windows-only; the tests run everywhere
 pub fn signature_vouches_for(id: &deelpe_core::identity::ProcessIdentity, name: &str) -> bool {
     use deelpe_core::identity::{image_name, ProcessIdentity};
     matches!(id, ProcessIdentity::Signed { signing_id, .. } if image_name(signing_id) == image_name(name))
@@ -207,6 +208,7 @@ fn exempt_by_name(name: &str) -> bool {
 }
 
 /// Netmask from a prefix length. `/0` is 0, `/32` is everything.
+#[cfg_attr(not(windows), allow(dead_code))] // the caller is Windows-only; the tests run everywhere
 fn v4_mask(bits: u8) -> u32 {
     if bits >= 32 {
         u32::MAX
@@ -250,10 +252,12 @@ pub struct Cages {
     /// Handle of the dynamic WFP session. `0` means: not open yet. As a
     /// number and not as a `HANDLE`, so that the struct may travel between
     /// Tokio tasks without an `unsafe impl Send`.
+    #[cfg_attr(not(windows), allow(dead_code))]
     engine: usize,
     /// The session could not be opened. Then it is not retried on every
     /// touch — the log would fill up and the error would be the same every
     /// time.
+    #[cfg_attr(not(windows), allow(dead_code))]
     broken: bool,
     /// Why no cage came up last time. Goes to the central, not only into
     /// the log: this component fails **open**, so nobody notices by
@@ -521,6 +525,9 @@ impl Cages {
 }
 
 #[cfg(windows)]
+// The WFP structs are C structs with unions inside: filled field by field, as
+// the Windows documentation does, not through nested initializers.
+#[allow(clippy::field_reassign_with_default)]
 mod win {
     use super::{v4_mask, Permit};
     use anyhow::Result;

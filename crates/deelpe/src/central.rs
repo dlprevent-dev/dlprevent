@@ -237,6 +237,19 @@ fn write_private(path: &Path, data: &[u8]) -> Result<()> {
     Ok(())
 }
 
+impl deelpe_core::session::CredentialStore for CentralConfig {
+    /// Fresh credentials into the same file as the old ones. On disk
+    /// first, only then does it count.
+    fn store(&mut self, fresh: &Credentials) -> Result<()> {
+        let mut next = self.clone();
+        next.cert_pem = fresh.cert_pem.clone();
+        next.key_pem = fresh.key_pem.clone();
+        next.save()?;
+        *self = next;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -304,18 +317,5 @@ mod tests {
         assert!(CentralConfig::load_from(&dir.path().join("nein.json"))
             .unwrap()
             .is_none());
-    }
-}
-
-impl deelpe_core::session::CredentialStore for CentralConfig {
-    /// Fresh credentials into the same file as the old ones. On disk
-    /// first, only then does it count.
-    fn store(&mut self, fresh: &Credentials) -> Result<()> {
-        let mut next = self.clone();
-        next.cert_pem = fresh.cert_pem.clone();
-        next.key_pem = fresh.key_pem.clone();
-        next.save()?;
-        *self = next;
-        Ok(())
     }
 }

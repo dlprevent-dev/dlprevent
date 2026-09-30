@@ -103,19 +103,19 @@ pub fn readiness() -> deelpe_core::central::SensorHealth {
         .and_then(|e| can_replace(&e))
         // The two belong together: being allowed to write **and** being
         // started again. Whoever has only one of them swaps into nothing.
-        .and_then(|()| {
-            #[cfg(windows)]
-            {
-                crate::service::restart_is_arranged()
-            }
-            #[cfg(not(windows))]
-            {
-                Ok(())
-            }
-        });
+        .and_then(|()| restart_is_arranged());
     deelpe_core::central::SensorHealth {
         name: "self-update".into(),
         ok: out.is_ok(),
         error: out.err().map(|e| format!("{e:#}")),
     }
+}
+
+#[cfg(windows)]
+use crate::service::restart_is_arranged;
+
+/// No service manager to ask outside Windows.
+#[cfg(not(windows))]
+fn restart_is_arranged() -> anyhow::Result<()> {
+    Ok(())
 }

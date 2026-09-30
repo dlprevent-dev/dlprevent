@@ -147,7 +147,7 @@ fn put_len_field(out: &mut Vec<u8>, field: u64, data: &[u8]) {
 }
 
 fn put_varint_field(out: &mut Vec<u8>, field: u64, v: u64) {
-    put_varint(out, (field << 3) | 0);
+    put_varint(out, field << 3);
     put_varint(out, v);
 }
 

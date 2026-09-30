@@ -133,9 +133,7 @@ fn remove(path: &Path, protected: &Protected) -> Result<Outcome> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Outcome::Gone),
         Err(e) => bail!("delete {}: {e}", path.display()),
     };
-    let info = FILE_DISPOSITION_INFO {
-        DeleteFile: true.into(),
-    };
+    let info = FILE_DISPOSITION_INFO { DeleteFile: true };
     unsafe {
         SetFileInformationByHandle(
             HANDLE(f.as_raw_handle()),
@@ -246,6 +244,7 @@ fn quarantine_sddl(own: Option<&str>) -> String {
 ///   check runs at open time, not on every read.
 /// - On FAT and exFAT — that is, on most sticks — there is no access list.
 ///   There this fails, and deleting is all that is left.
+///
 /// Elsewhere there is no access list to set; the copy is deleted all the
 /// same. The verdict on that is in [`quarantine_sddl`].
 #[cfg(not(windows))]

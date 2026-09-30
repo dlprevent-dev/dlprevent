@@ -19,7 +19,7 @@ pub fn print_response(r: Response) {
                 println!("No protected folders. `deelpe watch add <folder>`");
             }
             for w in ws {
-                println!("  {} {}", "🔒".to_string(), w.display());
+                println!("  🔒 {}", w.display());
             }
         }
         Response::Ignored(rules) => {

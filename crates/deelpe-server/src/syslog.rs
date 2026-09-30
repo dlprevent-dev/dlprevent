@@ -596,6 +596,7 @@ async fn load_ctx(
     host: Option<&str>,
     kind: &str,
 ) -> Result<Option<SourceCtx>> {
+    #[allow(clippy::type_complexity)] // a sqlx row
     let row: Option<(
         Uuid,
         String,

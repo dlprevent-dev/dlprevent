@@ -45,7 +45,7 @@ pub(super) async fn reputation(
         .ips
         .unwrap_or_default()
         .split(',')
-        .filter_map(|s| abuseipdb::ip_of(s))
+        .filter_map(abuseipdb::ip_of)
         .map(|ip| ip.to_string())
         .take(MAX_IPS)
         .collect();
@@ -93,14 +93,14 @@ pub(super) async fn refresh(
         return Err(bad("daily lookup budget spent, try again tomorrow"));
     }
     let r = abuseipdb::check(
-        &abuseipdb::client().map_err(|e| bad(&e.to_string()))?,
+        &abuseipdb::client().map_err(|e| bad(e.to_string()))?,
         &addr.to_string(),
         &key,
     )
     .await
     .map_err(|e| {
         st.abuse.lock().unwrap().last_error = Some(e.to_string());
-        bad(&e.to_string())
+        bad(e.to_string())
     })?;
     abuseipdb::store(&st.pool, &r).await?;
     {

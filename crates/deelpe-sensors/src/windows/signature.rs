@@ -247,8 +247,10 @@ fn original_filename(path: &str) -> Option<String> {
             && tr_len >= 4
         {
             std::slice::from_raw_parts(tr as *const u16, (tr_len / 2) as usize)
-                .chunks_exact(2)
-                .map(|c| (c[0], c[1]))
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|&[lang, cp]| (lang, cp))
                 .collect()
         } else {
             // With nothing stated, the usual case: English (US), Unicode.

@@ -118,7 +118,7 @@ pub fn platform_sensors() -> Vec<SensorSpec> {
         vec![
             SensorSpec {
                 name: "fanotify",
-                make: |_| Box::new(linux::fanotify::Fanotify::default()),
+                make: |_| Box::new(linux::fanotify::Fanotify),
             },
             SensorSpec {
                 name: "procnet",
