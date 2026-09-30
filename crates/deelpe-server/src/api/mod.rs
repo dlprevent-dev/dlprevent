@@ -1320,6 +1320,29 @@ mod tests {
     /// signature — otherwise one administrator login could hand every
     /// endpoint any program past the key. Upload and removal land in the
     /// audit log either way.
+    /// Review 2026-09-30: a server without a key of its own (built with an
+    /// empty DEELPE_UPDATE_PUBKEY, nothing in the settings) threw away the
+    /// .sig uploaded with the official program, and every agent that
+    /// carries the key refused the update for want of a statement. The
+    /// server cannot check it; the agents can, so it is passed on as it is.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn without_a_key_the_uploaded_statement_is_passed_on_unchecked(pool: sqlx::PgPool) {
+        let data_dir = std::env::temp_dir().join(format!("deelpe-upload-test-{}", Uuid::new_v4()));
+        let st = test_app_in(pool.clone(), data_dir.clone());
+        let app = router(st.clone(), Router::new());
+        let admin = test_session(&pool, "admin").await;
+        let upload = |q: &'static str| {
+            let req = Request::builder().method("POST").uri(format!("/api/binaries/windows{q}")).header(header::COOKIE, &admin).body(axum::body::Body::from(&b"MZ ein Programm"[..])).unwrap();
+            app.clone().oneshot(req)
+        };
+        assert_eq!(upload("?sig=deelpe-release-v1%0Afile%3A%20deelpe-winagent.exe%0A").await.unwrap().status(), StatusCode::OK);
+        assert_eq!(crate::binaries::release_statement(&st, "windows").as_deref(), Some("deelpe-release-v1\nfile: deelpe-winagent.exe\n"));
+        // Without a .sig there is nothing to pass on, and nothing stale stays.
+        assert_eq!(upload("").await.unwrap().status(), StatusCode::OK);
+        assert_eq!(crate::binaries::release_statement(&st, "windows"), None);
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
     #[sqlx::test(migrations = "./migrations")]
     async fn an_uploaded_agent_program_needs_the_release_key_and_is_audited(pool: sqlx::PgPool) {
         use base64::Engine;

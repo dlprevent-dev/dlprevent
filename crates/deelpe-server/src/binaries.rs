@@ -258,6 +258,13 @@ async fn upload(Admin(a): Admin, State(st): State<Shared>, Path(platform): Path<
         install_signed(&st, &platform, &body, &version, sig).await.map_err(|e| bad(format!("{e:#}")))?;
     } else {
         install(&st, &platform, &body).map_err(|e| bad(format!("{e:#}")))?;
+        // No key here to check it with — but the agents may carry one. The
+        // statement is passed on as it came; an agent with the key checks
+        // it, and without it an agent carrying the key would never update.
+        if let Some(sig) = q.sig.as_deref().filter(|s| !s.trim().is_empty()) {
+            let path = path_for(&st, &platform).ok_or_else(|| bad("unknown platform"))?;
+            write_atomic(&statement_path(&path), sig.as_bytes()).map_err(|e| bad(format!("{e:#}")))?;
+        }
     }
     let sha256 = hex(&Sha256::digest(&body));
     tracing::info!(platform, bytes = body.len(), "agent binary uploaded");
