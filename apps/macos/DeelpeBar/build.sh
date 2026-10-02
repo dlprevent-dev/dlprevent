@@ -13,7 +13,9 @@ REMAP="--remap-path-prefix=$HOME=/build --remap-path-prefix=$ROOT=/src"
 (cd "$ROOT" && RUSTFLAGS="${RUSTFLAGS:-} $REMAP" cargo build --release 2>&1 | grep -E "error|warning: unused|Finished" || true)
 test -x "$ROOT/target/release/deelpe"
 
-swift build -c release 2>&1 | grep -E "error:|warning:|Build complete" || true
+# The same for the Swift binaries: their debug map (N_SO/N_OSO stabs) named
+# every source and object file under the project root. `ld -S` leaves it out.
+swift build -c release -Xlinker -S 2>&1 | grep -E "error:|warning:|Build complete" || true
 test -x .build/release/DeelpeBar
 
 APP=build/DLPrevent.app
