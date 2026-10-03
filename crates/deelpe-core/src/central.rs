@@ -436,6 +436,20 @@ pub struct AgentConfig {
     /// and without an order it looks byte for byte as before.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub finish_learning: bool,
+    /// Enrollment tokens that make Chrome and Edge honour the content-analysis
+    /// connectors at all: without the browser being cloud-managed the policy
+    /// shows up as `Error` in `chrome://policy` and nothing is blocked. The
+    /// operator pastes the token from the Google (Chrome Browser Cloud
+    /// Management) or Microsoft (Edge management service) console into the
+    /// dashboard; the agent writes it to the browser's policy key at startup.
+    /// `None`/empty means "do not enrol" (and the agent clears a stale one).
+    ///
+    /// `default`/`skip_serializing_if`: older agents keep reading the answer,
+    /// and when unset the wire stays byte for byte as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chrome_enrollment_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edge_enrollment_token: Option<String>,
 }
 
 /// What is to happen with the pair of an alert. Corresponds to the socket

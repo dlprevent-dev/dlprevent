@@ -271,6 +271,18 @@
                 and keep the private half away from this server. Without a key nothing is ever fetched.
               {/if}
             </div></div>
+          <div class="field"><label for="chrometok">Chrome enrollment token</label>
+            <input id="chrometok" type="text" bind:value={s.chrome_enrollment_token} disabled={!admin} autocomplete="off"
+                   placeholder="from Chrome Browser Cloud Management" />
+            <div class="hint">Chrome blocks an upload before it leaves a strict folder only on a cloud-managed browser —
+              without this it reads the policy but shows <span class="mono">Error</span> and lets the upload through. Paste the
+              token from the Google Admin console (<span class="mono">Devices → Chrome → Managed browsers → Enroll</span>); the
+              agent writes it to the browser on its next report. Empty = not enrolled. Firefox needs none of this.</div></div>
+          <div class="field" style="margin-bottom:0"><label for="edgetok">Edge enrollment token</label>
+            <input id="edgetok" type="text" bind:value={s.edge_enrollment_token} disabled={!admin} autocomplete="off"
+                   placeholder="from the Microsoft Edge management service" />
+            <div class="hint">The same for Microsoft Edge, from the Microsoft Edge management service in the Microsoft 365 admin
+              center. Empty = not enrolled.</div></div>
         </fieldset>
 
       {:else if tab === 'signin'}

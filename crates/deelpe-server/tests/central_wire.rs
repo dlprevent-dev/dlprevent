@@ -176,6 +176,8 @@ fn config_wire_format() {
         allow_processes: Vec::new(),
         update_to_sha256: None,
         finish_learning: false,
+        chrome_enrollment_token: None,
+        edge_enrollment_token: None,
     };
     assert_eq!(
         serde_json::to_string(&c).unwrap(),
