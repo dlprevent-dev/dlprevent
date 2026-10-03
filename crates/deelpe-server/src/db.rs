@@ -155,16 +155,23 @@ pub struct AgentSettings {
     /// Off by default: whoever switches this on swaps the program on every
     /// machine in the company.
     pub agent_update_enabled: bool,
+    /// Cloud-management enrollment tokens the agent writes into the Chrome and
+    /// Edge policy keys so those browsers honour the content-analysis
+    /// connectors. Empty = not enrolled.
+    pub chrome_enrollment_token: String,
+    pub edge_enrollment_token: String,
 }
 
 pub async fn agent_settings(pool: &PgPool) -> Result<AgentSettings> {
-    const KEYS: [&str; 6] = [
+    const KEYS: [&str; 8] = [
         "config_generation",
         "report_interval_secs",
         "learn_days",
         "learn_push_enabled",
         "allow_processes",
         "agent_update_enabled",
+        "chrome_enrollment_token",
+        "edge_enrollment_token",
     ];
     let rows: Vec<(String, serde_json::Value)> =
         sqlx::query_as("SELECT key, value FROM settings WHERE key = ANY($1)")
@@ -195,6 +202,14 @@ pub async fn agent_settings(pool: &PgPool) -> Result<AgentSettings> {
         agent_update_enabled: get("agent_update_enabled")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false),
+        chrome_enrollment_token: get("chrome_enrollment_token")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        edge_enrollment_token: get("edge_enrollment_token")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
     })
 }
 

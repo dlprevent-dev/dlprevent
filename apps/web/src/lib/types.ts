@@ -50,6 +50,7 @@ export interface Settings { allow_processes: string; learn_days: number; report_
   notify_base_url: string; notify_alerts: boolean; notify_agent_down: boolean; notify_abuse_ip: boolean;
   notify_abuse_min_score: number; notify_digest_mins: number; notify_agent_down_mins: number; report_timezone: string;
   assist_enabled: boolean; assist_base_url: string; assist_model: string; assist_key?: string; assist_key_set: boolean; assist_daily_limit: number;
+  chrome_enrollment_token: string; edge_enrollment_token: string;
   config_generation: number }
 /** Response of `/api/notifications`: the state of mail delivery. `active`
  *  means the switch is on **and** the setup is complete. */

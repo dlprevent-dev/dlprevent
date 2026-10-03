@@ -243,6 +243,13 @@ const FILE_SERVER: &str = "windows_server";
 /// server: `\\FS-01\GL` and `\\192.0.2.201\GL` are the same
 /// folder but two strings, and which one arrives is decided by the human at
 /// the address bar (see `db::FileServer::hosts`).
+/// A trimmed setting, or `None` when it is blank — so an empty dashboard field
+/// is "not set" on the wire, not an empty string.
+fn none_if_blank(s: &str) -> Option<String> {
+    let t = s.trim();
+    (!t.is_empty()).then(|| t.to_string())
+}
+
 fn endpoint_rules(r: &db::RuleRow, servers: &[db::FileServer]) -> Vec<deelpe_core::central::Rule> {
     use deelpe_core::rules::endpoint_rule_path;
     let w = r.to_wire();
@@ -507,6 +514,10 @@ async fn report(
             .collect(),
         update_to_sha256: update_order,
         finish_learning,
+        // An empty field means "not enrolled": send None so the agent clears
+        // any token it set, rather than writing an empty string.
+        chrome_enrollment_token: none_if_blank(&settings.chrome_enrollment_token),
+        edge_enrollment_token: none_if_blank(&settings.edge_enrollment_token),
     };
     Ok(Json(ReportResponse {
         accepted_alerts,

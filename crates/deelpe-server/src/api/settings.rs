@@ -48,6 +48,17 @@ pub(super) struct Settings {
     /// in.
     #[serde(default, skip_deserializing)]
     release_pubkey_built_in: bool,
+    /// Cloud-management enrollment tokens for Chrome and Edge. Chrome and Edge
+    /// honour the content-analysis connectors only on a cloud-managed browser;
+    /// the operator pastes the token from the Google (Chrome Browser Cloud
+    /// Management) or Microsoft (Edge management service) console here, and the
+    /// agent writes it into the browser's policy key. Empty = not enrolled.
+    /// Plain text, readable back (like `release_pubkey`): it is not a secret,
+    /// it only names which managed tenant the browser joins.
+    #[serde(default)]
+    chrome_enrollment_token: String,
+    #[serde(default)]
+    edge_enrollment_token: String,
     /// Syslog receiver (UDP and TCP). Off means: the port is not bound.
     #[serde(default = "dtrue")]
     syslog_enabled: bool,
@@ -206,7 +217,7 @@ const MAX_ALLOW_PROCESSES: usize = 200;
 /// carries it, and both are read and written from the same list. Before, the
 /// names stood as bare strings once in the reading and once in the writing —
 /// a typo in either of the two compiled cleanly and got silently lost.
-const KEYS: [&str; 40] = [
+const KEYS: [&str; 42] = [
     "learn_days",
     "report_interval_secs",
     "alert_retain_days",
@@ -246,6 +257,8 @@ const KEYS: [&str; 40] = [
     "notify_agent_down_mins",
     "report_timezone",
     "allow_processes",
+    "chrome_enrollment_token",
+    "edge_enrollment_token",
     "config_generation",
 ];
 
@@ -283,6 +296,8 @@ pub(super) async fn settings(State(st): State<Shared>, _u: Admin) -> R<Settings>
         release_pubkey_built_in: crate::release::BUILT_IN_PUBKEY
             .map(str::trim)
             .is_some_and(|k| !k.is_empty()),
+        chrome_enrollment_token: str_of("chrome_enrollment_token"),
+        edge_enrollment_token: str_of("edge_enrollment_token"),
         syslog_enabled: bool_of("syslog_enabled", true),
         api_keys_enabled: bool_of("api_keys_enabled", false),
         require_2fa_admin: bool_of("require_2fa_admin", false),
@@ -524,6 +539,8 @@ pub(super) async fn update_settings(
         ("notify_digest_mins", json!(b.notify_digest_mins)),
         ("notify_agent_down_mins", json!(b.notify_agent_down_mins)),
         ("report_timezone", json!(b.report_timezone.trim())),
+        ("chrome_enrollment_token", json!(b.chrome_enrollment_token.trim())),
+        ("edge_enrollment_token", json!(b.edge_enrollment_token.trim())),
     ];
     // Secrets only when something really arrived: empty means „unchanged", a
     // single hyphen means „delete".
