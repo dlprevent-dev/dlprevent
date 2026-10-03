@@ -1670,9 +1670,15 @@ mod tests {
             c["service_provider"], "local_system_agent",
             "ties Chrome to the system pipe brcm_chrm_cas"
         );
-        assert_eq!(c["block_until_verdict"], 1, "no race: wait before the bytes move");
+        assert_eq!(
+            c["block_until_verdict"], 1,
+            "no race: wait before the bytes move"
+        );
         assert_eq!(c["default_action"], "allow", "fail-open, ADR 0002");
-        assert_eq!(c["enable"][0]["url_list"][0], "*", "every destination is analysed");
+        assert_eq!(
+            c["enable"][0]["url_list"][0], "*",
+            "every destination is analysed"
+        );
 
         // The three interception points Firefox gets, named the Chrome way.
         assert!(CHROME_CONNECTORS.contains(&"OnFileAttachedEnterpriseConnector"));

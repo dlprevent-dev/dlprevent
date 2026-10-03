@@ -236,10 +236,7 @@ pub async fn run(mut stop: tokio::sync::watch::Receiver<bool>) -> Result<()> {
     // One listener per pipe name: Firefox reaches us at our own `PIPE_NAME`,
     // Chrome only ever at the hardwired `CHROME_PIPE_NAME`. Same verdict, same
     // alert channel — only the name on the door differs.
-    for name in [
-        crate::browser::PIPE_NAME,
-        crate::browser::CHROME_PIPE_NAME,
-    ] {
+    for name in [crate::browser::PIPE_NAME, crate::browser::CHROME_PIPE_NAME] {
         let policy = policy.connector();
         let blocked_tx = blocked_tx.clone();
         tokio::spawn(async move {
