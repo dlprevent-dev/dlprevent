@@ -89,6 +89,22 @@ fn serve() -> Result<()> {
         Err(e) => tracing::warn!("recovery action not set ({e:#}); after replacing its program this service would stay down"),
     }
 
+    // Reapply the browser policy on every start, for the same reason as the
+    // recovery action: `install` writes it once, but a dashboard update only
+    // swaps the program and restarts — it never runs `install` again. Without
+    // this a freshly updated agent listens on its pipes while Firefox, Chrome
+    // and Edge were never told to ask. Idempotent: it overwrites the same
+    // values. Best effort — a service account without registry rights logs
+    // the reason, and that reaches the dashboard with the next report.
+    for (what, r) in [
+        ("Firefox", crate::browser::install_policy()),
+        ("Chrome/Edge", crate::browser::install_chrome_policy()),
+    ] {
+        if let Err(e) = r {
+            tracing::warn!("{what} content-analysis policy not written ({e:#}); that browser will not ask before an upload");
+        }
+    }
+
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -328,6 +344,12 @@ pub fn install(account: Option<String>, password: Option<String>) -> Result<()> 
             println!("  WARNING: the Firefox content-analysis policy could not be written: {e:#}")
         }
     }
+    match crate::browser::install_chrome_policy() {
+        Ok(()) => {}
+        Err(e) => {
+            println!("  WARNING: the Chrome content-analysis policy could not be written: {e:#}")
+        }
+    }
     println!("start it: deelpe-winagent service start");
     Ok(())
 }
@@ -345,6 +367,7 @@ pub fn uninstall() -> Result<()> {
     // A browser that keeps asking for an agent that no longer exists waits
     // for the timeout on every upload.
     crate::browser::remove_policy()?;
+    crate::browser::remove_chrome_policy()?;
     println!("service '{SERVICE_NAME}' removed.");
     Ok(())
 }

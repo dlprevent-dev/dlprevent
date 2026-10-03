@@ -233,16 +233,22 @@ pub async fn run(mut stop: tokio::sync::watch::Receiver<bool>) -> Result<()> {
     // invisible. Now it creates an alert, like any other finding.
     let (blocked_tx, mut blocked_rx) =
         tokio::sync::mpsc::channel::<crate::browser::Blocked>(BLOCKED_QUEUE);
-    {
+    // One listener per pipe name: Firefox reaches us at our own `PIPE_NAME`,
+    // Chrome only ever at the hardwired `CHROME_PIPE_NAME`. Same verdict, same
+    // alert channel — only the name on the door differs.
+    for name in [
+        crate::browser::PIPE_NAME,
+        crate::browser::CHROME_PIPE_NAME,
+    ] {
         let policy = policy.connector();
+        let blocked_tx = blocked_tx.clone();
         tokio::spawn(async move {
-            if let Err(e) =
-                crate::browser::serve(crate::browser::PIPE_NAME, policy, blocked_tx).await
-            {
-                warn!("content analysis connector stopped: {e:#}");
+            if let Err(e) = crate::browser::serve(name, policy, blocked_tx).await {
+                warn!("content analysis connector for pipe '{name}' stopped: {e:#}");
             }
         });
     }
+    drop(blocked_tx);
     {
         let st_blocked = state.clone();
         tokio::spawn(async move {

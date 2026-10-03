@@ -36,6 +36,16 @@ use tokio::sync::RwLock;
 /// that service and policy can never drift apart.
 pub const PIPE_NAME: &str = "deelpe";
 
+/// The pipe base name Chrome's built-in local agent is hardwired to.
+///
+/// Unlike Firefox — which we hand our own `PIPE_NAME` through
+/// `PipePathName` — Chrome does **not** let a policy pick the pipe. Its
+/// `service_provider: local_system_agent` always rendezvous with the base
+/// `brcm_chrm_cas` (non-user-specific), from the SDK's `demo/agent.cc`
+/// (`kPathSystem`). So to be reachable by Chrome at all we have to listen
+/// under this name too, in parallel to our own.
+pub const CHROME_PIPE_NAME: &str = "brcm_chrm_cas";
+
 /// `TriggeredRule.Action`
 const ACTION_BLOCK: u64 = 3;
 /// `Result.Status`
@@ -906,6 +916,40 @@ async fn talk(
 /// The key Firefox reads its enterprise policies under.
 const POLICY_KEY: &str = r"SOFTWARE\Policies\Mozilla\Firefox\ContentAnalysis";
 
+/// The Chromium browsers that read the same local-agent connectors, each
+/// under its own policy key. Both rendezvous with `local_system_agent` at
+/// [`CHROME_PIPE_NAME`], so step 1's pipe already serves them — only the key
+/// differs. Each key is shared with every other policy of that browser, so
+/// removal deletes only our values, never the tree.
+///
+/// Edge here goes against the old lore that it needs a Microsoft partnership:
+/// that gate is on the *cloud* connectors. The *local* agent is a plain
+/// registry policy, documented for Edge ≥ 137 exactly as for Chrome.
+const CONNECTOR_POLICY_KEYS: &[(&str, &str)] = &[
+    ("Chrome", r"SOFTWARE\Policies\Google\Chrome"),
+    ("Edge", r"SOFTWARE\Policies\Microsoft\Edge"),
+];
+
+/// The three enterprise connectors we switch on: the upload, the paste of
+/// bulk data, and the print — the same three interception points Firefox
+/// gets. Each is a single `REG_SZ` holding a JSON array (data type
+/// *Dictionary*), not the subkey/DWORD shape Firefox uses. Chrome and Edge
+/// use the same names.
+const CHROME_CONNECTORS: &[&str] = &[
+    "OnFileAttachedEnterpriseConnector",
+    "OnBulkDataEntryEnterpriseConnector",
+    "OnPrintEnterpriseConnector",
+];
+
+/// What each connector points at. `local_system_agent` is the one Chrome ties
+/// to the system pipe [`CHROME_PIPE_NAME`] — the name it will knock on.
+/// `block_until_verdict: 1` is the whole point: Chrome waits for our answer
+/// before the bytes move, the one place without a race. `default_action:
+/// allow` is the fail-open out of ADR 0002 — if the agent is unreachable the
+/// browser is not crippled; it matches Firefox's `DefaultResult`/`TimeoutResult`
+/// on *allow*. The per-file block itself comes from our response, not from here.
+const CHROME_CONNECTOR_JSON: &str = r#"[{"service_provider":"local_system_agent","enable":[{"url_list":["*"],"tags":["dlp"]}],"block_until_verdict":1,"default_action":"allow"}]"#;
+
 /// One entry of the policy: subkey, name, value.
 #[derive(Debug, PartialEq, Eq)]
 enum Value {
@@ -964,9 +1008,9 @@ fn policy() -> Vec<(&'static str, &'static str, Value)> {
     v
 }
 
-/// Write the policy. Belongs to `service install`.
+/// Set one registry value under `HKLM\<path>`, creating the key if need be.
 #[cfg(windows)]
-pub fn install_policy() -> anyhow::Result<()> {
+fn write_value(path: &str, name: &str, value: &Value) -> anyhow::Result<()> {
     use anyhow::Context;
     use windows::core::{HSTRING, PCWSTR};
     use windows::Win32::System::Registry::{
@@ -974,58 +1018,85 @@ pub fn install_policy() -> anyhow::Result<()> {
         REG_DWORD, REG_OPTION_NON_VOLATILE, REG_SZ,
     };
 
+    let wide = HSTRING::from(path);
+    let mut key = HKEY::default();
+    unsafe {
+        RegCreateKeyExW(
+            HKEY_LOCAL_MACHINE,
+            PCWSTR(wide.as_ptr()),
+            None,
+            None,
+            REG_OPTION_NON_VOLATILE,
+            KEY_WRITE,
+            None,
+            &mut key,
+            None,
+        )
+        .ok()
+        .with_context(|| format!("create HKLM\\{path}"))?;
+    }
+    let n = HSTRING::from(name);
+    let r = unsafe {
+        match value {
+            Value::Dword(d) => RegSetValueExW(
+                key,
+                PCWSTR(n.as_ptr()),
+                None,
+                REG_DWORD,
+                Some(&d.to_le_bytes()),
+            ),
+            Value::Text(t) => {
+                // REG_SZ wants UTF-16 with a trailing zero, as bytes.
+                let bytes: Vec<u8> = t
+                    .encode_utf16()
+                    .chain(std::iter::once(0))
+                    .flat_map(|c| c.to_le_bytes())
+                    .collect();
+                RegSetValueExW(key, PCWSTR(n.as_ptr()), None, REG_SZ, Some(&bytes))
+            }
+        }
+    };
+    unsafe {
+        let _ = RegCloseKey(key);
+    }
+    r.ok()
+        .with_context(|| format!("set {name} under HKLM\\{path}"))
+}
+
+/// Write the policy. Belongs to `service install`.
+#[cfg(windows)]
+pub fn install_policy() -> anyhow::Result<()> {
     for (sub, name, value) in policy() {
         let path = if sub.is_empty() {
             POLICY_KEY.to_string()
         } else {
             format!(r"{POLICY_KEY}\{sub}")
         };
-        let wide = HSTRING::from(path.as_str());
-        let mut key = HKEY::default();
-        unsafe {
-            RegCreateKeyExW(
-                HKEY_LOCAL_MACHINE,
-                PCWSTR(wide.as_ptr()),
-                None,
-                None,
-                REG_OPTION_NON_VOLATILE,
-                KEY_WRITE,
-                None,
-                &mut key,
-                None,
-            )
-            .ok()
-            .with_context(|| format!("create HKLM\\{path}"))?;
-        }
-        let n = HSTRING::from(name);
-        let r = unsafe {
-            match value {
-                Value::Dword(d) => RegSetValueExW(
-                    key,
-                    PCWSTR(n.as_ptr()),
-                    None,
-                    REG_DWORD,
-                    Some(&d.to_le_bytes()),
-                ),
-                Value::Text(t) => {
-                    // REG_SZ wants UTF-16 with a trailing zero, as bytes.
-                    let bytes: Vec<u8> = t
-                        .encode_utf16()
-                        .chain(std::iter::once(0))
-                        .flat_map(|c| c.to_le_bytes())
-                        .collect();
-                    RegSetValueExW(key, PCWSTR(n.as_ptr()), None, REG_SZ, Some(&bytes))
-                }
-            }
-        };
-        unsafe {
-            let _ = RegCloseKey(key);
-        }
-        r.ok()
-            .with_context(|| format!("set {name} under HKLM\\{path}"))?;
+        write_value(&path, name, &value)?;
     }
     println!("Firefox content-analysis policy written (pipe '{PIPE_NAME}').");
     println!("Firefox reads it at startup — a running browser has to be restarted once.");
+    Ok(())
+}
+
+/// Write the Chromium connector policy for every browser in
+/// [`CONNECTOR_POLICY_KEYS`] (Chrome and Edge). Belongs to `service install`,
+/// right after the Firefox one. Three `REG_SZ` values under each browser's
+/// shared policy key.
+#[cfg(windows)]
+pub fn install_chrome_policy() -> anyhow::Result<()> {
+    for (label, key) in CONNECTOR_POLICY_KEYS {
+        for connector in CHROME_CONNECTORS {
+            write_value(key, connector, &Value::Text(CHROME_CONNECTOR_JSON))?;
+        }
+        println!("{label} content-analysis policy written (pipe '{CHROME_PIPE_NAME}').");
+    }
+    println!("Chrome/Edge read it at startup — a running browser has to be restarted once.");
+    println!(
+        "NOTE: they honour these connectors only on a browser managed by Chrome \
+         Enterprise Core / Microsoft Edge management; an unmanaged browser ignores \
+         them. Verify in the lab."
+    );
     Ok(())
 }
 
@@ -1041,6 +1112,45 @@ pub fn remove_policy() -> anyhow::Result<()> {
     // If it is gone already that is no error — uninstalling is meant to work.
     unsafe {
         let _ = RegDeleteTreeW(HKEY_LOCAL_MACHINE, PCWSTR(wide.as_ptr()));
+    }
+    Ok(())
+}
+
+/// Remove the Chromium connector values for Chrome and Edge. Each browser's
+/// policy key is shared with every other policy of that browser, so this
+/// deletes only our three values by name — never the key itself.
+#[cfg(windows)]
+pub fn remove_chrome_policy() -> anyhow::Result<()> {
+    use windows::core::{HSTRING, PCWSTR};
+    use windows::Win32::System::Registry::{
+        RegCloseKey, RegDeleteValueW, RegOpenKeyExW, HKEY, HKEY_LOCAL_MACHINE, KEY_SET_VALUE,
+    };
+
+    for (_label, policy_key) in CONNECTOR_POLICY_KEYS {
+        let wide = HSTRING::from(*policy_key);
+        let mut key = HKEY::default();
+        // Key missing already? Then there is nothing of ours to remove.
+        if unsafe {
+            RegOpenKeyExW(
+                HKEY_LOCAL_MACHINE,
+                PCWSTR(wide.as_ptr()),
+                None,
+                KEY_SET_VALUE,
+                &mut key,
+            )
+        }
+        .is_ok()
+        {
+            for connector in CHROME_CONNECTORS {
+                let n = HSTRING::from(*connector);
+                unsafe {
+                    let _ = RegDeleteValueW(key, PCWSTR(n.as_ptr()));
+                }
+            }
+            unsafe {
+                let _ = RegCloseKey(key);
+            }
+        }
     }
     Ok(())
 }
@@ -1492,6 +1602,34 @@ mod tests {
         assert_eq!(get("", "TimeoutResult"), Some(&Value::Dword(2)));
     }
 
+    /// Chrome's policy is a different shape — one JSON string per connector —
+    /// but it has to agree with the Firefox one: wait for the verdict, and
+    /// fail open. A broken string here means every Chrome upload silently
+    /// bypasses us, so parse it and pin the fields that matter.
+    #[test]
+    fn the_chrome_policy_waits_for_the_verdict_and_fails_open() {
+        let v: serde_json::Value = serde_json::from_str(CHROME_CONNECTOR_JSON)
+            .expect("the connector JSON has to parse, Chrome reads it verbatim");
+        let c = &v[0];
+        assert_eq!(
+            c["service_provider"], "local_system_agent",
+            "ties Chrome to the system pipe brcm_chrm_cas"
+        );
+        assert_eq!(c["block_until_verdict"], 1, "no race: wait before the bytes move");
+        assert_eq!(c["default_action"], "allow", "fail-open, ADR 0002");
+        assert_eq!(c["enable"][0]["url_list"][0], "*", "every destination is analysed");
+
+        // The three interception points Firefox gets, named the Chrome way.
+        assert!(CHROME_CONNECTORS.contains(&"OnFileAttachedEnterpriseConnector"));
+        assert!(CHROME_CONNECTORS.contains(&"OnBulkDataEntryEnterpriseConnector"));
+        assert!(CHROME_CONNECTORS.contains(&"OnPrintEnterpriseConnector"));
+
+        // Both Chromium browsers, each under its own key — Edge included.
+        let keys: Vec<&str> = CONNECTOR_POLICY_KEYS.iter().map(|(_, k)| *k).collect();
+        assert!(keys.contains(&r"SOFTWARE\Policies\Google\Chrome"));
+        assert!(keys.contains(&r"SOFTWARE\Policies\Microsoft\Edge"));
+    }
+
     /// An acknowledgement is not a question. Whoever answers it sends the
     /// browser an answer to something it never asked.
     #[test]
@@ -1532,6 +1670,12 @@ mod tests {
         assert_eq!(
             pipe_path("deelpe"),
             r"\\.\pipe\ProtectedPrefix\Administrators\deelpe"
+        );
+        // Chrome only ever rendezvous under the SDK's hardwired system name;
+        // if this drifts, Chrome talks to a pipe nobody opened.
+        assert_eq!(
+            pipe_path(CHROME_PIPE_NAME),
+            r"\\.\pipe\ProtectedPrefix\Administrators\brcm_chrm_cas"
         );
         // The browser has to be allowed to read and write, otherwise it does
         // not reach its own watchdog.
