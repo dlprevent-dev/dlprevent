@@ -60,7 +60,9 @@ and, in the places where it matters most, to make the answer *"nothing did"*.
   **Enforce** as well and the agent stops acting politely: the sending
   program loses its network on all three systems, and on a Windows
   workstation the browser upload is refused before a byte moves (Firefox
-  today) and a copy that made it out of the folder is deleted again.
+  straight away; Chrome and Edge once the browser is enrolled in its
+  vendor's management) and a copy that made it out of the folder is deleted
+  again.
 
 **And a promise about what it is not.** This is a detection tool with a
 narrow enforcement edge, not a guarantee. Nobody can stop a photograph of a
@@ -104,8 +106,9 @@ dashboard; all of it is the operator's decision.
 **It detects. It does not make data loss impossible.** DLPrevent watches the
 folders you name and reports when a program reads from one of them and then
 sends data outward. What it stops before the bytes move is narrow: a strict
-folder deletes the copy and cages the sender, and an upload is refused in
-Firefox only. Everything else is reported after the fact, or not seen at
+folder deletes the copy and cages the sender, and a browser upload is
+refused — in Firefox straight away, in Chrome and Edge once the browser is
+cloud-managed. Everything else is reported after the fact, or not seen at
 all — a photo of the screen, a private phone, an encrypted container, a
 channel nobody monitors. Treat it as one control among several, never as the
 one that makes the others unnecessary.
@@ -311,7 +314,16 @@ of a strict folder stay open.
 What does stop an upload works before the first byte and needs no driver: the
 browser connector refuses and knows the target URL, and the network cage takes
 the network from a program that has read from a strict folder. In **Firefox**
-(137 and newer) the upload is blocked; its policy is written at installation.
+(137 and newer) the upload is blocked as soon as the agent is installed; its
+policy is written there and then.
+
+**Chrome and Edge** speak the same connector, but only honour it on a browser
+their vendor counts as managed. The agent writes their policy too, yet until
+the browser carries an enrollment token the policy shows up as an error and
+nothing is blocked. Put the token (from Chrome Browser Cloud Management or the
+Microsoft Edge management service) into the dashboard once; the agent writes it
+to each browser and the block takes effect. Without it Chrome and Edge are
+reported after the fact like everything else. Firefox needs no such enrollment.
 
 ## Enterprise edition
 
