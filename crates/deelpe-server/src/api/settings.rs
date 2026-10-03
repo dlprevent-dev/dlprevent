@@ -539,8 +539,14 @@ pub(super) async fn update_settings(
         ("notify_digest_mins", json!(b.notify_digest_mins)),
         ("notify_agent_down_mins", json!(b.notify_agent_down_mins)),
         ("report_timezone", json!(b.report_timezone.trim())),
-        ("chrome_enrollment_token", json!(b.chrome_enrollment_token.trim())),
-        ("edge_enrollment_token", json!(b.edge_enrollment_token.trim())),
+        (
+            "chrome_enrollment_token",
+            json!(b.chrome_enrollment_token.trim()),
+        ),
+        (
+            "edge_enrollment_token",
+            json!(b.edge_enrollment_token.trim()),
+        ),
     ];
     // Secrets only when something really arrived: empty means „unchanged", a
     // single hyphen means „delete".
