@@ -662,6 +662,17 @@ async fn apply(c: &AgentConfig, policy: &Policy, skipped: &mut Vec<String>) {
     // loop, every round — not here: otherwise it would stand there without a
     // policy when it is loaded or reloaded after a ruleset adoption.
     policy.adopt(cfg).await;
+    // The browser enrollment tokens ride the config, not the one-time
+    // installer: an operator pastes or clears them in the dashboard and the
+    // change has to reach the registry here, at startup from the stored config
+    // and on every generation. Best effort — a service account without
+    // registry rights logs it and the browser simply stays unmanaged.
+    if let Err(e) = crate::browser::install_enrollment_tokens(
+        c.chrome_enrollment_token.as_deref(),
+        c.edge_enrollment_token.as_deref(),
+    ) {
+        warn!("browser enrollment token not written ({e:#}); Chrome/Edge stay unmanaged and will not block");
+    }
     info!(
         generation = c.generation,
         folders = n,

@@ -363,6 +363,8 @@ mod tests {
                 allow_processes: Vec::new(),
                 update_to_sha256: None,
                 finish_learning: false,
+                chrome_enrollment_token: None,
+                edge_enrollment_token: None,
             },
             learn: Vec::new(),
         }

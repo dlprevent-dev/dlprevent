@@ -950,11 +950,29 @@ const CHROME_CONNECTORS: &[&str] = &[
 /// on *allow*. The per-file block itself comes from our response, not from here.
 const CHROME_CONNECTOR_JSON: &str = r#"[{"service_provider":"local_system_agent","enable":[{"url_list":["*"],"tags":["dlp"]}],"block_until_verdict":1,"default_action":"allow"}]"#;
 
+/// Where each Chromium browser reads its cloud-management enrollment token.
+/// The key is the same as the connector policy, but the value name differs:
+/// Chrome calls it `CloudManagementEnrollmentToken`, Edge
+/// `EdgeManagementEnrollmentToken`. Without the token the browser is not
+/// cloud-managed and ignores the connectors (`Error` in `chrome://policy`).
+const ENROLLMENT_TOKEN_VALUES: &[(&str, &str)] = &[
+    (
+        r"SOFTWARE\Policies\Google\Chrome",
+        "CloudManagementEnrollmentToken",
+    ),
+    (
+        r"SOFTWARE\Policies\Microsoft\Edge",
+        "EdgeManagementEnrollmentToken",
+    ),
+];
+
 /// One entry of the policy: subkey, name, value.
 #[derive(Debug, PartialEq, Eq)]
 enum Value {
     Dword(u32),
     Text(&'static str),
+    /// A string only known at runtime — an enrollment token from the config.
+    Owned(String),
 }
 
 /// What has to be in the policy so that Firefox asks us.
@@ -1045,7 +1063,12 @@ fn write_value(path: &str, name: &str, value: &Value) -> anyhow::Result<()> {
                 REG_DWORD,
                 Some(&d.to_le_bytes()),
             ),
-            Value::Text(t) => {
+            Value::Text(_) | Value::Owned(_) => {
+                let t: &str = match value {
+                    Value::Text(t) => t,
+                    Value::Owned(t) => t.as_str(),
+                    Value::Dword(_) => unreachable!(),
+                };
                 // REG_SZ wants UTF-16 with a trailing zero, as bytes.
                 let bytes: Vec<u8> = t
                     .encode_utf16()
@@ -1100,6 +1123,59 @@ pub fn install_chrome_policy() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Write — or clear — the cloud-management enrollment tokens so Chrome and
+/// Edge count as managed and actually honour the connectors. A `Some`,
+/// non-empty token is written; `None` or empty **clears** any token we set, so
+/// unenrolling a browser is just emptying the field in the dashboard. Called
+/// from the config apply path, so it runs at startup and on every change.
+#[cfg(windows)]
+pub fn install_enrollment_tokens(chrome: Option<&str>, edge: Option<&str>) -> anyhow::Result<()> {
+    for ((key, name), token) in ENROLLMENT_TOKEN_VALUES.iter().zip([chrome, edge]) {
+        match token.map(str::trim).filter(|t| !t.is_empty()) {
+            Some(t) => write_value(key, name, &Value::Owned(t.to_string()))?,
+            None => delete_value(key, name),
+        }
+    }
+    Ok(())
+}
+
+/// No registry off Windows; the config carries the tokens on every platform,
+/// only the writing is Windows-only.
+#[cfg(not(windows))]
+pub fn install_enrollment_tokens(_chrome: Option<&str>, _edge: Option<&str>) -> anyhow::Result<()> {
+    Ok(())
+}
+
+/// Delete one value under `HKLM\<path>` if the key exists. Used both to clear
+/// an enrollment token and to clean up on uninstall.
+#[cfg(windows)]
+fn delete_value(path: &str, name: &str) {
+    use windows::core::{HSTRING, PCWSTR};
+    use windows::Win32::System::Registry::{
+        RegCloseKey, RegDeleteValueW, RegOpenKeyExW, HKEY, HKEY_LOCAL_MACHINE, KEY_SET_VALUE,
+    };
+
+    let wide = HSTRING::from(path);
+    let mut key = HKEY::default();
+    if unsafe {
+        RegOpenKeyExW(
+            HKEY_LOCAL_MACHINE,
+            PCWSTR(wide.as_ptr()),
+            None,
+            KEY_SET_VALUE,
+            &mut key,
+        )
+    }
+    .is_ok()
+    {
+        let n = HSTRING::from(name);
+        unsafe {
+            let _ = RegDeleteValueW(key, PCWSTR(n.as_ptr()));
+            let _ = RegCloseKey(key);
+        }
+    }
+}
+
 /// Remove the policy again. Belongs to `service uninstall`: a browser that
 /// after the uninstall keeps asking for an agent that is no longer there
 /// waits for the timeout on every upload.
@@ -1116,41 +1192,20 @@ pub fn remove_policy() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Remove the Chromium connector values for Chrome and Edge. Each browser's
-/// policy key is shared with every other policy of that browser, so this
-/// deletes only our three values by name — never the key itself.
+/// Remove the Chromium connector values *and* enrollment tokens for Chrome
+/// and Edge. Each browser's policy key is shared with every other policy of
+/// that browser, so this deletes only our values by name — never the key
+/// itself. The token has to go too, or the browser stays enrolled after the
+/// agent is gone.
 #[cfg(windows)]
 pub fn remove_chrome_policy() -> anyhow::Result<()> {
-    use windows::core::{HSTRING, PCWSTR};
-    use windows::Win32::System::Registry::{
-        RegCloseKey, RegDeleteValueW, RegOpenKeyExW, HKEY, HKEY_LOCAL_MACHINE, KEY_SET_VALUE,
-    };
-
     for (_label, policy_key) in CONNECTOR_POLICY_KEYS {
-        let wide = HSTRING::from(*policy_key);
-        let mut key = HKEY::default();
-        // Key missing already? Then there is nothing of ours to remove.
-        if unsafe {
-            RegOpenKeyExW(
-                HKEY_LOCAL_MACHINE,
-                PCWSTR(wide.as_ptr()),
-                None,
-                KEY_SET_VALUE,
-                &mut key,
-            )
+        for connector in CHROME_CONNECTORS {
+            delete_value(policy_key, connector);
         }
-        .is_ok()
-        {
-            for connector in CHROME_CONNECTORS {
-                let n = HSTRING::from(*connector);
-                unsafe {
-                    let _ = RegDeleteValueW(key, PCWSTR(n.as_ptr()));
-                }
-            }
-            unsafe {
-                let _ = RegCloseKey(key);
-            }
-        }
+    }
+    for (key, name) in ENROLLMENT_TOKEN_VALUES {
+        delete_value(key, name);
     }
     Ok(())
 }
