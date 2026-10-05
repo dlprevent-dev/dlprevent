@@ -80,6 +80,9 @@ pub struct SensorState {
     pub error: Option<String>,
 }
 
+// One answer per request, built and dropped right away: the size of the
+// largest variant (`Alert`, since it can name a user) costs nothing here.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Response {
     Ok(String),

@@ -1213,7 +1213,66 @@ Three things to keep in mind:
 Do **not** try to bake one enrollment into an image: `central.json` holds the
 device's private key. Clone it and every clone shares one identity — one
 `Revoke` then kills all of them, and the central server cannot tell them
-apart. Put the rollout token into the image's first-boot script instead.
+apart. Put the rollout token into the image's first-boot script instead — or,
+for machines reset to the image every night, see the next section.
+
+### Terminal servers and Citrix/VDI pools (non-persistent)
+
+A machine that is reset to its golden image every night forgets everything
+the agent wrote: its credentials, its learning phase, its alert numbers.
+Enrolling with an ordinary token on every boot would make one new agent per
+machine per night, start every learning phase over, and restart alert
+numbers at 1 — overwriting yesterday's alerts under the same agent.
+
+For these, make the token with **Windows → Workstation → Non-persistent**
+ticked and run its command **once on the golden image**. It ends in
+`--endpoint --non-persistent`:
+
+```powershell
+deelpe-winagent enroll https://dlp.company.local:8444 <token> --ca-sha256 <fingerprint> --endpoint --non-persistent
+```
+
+What happens then:
+
+- The image keeps `C:\ProgramData\deelpe\bootstrap.json` (address, token,
+  fingerprint; administrators and SYSTEM only). On every boot the service
+  enrolls again before it starts watching, retrying until the central server
+  answers.
+- The central server recognises the **host name** and hands back the agent
+  that machine was yesterday — same agent in the list, same rules, under a
+  new key. Only a new host name counts against **Devices**.
+- What the disk forgets, the central server keeps for the agent: learning
+  phase, alert numbers, the recent alerts a learn command refers to, and the
+  rules — so the machine protects from the moment it has enrolled, not from
+  its first report. The agent sends it along with a report whenever it
+  changes.
+- Credentials sealed into the image by accident do no harm: a clone notices
+  they were made for another host name and enrolls as itself.
+- Endpoint alerts name the **user** whose process it was (`CORP\anna`), not
+  just the program — on a terminal server the program alone names nobody. The
+  dashboard files them under the user's SID, the same key as that person's
+  alerts from the file server.
+
+Keep in mind:
+
+- **The token stays in the image and stays a secret.** It has to remain valid
+  as long as the image is in use (a year at most — renew the image's token
+  before it runs out). Revoking it stops the whole pool from enrolling the
+  next morning. Anyone holding it can claim a pool machine's host name and
+  shut that machine out until its next boot; every re-enrollment is in the
+  audit log (`agent_reenroll`).
+- **Only Windows workstations.** The server refuses the flag for every other
+  platform: only the Windows agent keeps its state with the central server.
+- **One learning phase per machine, not per user.** A pair learned from one
+  user's work is known for everyone on that terminal server.
+- **A revoked machine stays out.** It comes back every morning and is refused
+  every time — not even a token with uses left makes it a new agent. To let
+  it in again, delete the revoked agent in the list.
+- **The central server has to answer at boot.** Until a machine has enrolled
+  it has no credentials and no rules, and it does not watch anything; it
+  keeps trying, at most every five minutes.
+- **The service runs as LocalSystem.** Naming the user needs to read other
+  people's process tokens; under a dedicated account alerts may name no user.
 
 ### Windows via group policy
 

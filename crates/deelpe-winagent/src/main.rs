@@ -25,11 +25,15 @@ mod browser;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod audit;
 #[cfg_attr(not(windows), allow(dead_code))]
+mod bootstrap;
+#[cfg_attr(not(windows), allow(dead_code))]
 mod config;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod enforce;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod groups;
+/// Whose process raised the alert — on a terminal server, many people's.
+mod procuser;
 #[cfg(windows)]
 mod rights;
 #[cfg(windows)]
@@ -64,7 +68,10 @@ fn main() {
 /// the dashboard everything looked green. Turned up exactly like that in the
 /// lab on 2026-09-07.
 #[cfg(windows)]
-pub(crate) async fn run_role(stop: tokio::sync::watch::Receiver<bool>) -> anyhow::Result<()> {
+pub(crate) async fn run_role(mut stop: tokio::sync::watch::Receiver<bool>) -> anyhow::Result<()> {
+    if !bootstrap::ensure_enrolled(&mut stop).await? {
+        return Ok(());
+    }
     match config::CentralConfig::load()?.map(|c| c.kind()) {
         Some(deelpe_core::central::AgentKind::WindowsClient) => client::run(stop).await,
         _ => agent::run(stop).await,
@@ -100,6 +107,12 @@ enum Cmd {
         /// processes read from protected folders and where they send it.
         #[arg(long)]
         endpoint: bool,
+        /// The machine is reset to its image every night (terminal server,
+        /// Citrix/VDI). Run this once on the image: the token stays on disk,
+        /// and the service enrolls again on every boot as the same agent.
+        /// Needs a token made for it in the dashboard.
+        #[arg(long, requires = "endpoint")]
+        non_persistent: bool,
     },
     /// Watch and report until Ctrl-C. For continuous operation use the
     /// service (`service install`), otherwise the agent ends with the session.
@@ -216,15 +229,29 @@ fn main() -> anyhow::Result<()> {
         .build()?;
     rt.block_on(async {
         match cli.cmd {
-            Cmd::Enroll { url, token, ca_sha256, endpoint } => {
+            Cmd::Enroll { url, token, ca_sha256, endpoint: true, non_persistent: true } => {
+                let host = config::hostname();
+                let b = config::Bootstrap { url, token, ca_sha256 };
+                // Enrolling right away is the check: a wrong token or
+                // fingerprint shows here, not in every clone's log tomorrow.
+                let cfg = bootstrap::enroll(&b, &host).await?;
+                b.save()?;
+                println!("enrolled as {} at {} (workstation, non-persistent)", cfg.agent_id, cfg.url);
+                println!("bootstrap: {} — every boot enrolls this way again", config::BOOTSTRAP_PATH);
+                Ok(())
+            }
+            Cmd::Enroll { url, token, ca_sha256, endpoint, .. } => {
                 let host = config::hostname();
                 let kind = if endpoint {
                     deelpe_core::central::AgentKind::WindowsClient
                 } else {
                     deelpe_core::central::AgentKind::WindowsServer
                 };
-                let c = deelpe_core::net::enroll(&url, &token, &ca_sha256, &host, kind, env!("CARGO_PKG_VERSION")).await?;
-                let cfg = config::CentralConfig::from_credentials(c, kind);
+                let e = deelpe_core::net::enroll(&url, &token, &ca_sha256, &host, kind, env!("CARGO_PKG_VERSION")).await?;
+                if e.non_persistent {
+                    println!("note: the token is for non-persistent machines; on a golden image enroll with --non-persistent");
+                }
+                let cfg = config::CentralConfig::from_enrolled(e, kind, &host);
                 cfg.save()?;
                 println!("enrolled as {} at {} ({})", cfg.agent_id, cfg.url, if endpoint { "workstation" } else { "file server" });
                 println!("credentials: {}", config::CONFIG_PATH);

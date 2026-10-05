@@ -31,6 +31,7 @@ fn alerts() -> Vec<Alert> {
             copy_to: None,
             sender_read_directly: false,
             upload_url: None,
+            user: None,
         },
         Alert {
             id: 2,
@@ -51,6 +52,7 @@ fn alerts() -> Vec<Alert> {
             copy_to: None,
             sender_read_directly: false,
             upload_url: None,
+            user: None,
         },
     ]
 }

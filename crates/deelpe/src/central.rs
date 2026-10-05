@@ -205,8 +205,9 @@ pub async fn enroll(
     hostname: &str,
     version: &str,
 ) -> Result<CentralConfig> {
-    let c =
-        deelpe_core::net::enroll(url, token, ca_sha256, hostname, agent_kind(), version).await?;
+    let c = deelpe_core::net::enroll(url, token, ca_sha256, hostname, agent_kind(), version)
+        .await?
+        .creds;
     Ok(CentralConfig {
         url: c.url,
         agent_id: c.agent_id,
@@ -273,6 +274,7 @@ mod tests {
             copy_to: None,
             sender_read_directly: false,
             upload_url: None,
+            user: None,
         }
     }
 

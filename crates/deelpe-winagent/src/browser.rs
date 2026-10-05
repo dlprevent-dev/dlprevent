@@ -531,6 +531,7 @@ pub fn alert_for(b: &Blocked, id: u64) -> Alert {
         copy_to: None,
         sender_read_directly: false,
         upload_url: b.url.clone(),
+        user: None,
     }
 }
 

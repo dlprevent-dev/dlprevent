@@ -54,6 +54,7 @@ async fn enroll_and_report() {
         copy_to: None,
         sender_read_directly: false,
         upload_url: None,
+        user: None,
     };
     let resp = client
         .report(&Report {
@@ -66,6 +67,7 @@ async fn enroll_and_report() {
             groups: None,
             learn_done: vec![],
             log: vec![],
+            roaming: None,
         })
         .await
         .expect("Bericht");
@@ -90,6 +92,7 @@ async fn enroll_and_report() {
             groups: None,
             learn_done: vec![],
             log: vec![],
+            roaming: None,
         })
         .await
         .unwrap();
