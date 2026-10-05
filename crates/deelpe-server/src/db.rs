@@ -548,10 +548,13 @@ pub struct AgentRow {
     /// An open order to finish the learning phase. See migration 0016;
     /// `agent::report` clears it once the agent reports "active".
     pub learn_confirm_requested: Option<DateTime<Utc>>,
+    /// Reset to its image every night and enrolled again on every boot
+    /// (`agent::reenroll`). Migration 0023.
+    pub non_persistent: bool,
 }
 
 pub const AGENT_COLS: &str =
-    "id, name, kind, version, cert_fingerprint, cert_not_after, enrolled_at, last_seen, last_addr, status, revoked_at, update_requested, learn_confirm_requested";
+    "id, name, kind, version, cert_fingerprint, cert_not_after, enrolled_at, last_seen, last_addr, status, revoked_at, update_requested, learn_confirm_requested, non_persistent";
 
 /// The agent for a client certificate. The previous fingerprint counts as
 /// long as `prev_cert_until` lies in the future: otherwise an agent locks
@@ -677,6 +680,8 @@ const ALERT_UPSERT: &str = concat!(
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, CASE WHEN $20 THEN now() ELSE NULL END) \
      ON CONFLICT (COALESCE(agent_id, source_id), external_id) DO UPDATE SET \
        last_at = GREATEST(alerts.last_at, EXCLUDED.last_at), \
+       user_key = COALESCE(alerts.user_key, EXCLUDED.user_key), \
+       user_display = COALESCE(alerts.user_display, EXCLUDED.user_display), \
        files = CASE WHEN jsonb_array_length(alerts.files) >= ", max_alert_files!(), " THEN alerts.files \
                     ELSE alerts.files || COALESCE((SELECT jsonb_agg(n.f) FROM (SELECT f FROM jsonb_array_elements(EXCLUDED.files) f \
                                                    WHERE NOT alerts.files @> jsonb_build_array(f) \
@@ -705,7 +710,8 @@ fn silent_verdict(verdict: &str) -> bool {
     verdict == "learning"
 }
 
-/// An alert from the endpoint correlator (Mac/Linux). Returns true if new.
+/// An alert from the endpoint correlator. Returns true if new. The user is
+/// there only from the Windows agent, which knows whose process it was.
 pub async fn upsert_endpoint_alert(
     pool: &PgPool,
     origin: Origin,
@@ -738,8 +744,8 @@ pub async fn upsert_endpoint_alert(
         .bind(a.id.to_string())
         .bind(a.at)
         .bind(a.last_at)
-        .bind(Option::<String>::None)
-        .bind(Option::<String>::None)
+        .bind(a.user.as_ref().map(|u| u.key()))
+        .bind(a.user.as_ref().map(|u| u.display()))
         .bind(Option::<Uuid>::None)
         .bind(files.first().cloned())
         .bind(a.identity.short())
@@ -1154,6 +1160,69 @@ mod tests {
             None,
         )]);
         assert_eq!((rows[0].files, rows[0].bytes), (i32::MAX, i64::MAX));
+    }
+
+    /// A terminal server's alert says whose process it was, and stands under
+    /// the same key as that person's alerts from the file server — the SID.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn an_endpoint_alert_is_filed_under_its_user(pool: PgPool) {
+        let agent: Uuid = sqlx::query_scalar(
+            "INSERT INTO agents (id, name, kind, version, cert_fingerprint, cert_not_after) \
+             VALUES (gen_random_uuid(), 'TS-01', 'windows_client', '0.1.0', 'fp', now() + interval '1 day') RETURNING id",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let mut a: Alert = serde_json::from_str(
+            r#"{"id":1,"at":"2026-09-06T10:00:00Z","pid":42,"identity":{"Unknown":{"path":"C:\\x.exe"}},"files":[],"remote":"1.2.3.4","remote_port":443,"bytes_out":9}"#,
+        )
+        .unwrap();
+        upsert_endpoint_alert(&pool, Origin::Agent(agent), "TS-01", &a)
+            .await
+            .unwrap();
+        a.id = 2;
+        a.user = Some(deelpe_core::central::UserRef {
+            source: "TS-01".into(),
+            name: "anna".into(),
+            domain: Some("CORP".into()),
+            sid: Some("S-1-5-21-9".into()),
+        });
+        upsert_endpoint_alert(&pool, Origin::Agent(agent), "TS-01", &a)
+            .await
+            .unwrap();
+        // A carry-forward that knows the user fills it in; one that does not
+        // (the process has exited) leaves it standing.
+        let mut later = a.clone();
+        later.id = 1;
+        upsert_endpoint_alert(&pool, Origin::Agent(agent), "TS-01", &later)
+            .await
+            .unwrap();
+        later.id = 2;
+        later.user = None;
+        upsert_endpoint_alert(&pool, Origin::Agent(agent), "TS-01", &later)
+            .await
+            .unwrap();
+        let rows: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT external_id, user_key, user_display FROM alerts ORDER BY external_id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                (
+                    "1".into(),
+                    Some("sid:S-1-5-21-9".into()),
+                    Some("CORP\\anna".into())
+                ),
+                (
+                    "2".into(),
+                    Some("sid:S-1-5-21-9".into()),
+                    Some("CORP\\anna".into())
+                ),
+            ]
+        );
     }
 
     /// The bundled statement itself: types, a NULL in the id column and a

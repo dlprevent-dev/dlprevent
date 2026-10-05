@@ -30,6 +30,32 @@ fn enroll_wire_format() {
     let resp: EnrollResponse =
         serde_json::from_str(r#"{"agent_id":"6a0f","cert_pem":"c","ca_pem":"a"}"#).unwrap();
     assert_eq!(resp.agent_id, "6a0f");
+    assert!(
+        !resp.non_persistent && resp.roaming.is_none(),
+        "an older server says neither"
+    );
+
+    // A machine reset to its image every night: the central server hands it
+    // its identity back, and the state it last stored for it. That state is
+    // the agent's business — the central server only keeps it.
+    let resp: EnrollResponse = serde_json::from_str(
+        r#"{"agent_id":"6a0f","cert_pem":"c","ca_pem":"a","non_persistent":true,"roaming":{"next_alert_id":7}}"#,
+    )
+    .unwrap();
+    assert!(resp.non_persistent);
+    assert_eq!(resp.roaming.unwrap()["next_alert_id"], 7);
+    let persistent = EnrollResponse {
+        agent_id: "6a0f".into(),
+        cert_pem: "c".into(),
+        ca_pem: "a".into(),
+        non_persistent: false,
+        roaming: None,
+    };
+    assert_eq!(
+        serde_json::to_string(&persistent).unwrap(),
+        r#"{"agent_id":"6a0f","cert_pem":"c","ca_pem":"a"}"#,
+        "a persistent machine's answer stays byte for byte the old one"
+    );
 }
 
 /// Renewal: the agent sends only a CSR, its identity sits in the client
@@ -121,6 +147,7 @@ fn report_wire_format() {
         groups: None,
         learn_done: vec![],
         log: vec![],
+        roaming: None,
     };
     assert_eq!(
         serde_json::to_string(&r).unwrap(),
@@ -149,6 +176,16 @@ fn report_wire_format() {
             .unwrap()
             .generation,
         Some(57)
+    );
+
+    // A non-persistent machine sends its state along when it has changed.
+    let r = Report {
+        roaming: Some(serde_json::json!({ "next_alert_id": 7 })),
+        ..Default::default()
+    };
+    assert_eq!(
+        serde_json::to_string(&r).unwrap(),
+        r#"{"api_version":1,"alerts":[],"access_alerts":[],"counts":[],"roaming":{"next_alert_id":7}}"#
     );
 }
 
@@ -318,4 +355,25 @@ fn log_lines_wire_format() {
     // the report fail.
     let old: Report = serde_json::from_str(r#"{"api_version":1}"#).unwrap();
     assert!(old.log.is_empty());
+}
+
+/// On a terminal server a dozen people share one machine, and "chrome.exe
+/// sent it" names nobody. The endpoint alert says whose process it was — in
+/// the same shape as the file server's, so the central server keys both by
+/// the SID. Absent when unknown, which keeps the Mac's alert as it was.
+#[test]
+fn endpoint_alert_names_the_user() {
+    let raw = r#"{"id":3,"at":"2026-09-06T10:00:00Z","pid":42,"identity":{"Unknown":{"path":"C:\\x.exe"}},"files":[],"remote":null,"remote_port":null,"bytes_out":0}"#;
+    let mut a: deelpe_core::correlate::Alert = serde_json::from_str(raw).unwrap();
+    assert!(a.user.is_none());
+    assert!(!serde_json::to_string(&a).unwrap().contains("user"));
+    a.user = Some(UserRef {
+        source: "TS-01".into(),
+        name: "anna".into(),
+        domain: Some("CORP".into()),
+        sid: Some("S-1-5-21-9".into()),
+    });
+    assert!(serde_json::to_string(&a).unwrap().ends_with(
+        r#""user":{"source":"TS-01","name":"anna","domain":"CORP","sid":"S-1-5-21-9"}}"#
+    ));
 }

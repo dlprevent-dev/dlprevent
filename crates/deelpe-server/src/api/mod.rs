@@ -1516,6 +1516,56 @@ mod tests {
         );
     }
 
+    /// A token for machines reset every night is a workstation token with
+    /// one more flag, and its command says so to the agent. Any other
+    /// platform with the flag is a mistake to refuse, not to ignore.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_non_persistent_token_is_a_workstation_token(pool: sqlx::PgPool) {
+        let admin = test_session(&pool, "admin").await;
+        let app = router(test_app(pool.clone()), Router::new());
+        let cookie = (header::COOKIE.as_str(), admin.as_str());
+        let created = response_json(
+            send(
+                &app,
+                "POST",
+                "/api/tokens",
+                cookie,
+                json!({ "label": "citrix", "platform": "windows_client", "non_persistent": true }),
+            )
+            .await,
+        )
+        .await;
+        assert!(
+            created["command"]
+                .as_str()
+                .unwrap()
+                .ends_with("--endpoint --non-persistent"),
+            "{created}"
+        );
+        let refused = send(
+            &app,
+            "POST",
+            "/api/tokens",
+            cookie,
+            json!({ "label": "fs", "platform": "windows_server", "non_persistent": true }),
+        )
+        .await;
+        assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+        let listed = response_json(get(&app, "/api/tokens", &admin).await).await;
+        let flags: Vec<(String, bool)> = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| {
+                (
+                    t["label"].as_str().unwrap().to_string(),
+                    t["non_persistent"].as_bool().unwrap_or_default(),
+                )
+            })
+            .collect();
+        assert_eq!(flags, vec![("citrix".into(), true)]);
+    }
+
     #[sqlx::test(migrations = "./migrations")]
     async fn api_key_reads_only_and_only_while_switched_on(pool: sqlx::PgPool) {
         let admin = test_session(&pool, "admin").await;

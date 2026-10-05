@@ -471,7 +471,7 @@
               <button class="linkish" onclick={(e) => filterOrigin(a, e)} title="Show only alerts from {a.origin_name}">{a.origin_name}</button>
               <div class="cell-2">{a.kind === 'access' ? 'Access' : 'Endpoint'}</div>
             </td>
-            <td><div class="ellipsis">{a.user_display ?? a.process ?? '–'}</div>{#if a.remote && a.kind === 'access'}<div class="cell-2">from {a.remote}</div>{/if}</td>
+            <td><div class="ellipsis">{a.user_display ?? a.process ?? '–'}</div>{#if a.remote && a.kind === 'access'}<div class="cell-2">from {a.remote}</div>{:else if a.user_display && a.process}<div class="cell-2">{a.process}</div>{/if}</td>
             <td><div class="ellipsis">{a.path ?? '–'}</div>{#if a.remote && a.kind === 'endpoint'}<div class="cell-2">→ {a.remote}{#if destOf(a)}<span class="dest"> {destOf(a)}</span>{/if}</div>{/if}</td>
             <td class="num">{a.file_count}</td>
             <td class="num">{fmtBytes(a.bytes)}</td>
