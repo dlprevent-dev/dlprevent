@@ -13,6 +13,10 @@ pub const DIR: &str = r"C:\ProgramData\deelpe";
 pub const CONFIG_PATH: &str = r"C:\ProgramData\deelpe\central.json";
 pub const STATE_PATH: &str = r"C:\ProgramData\deelpe\state.json";
 pub const LOG_PATH: &str = r"C:\ProgramData\deelpe\agent.log";
+/// Only on machines reset to their image every night: what it takes to
+/// enroll again on every boot (`enroll --non-persistent`). The token is in
+/// here, hence the same access list as the credentials.
+pub const BOOTSTRAP_PATH: &str = r"C:\ProgramData\deelpe\bootstrap.json";
 
 /// Only administrators (BA), SYSTEM (SY) — and the account the agent runs
 /// under. Inheritance switched off (P).
@@ -36,10 +40,25 @@ pub struct CentralConfig {
     /// before endpoint operation — those are file servers.
     #[serde(default)]
     pub kind: Option<deelpe_core::central::AgentKind>,
+    /// The machine these credentials were made for. A clone of a golden
+    /// image carries the master's file; this is how it tells (see
+    /// [`needs_enrollment`]). Missing on installations from before.
+    #[serde(default)]
+    pub hostname: Option<String>,
+    /// Enrolled with a token for non-persistent machines: the state that
+    /// must survive the night goes to the central server
+    /// (`Report::roaming`), because the disk does not keep it.
+    #[serde(default)]
+    pub non_persistent: bool,
 }
 
 impl CentralConfig {
-    pub fn from_credentials(c: Credentials, kind: deelpe_core::central::AgentKind) -> Self {
+    pub fn from_enrolled(
+        e: deelpe_core::net::Enrolled,
+        kind: deelpe_core::central::AgentKind,
+        hostname: &str,
+    ) -> Self {
+        let c = e.creds;
         Self {
             url: c.url,
             agent_id: c.agent_id,
@@ -48,6 +67,8 @@ impl CentralConfig {
             key_pem: c.key_pem,
             enrolled_at: Some(Utc::now()),
             kind: Some(kind),
+            hostname: Some(hostname.to_string()),
+            non_persistent: e.non_persistent,
         }
     }
 
@@ -83,6 +104,74 @@ impl CentralConfig {
             serde_json::to_string_pretty(self)?.as_bytes(),
         )
     }
+}
+
+/// What a machine reset to its image every night needs to enroll again on
+/// every boot. Written once on the image by `enroll --non-persistent`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Bootstrap {
+    pub url: String,
+    pub token: String,
+    pub ca_sha256: String,
+}
+
+impl Bootstrap {
+    pub fn load() -> Result<Option<Self>> {
+        match std::fs::read_to_string(BOOTSTRAP_PATH) {
+            Ok(raw) => Ok(Some(
+                serde_json::from_str(&raw)
+                    .with_context(|| format!("{BOOTSTRAP_PATH} unreadable"))?,
+            )),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    pub fn save(&self) -> Result<()> {
+        write_private(
+            Path::new(BOOTSTRAP_PATH),
+            serde_json::to_string_pretty(self)?.as_bytes(),
+        )
+    }
+}
+
+/// Does a machine with a bootstrap have to enroll before it can run?
+///
+/// Whenever the credentials on disk are not its own: none at all (fresh
+/// from the image), or the master's that went into the image with it. Those
+/// would make every clone the same agent with the same key. Credentials that
+/// do not name their machine are treated as somebody else's — enrolling once
+/// too often costs nothing, the central server hands back the same agent.
+pub fn needs_enrollment(cfg: Option<&CentralConfig>, hostname: &str) -> bool {
+    !cfg.and_then(|c| c.hostname.as_deref())
+        .is_some_and(|h| h.eq_ignore_ascii_case(hostname))
+}
+
+/// What a non-persistent agent keeps with the central server instead of on
+/// its disk: the part of [`AgentState`] whose loss overnight would hurt.
+/// The learning phase would start over every morning and never end; alert
+/// numbers would start over at 1 and overwrite yesterday's under the same
+/// agent; a learn command for yesterday's alert would find no pair.
+///
+/// The rules are in here too: without them the agent would protect nothing
+/// until its first report — and nothing at all on a day the central server
+/// answers the enrollment but not the reports (see `AgentState::central_config`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Roaming {
+    #[serde(default)]
+    pub learner: Option<deelpe_core::learn::Learner>,
+    #[serde(default = "first_alert_id")]
+    pub next_alert_id: u64,
+    #[serde(default)]
+    pub reported_endpoint_alerts: Vec<deelpe_core::correlate::Alert>,
+    #[serde(default)]
+    pub learn_done: Vec<i64>,
+    #[serde(default)]
+    pub central_config: Option<deelpe_core::central::AgentConfig>,
+}
+
+fn first_alert_id() -> u64 {
+    1
 }
 
 /// What the agent has to keep across restarts. The meter is in there too, so
@@ -170,6 +259,39 @@ impl Default for AgentState {
 }
 
 impl AgentState {
+    /// A fresh state with what the central server kept for this agent.
+    /// Unreadable means starting over: an agent that refuses to start
+    /// protects nothing.
+    ///
+    /// Alert numbers start no lower than the clock in milliseconds. The
+    /// central server files alerts by (agent, number); should the kept
+    /// state be lost or stale, a number from yesterday would merge today's
+    /// alert into yesterday's. A night's alerts never outrun the clock.
+    pub fn from_roaming(v: Option<serde_json::Value>, now: DateTime<Utc>) -> Self {
+        let floor = u64::try_from(now.timestamp_millis()).unwrap_or(1);
+        let r = v.and_then(|v| match serde_json::from_value::<Roaming>(v) {
+            Ok(r) => Some(r),
+            Err(e) => {
+                tracing::warn!("state from the central server unreadable, starting over: {e}");
+                None
+            }
+        });
+        let Some(r) = r else {
+            return Self {
+                next_alert_id: floor,
+                ..Self::default()
+            };
+        };
+        Self {
+            learner: r.learner,
+            next_alert_id: r.next_alert_id.max(floor),
+            reported_endpoint_alerts: r.reported_endpoint_alerts,
+            learn_done: r.learn_done,
+            central_config: r.central_config,
+            ..Self::default()
+        }
+    }
+
     pub fn load() -> Self {
         std::fs::read_to_string(STATE_PATH)
             .ok()
@@ -327,35 +449,8 @@ fn write_private(path: &Path, data: &[u8]) -> Result<()> {
 /// SID of the account this process runs under.
 #[cfg(windows)]
 pub(crate) fn own_sid() -> Option<String> {
-    use windows::Win32::Foundation::{CloseHandle, LocalFree, HANDLE, HLOCAL};
-    use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
-    use windows::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};
-    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
-    unsafe {
-        let mut token = HANDLE::default();
-        OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).ok()?;
-        let mut len = 0u32;
-        let _ = GetTokenInformation(token, TokenUser, None, 0, &mut len);
-        let mut buf = vec![0u8; len as usize];
-        let ok = GetTokenInformation(
-            token,
-            TokenUser,
-            Some(buf.as_mut_ptr() as *mut _),
-            len,
-            &mut len,
-        )
-        .is_ok();
-        let _ = CloseHandle(token);
-        if !ok {
-            return None;
-        }
-        let user = &*(buf.as_ptr() as *const TOKEN_USER);
-        let mut out = windows::core::PWSTR::null();
-        ConvertSidToStringSidW(user.User.Sid, &mut out).ok()?;
-        let s = out.to_string().ok();
-        let _ = LocalFree(Some(HLOCAL(out.0 as *mut _)));
-        s
-    }
+    use windows::Win32::System::Threading::GetCurrentProcess;
+    crate::procuser::with_token_user(unsafe { GetCurrentProcess() }, crate::procuser::sid_string)
 }
 
 /// Elsewhere there is no account SID; the access list stays the base one.
@@ -459,5 +554,101 @@ mod tests {
         let back: AgentState = serde_json::from_str(&serde_json::to_string(&st).unwrap()).unwrap();
         let c = back.central_config.expect("rules survive a restart");
         assert_eq!((c.generation, c.learn_days), (3, 14));
+    }
+
+    fn enrolled_as(host: Option<&str>) -> CentralConfig {
+        CentralConfig {
+            url: "https://c:8444".into(),
+            agent_id: "a1".into(),
+            ca_pem: String::new(),
+            cert_pem: String::new(),
+            key_pem: String::new(),
+            enrolled_at: None,
+            kind: Some(deelpe_core::central::AgentKind::WindowsClient),
+            hostname: host.map(str::to_string),
+            non_persistent: true,
+        }
+    }
+
+    /// A golden image may well carry the master's credentials — whoever
+    /// sealed it had the service running. A clone must not report under
+    /// them: every clone would be the same agent with the same key. So a
+    /// machine with a bootstrap enrolls whenever the credentials are not its
+    /// own, and only then.
+    #[test]
+    fn a_clone_enrolls_unless_the_credentials_are_its_own() {
+        assert!(needs_enrollment(None, "TS-01"), "fresh from the image");
+        assert!(needs_enrollment(
+            Some(&enrolled_as(Some("MASTER"))),
+            "TS-01"
+        ));
+        assert!(
+            needs_enrollment(Some(&enrolled_as(None)), "TS-01"),
+            "credentials that do not say whose they are are nobody's"
+        );
+        assert!(
+            !needs_enrollment(Some(&enrolled_as(Some("ts-01"))), "TS-01"),
+            "a service restart during the day keeps what it has"
+        );
+    }
+
+    /// What the central server keeps for a non-persistent agent is exactly
+    /// what the disk would have kept for it overnight: the learning phase,
+    /// the alert numbers, the ring a learn command looks in, what it has
+    /// carried out, and the rules — so it protects from the first second,
+    /// not from the first report.
+    #[test]
+    fn the_roaming_state_comes_back_as_it_left() {
+        let t0 = Utc::now();
+        let mut learner = deelpe_core::learn::Learner::new(14, t0);
+        learner.confirm();
+        let rules: deelpe_core::central::AgentConfig = serde_json::from_value(serde_json::json!({
+            "api_version": 1, "generation": 9, "report_interval_secs": 60, "learn_days": 14, "rules": []
+        }))
+        .unwrap();
+        let far_ahead = u64::MAX / 2;
+        let r = Roaming {
+            learner: Some(learner),
+            next_alert_id: far_ahead,
+            reported_endpoint_alerts: Vec::new(),
+            learn_done: vec![7],
+            central_config: Some(rules),
+        };
+        let st = AgentState::from_roaming(Some(serde_json::to_value(&r).unwrap()), t0);
+        assert_eq!(st.next_alert_id, far_ahead);
+        assert_eq!(st.learn_done, vec![7]);
+        assert_eq!(
+            st.learner.unwrap().phase(t0),
+            deelpe_core::learn::Phase::Active,
+            "a confirmed learning phase stays confirmed"
+        );
+        assert_eq!(st.central_config.map(|c| c.generation), Some(9));
+    }
+
+    /// Alert numbers must never start over under the same agent: the
+    /// central server files alerts by (agent, number), and a repeated
+    /// number merges a new alert into yesterday's. Whether the kept state
+    /// is lost, unreadable or behind, the clock is the floor.
+    #[test]
+    fn alert_numbers_never_start_over() {
+        let t0 = Utc::now();
+        let floor = t0.timestamp_millis() as u64;
+        let behind = Roaming {
+            learner: None,
+            next_alert_id: 42,
+            reported_endpoint_alerts: Vec::new(),
+            learn_done: Vec::new(),
+            central_config: None,
+        };
+        let st = AgentState::from_roaming(Some(serde_json::to_value(&behind).unwrap()), t0);
+        assert_eq!(st.next_alert_id, floor);
+        let fresh = AgentState::from_roaming(None, t0);
+        assert_eq!(fresh.next_alert_id, floor);
+        assert!(fresh.learner.is_none());
+        let garbage = AgentState::from_roaming(Some(serde_json::json!("nonsense")), t0);
+        assert_eq!(
+            garbage.next_alert_id, floor,
+            "unreadable means starting over, not refusing to start — and not at 1"
+        );
     }
 }

@@ -28,6 +28,7 @@ fn alert(id: u64, age_days: i64) -> Alert {
         copy_to: None,
         sender_read_directly: false,
         upload_url: None,
+        user: None,
     }
 }
 

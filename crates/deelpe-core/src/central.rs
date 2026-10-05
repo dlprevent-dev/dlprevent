@@ -49,6 +49,17 @@ pub struct EnrollResponse {
     pub agent_id: String,
     pub cert_pem: String,
     pub ca_pem: String,
+    /// The token was one for machines reset to their image every night
+    /// (terminal servers, VDI). Such a machine enrolls again on every boot
+    /// and gets the same `agent_id` back; in return it keeps its state with
+    /// the central server ([`Report::roaming`]), because the disk does not.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub non_persistent: bool,
+    /// The state this agent last left with the central server, if it is
+    /// `non_persistent` and has left one. Opaque to the central server: only
+    /// the agent reads it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roaming: Option<serde_json::Value>,
 }
 
 /// Renewal of the agent certificate while the old one is still valid. No
@@ -335,6 +346,12 @@ pub struct Report {
     /// again until the central server has accepted the report.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub log: Vec<LogLine>,
+    /// A non-persistent machine's state (see
+    /// [`EnrollResponse::non_persistent`]) — only when it has changed since
+    /// the last report the central server accepted. The central server keeps
+    /// the latest one and hands it back at the next enrollment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roaming: Option<serde_json::Value>,
 }
 
 impl Default for Report {
@@ -349,6 +366,7 @@ impl Default for Report {
             groups: None,
             learn_done: Vec::new(),
             log: Vec::new(),
+            roaming: None,
         }
     }
 }

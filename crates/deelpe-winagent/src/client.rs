@@ -261,7 +261,8 @@ pub async fn run(mut stop: tokio::sync::watch::Receiver<bool>) -> Result<()> {
                     Some(prev) => prev.last_at = Some(b.at),
                     None => {
                         let id = s.corr.take_id();
-                        let a = crate::browser::alert_for(&b, id);
+                        let mut a = crate::browser::alert_for(&b, id);
+                        a.user = crate::procuser::of(a.pid);
                         warn!(
                             "ALERT #{} blocked {} -> {}",
                             a.id,
@@ -317,15 +318,13 @@ pub async fn run(mut stop: tokio::sync::watch::Receiver<bool>) -> Result<()> {
             };
             let cfg = s.corr.config();
             deelpe_core::pipeline::enforce(cfg, &mut judged, &EndpointEnforcer { ev: &ev, cfg });
-            let a = judged.into_alert();
+            let mut a = judged.into_alert();
+            a.user = crate::procuser::of(a.pid);
             warn!(
                 "ALERT #{} {:?} {} -> {:?} {} B",
                 a.id, a.verdict, a.identity, a.remote, a.bytes_out
             );
-            match s.pending.iter_mut().find(|p| p.id == a.id) {
-                Some(prev) => *prev = a,
-                None => push_pending(&mut s, a),
-            }
+            file_pending(&mut s, a);
             // On an update too: the numbers in it are new.
             alerted_ev.notify_one();
         }
@@ -345,11 +344,14 @@ pub async fn run(mut stop: tokio::sync::watch::Receiver<bool>) -> Result<()> {
     }
 
     info!(central = %cfg.url, "endpoint agent running");
+    // Checksum of the roaming state the central server last accepted; see
+    // `roaming_to_send`. Empty after a start: it goes along once.
+    let mut roaming_sent = String::new();
     loop {
         // Fetched before the state lock so that the reporting loop does not
         // wait on a cage that is just being put up.
         let cage_health = cages.lock().await.health();
-        let (status, alerts, configured) = {
+        let (status, alerts, configured, roaming) = {
             let s = state.lock().await;
             let watched: Vec<String> = s
                 .corr
@@ -384,6 +386,9 @@ pub async fn run(mut stop: tokio::sync::watch::Receiver<bool>) -> Result<()> {
                 },
                 s.pending.clone(),
                 configured,
+                cfg.non_persistent
+                    .then(|| roaming_to_send(&roaming_of(&s, &st), &roaming_sent))
+                    .flatten(),
             )
         };
         let mut report = Report {
@@ -397,6 +402,7 @@ pub async fn run(mut stop: tokio::sync::watch::Receiver<bool>) -> Result<()> {
             // What has already been carried out, so that the central ticks
             // it off and does not repeat the same command in every report.
             learn_done: st.learn_done.clone(),
+            roaming: roaming.as_ref().map(|(v, _)| v.clone()),
             // `log` adds the session to it so that the read cursor only
             // moves on once it is accepted.
             ..Default::default()
@@ -444,6 +450,9 @@ pub async fn run(mut stop: tokio::sync::watch::Receiver<bool>) -> Result<()> {
                     }
                 }
                 st.tally.ok(Utc::now());
+                if let Some((_, digest)) = roaming {
+                    roaming_sent = digest;
+                }
                 // An accepted report means: this program really runs. Now
                 // the previous version may go.
                 crate::update::cleanup_old();
@@ -606,6 +615,46 @@ fn push_reported(s: &mut State, a: deelpe_core::correlate::Alert) {
         s.reported.remove(0);
     }
     s.reported.push(a);
+}
+
+/// File a judged alert: a carry-forward replaces its predecessor, a new one
+/// is appended. The user is looked up when the alert is filed, and a
+/// carry-forward arriving after the process has exited finds nobody — then
+/// the one the alert was first filed under stays.
+fn file_pending(s: &mut State, mut a: deelpe_core::correlate::Alert) {
+    if a.user.is_none() {
+        a.user = s
+            .pending
+            .iter()
+            .chain(s.reported.iter())
+            .find(|p| p.id == a.id)
+            .and_then(|p| p.user.clone());
+    }
+    match s.pending.iter_mut().find(|p| p.id == a.id) {
+        Some(prev) => *prev = a,
+        None => push_pending(s, a),
+    }
+}
+
+/// What a non-persistent agent keeps with the central server (see
+/// `config::Roaming`), taken from the running state.
+fn roaming_of(s: &State, st: &AgentState) -> crate::config::Roaming {
+    crate::config::Roaming {
+        learner: Some(s.learner.clone()),
+        next_alert_id: s.corr.next_id(),
+        reported_endpoint_alerts: s.reported.clone(),
+        learn_done: st.learn_done.clone(),
+        central_config: st.central_config.clone(),
+    }
+}
+
+/// The roaming state and its checksum — `None` if the central server
+/// already has exactly this one (`sent`). The caller remembers the checksum
+/// only once the report was accepted: a lost report sends it again.
+fn roaming_to_send(r: &crate::config::Roaming, sent: &str) -> Option<(serde_json::Value, String)> {
+    let v = serde_json::to_value(r).ok()?;
+    let digest = deelpe_core::net::sha256_hex(v.to_string().as_bytes());
+    (digest != sent).then_some((v, digest))
 }
 
 /// Append and keep the upper bound while doing it: with a central
@@ -885,6 +934,7 @@ mod tests {
             copy_to: None,
             sender_read_directly: false,
             upload_url: None,
+            user: None,
         }
     }
 
@@ -1006,5 +1056,54 @@ mod tests {
             n,
             "dieselbe Kennung darf nicht zweimal liegen"
         );
+    }
+
+    /// On a terminal server the alert names whose process it was — looked
+    /// up when the alert is filed. A carry-forward arriving after the
+    /// process has exited finds nobody any more; it keeps the user the
+    /// first report named instead of wiping it.
+    #[test]
+    fn a_carry_forward_keeps_the_user_the_alert_was_filed_under() {
+        let mut s = state();
+        let mut first = alert(1);
+        first.user = Some(deelpe_core::central::UserRef {
+            source: "TS-01".into(),
+            name: "anna".into(),
+            domain: Some("CORP".into()),
+            sid: Some("S-1-5-21-9".into()),
+        });
+        file_pending(&mut s, first);
+        let mut later = alert(1);
+        later.bytes_out = 5_000;
+        file_pending(&mut s, later);
+        assert_eq!(s.pending.len(), 1, "the alert grows, the list does not");
+        assert_eq!(s.pending[0].bytes_out, 5_000);
+        assert_eq!(
+            s.pending[0].user.as_ref().map(|u| u.name.as_str()),
+            Some("anna")
+        );
+    }
+
+    /// A non-persistent agent keeps its state with the central server. It
+    /// goes along only when it has changed since the central server last
+    /// took it — a terminal server sending a hundred kilobytes of learning
+    /// state twice a minute for nothing would be the largest thing on the
+    /// wire.
+    #[test]
+    fn the_roaming_state_travels_only_when_it_changed() {
+        let mut s = state();
+        let mut st = AgentState::default();
+        let (v, sent) = roaming_to_send(&roaming_of(&s, &st), "").expect("the first time it goes");
+        assert!(roaming_to_send(&roaming_of(&s, &st), &sent).is_none());
+        s.corr.take_id();
+        assert!(
+            roaming_to_send(&roaming_of(&s, &st), &sent).is_some(),
+            "a new alert number is a change"
+        );
+        let (_, sent) = roaming_to_send(&roaming_of(&s, &st), "").unwrap();
+        st.learn_done.push(3);
+        assert!(roaming_to_send(&roaming_of(&s, &st), &sent).is_some());
+        let back = crate::config::AgentState::from_roaming(Some(v), Utc::now());
+        assert!(back.learner.is_some());
     }
 }
