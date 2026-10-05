@@ -43,21 +43,19 @@ const KERNEL_NETWORK: GUID = GUID::from_u128(0x7dd42a49_5329_4832_8dfd_43d979153
 const FILE_KW_CREATE: u64 = 0x80;
 const FILE_KW_READ: u64 = 0x100;
 const FILE_KW_WRITE: u64 = 0x200;
-const FILE_KW_CLOSE: u64 = 0x40000;
 /// IPv4 and IPv6 from Kernel-Network.
 const NET_KW_IPV4: u64 = 0x10;
 const NET_KW_IPV6: u64 = 0x20;
 
 /// Event IDs of the two providers.
 const EV_FILE_CREATE: u16 = 12;
-const EV_FILE_CLOSE: u16 = 14;
 const EV_FILE_READ: u16 = 15;
 const EV_FILE_WRITE: u16 = 16;
 const EV_NET_SEND_V4: u16 = 10;
 const EV_NET_SEND_V6: u16 = 26;
 
-/// Upper bound of the file object → path table. A `Close` normally cleans
-/// up; the limit catches the case where some go missing.
+/// Upper bound of the file object → path table. The next `Create` on the
+/// same address cleans up (see `file_event`); the limit is the backstop.
 const MAX_OPEN_FILES: usize = 50_000;
 
 use crate::filter::TaintTable;
@@ -204,10 +202,7 @@ fn pump(tx: mpsc::Sender<Event>) -> Result<()> {
         Ok(())
     };
     let armed = (|| -> Result<()> {
-        enable(
-            KERNEL_FILE,
-            FILE_KW_CREATE | FILE_KW_READ | FILE_KW_WRITE | FILE_KW_CLOSE,
-        )?;
+        enable(KERNEL_FILE, FILE_KW_CREATE | FILE_KW_READ | FILE_KW_WRITE)?;
         enable(KERNEL_NETWORK, NET_KW_IPV4 | NET_KW_IPV6)?;
         Ok(())
     })();
@@ -344,6 +339,18 @@ fn file_event(ctx: &mut Ctx, rec: *mut EVENT_RECORD, id: u16) -> Option<Event> {
     let obj = super::tdh::prop_u64(rec, "FileObject")?;
     match id {
         EV_FILE_CREATE => {
+            // A new file object at this address: whatever it named before is
+            // gone, also when this create is filtered out below. Close events
+            // never arrived (the old keyword 0x40000 does not exist in
+            // Kernel-File; Close sits under FILEIO, which floods), so the
+            // stale entry stayed and the kernel reuses addresses within
+            // milliseconds — 849 creates on 373 addresses in 20 s on the DC,
+            // 2026-10-05. Every read on the reused object then counted as
+            // the old opener reading the protected file: Chrome, after one
+            // upload from `\\cy-dc-lab-01\GL\Zahlen`, stayed touched
+            // overnight and its push heartbeat (26 B to :5228) raised a
+            // Denied alert every 15 minutes.
+            ctx.open.remove(&obj);
             let name = super::tdh::prop_string(rec, "FileName")?;
             let path = winpath::to_user_path(&name, &ctx.volumes);
             // A folder is not a file. Windows opens and "reads" directory
@@ -381,10 +388,6 @@ fn file_event(ctx: &mut Ctx, rec: *mut EVENT_RECORD, id: u16) -> Option<Event> {
             // Opening alone is not yet access to the content; only reading
             // counts. Otherwise every directory tree Explorer expands would
             // taint every file inside it.
-            None
-        }
-        EV_FILE_CLOSE => {
-            ctx.open.remove(&obj);
             None
         }
         EV_FILE_READ | EV_FILE_WRITE => {
