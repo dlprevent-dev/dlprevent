@@ -28,6 +28,9 @@
   /// Windows is the only platform with a role underneath it, so the dialog
   /// asks this twice and the answer belongs in one place.
   const isWindows = $derived(platform === 'windows_client' || platform === 'windows_server');
+  /// Terminal servers and Citrix/VDI pools reset to their image every night.
+  /// Only for workstations: the server refuses it for anything else.
+  let nonPersistent = $state(false);
   let showToken = $state(false);
   let expanded = $state<string | null>(null);
   // Log of the expanded agent. Only one: it is fetched on expanding and
@@ -210,7 +213,7 @@
 
   async function createToken(e: Event) {
     e.preventDefault();
-    try { created = await api<TokenCreated>('/api/tokens', { method: 'POST', body: { label, hours: validFor * UNIT_HOURS[unit], max_uses: maxUses || undefined, platform } }); label = ''; load(); } catch (err) { notify((err as Error).message, true); }
+    try { created = await api<TokenCreated>('/api/tokens', { method: 'POST', body: { label, hours: validFor * UNIT_HOURS[unit], max_uses: maxUses || undefined, platform, non_persistent: platform === 'windows_client' && nonPersistent } }); label = ''; load(); } catch (err) { notify((err as Error).message, true); }
   }
   async function copy(t: string) { await navigator.clipboard.writeText(t); notify('Copied'); }
   async function revoke(a: Agent) {
@@ -551,7 +554,7 @@
               </td>
             {/if}
             <td><strong>{a.name}</strong><div class="cell-2 mono">{a.id}</div></td>
-            <td>{kinds[a.kind] ?? a.kind}</td>
+            <td>{kinds[a.kind] ?? a.kind}{#if a.non_persistent}<div class="cell-2" title="Reset to its image every night; enrolls again on every boot as the same agent">non-persistent</div>{/if}</td>
             <td class="mono">{a.version || '–'}{#if a.status?.build}<div class="cell-2 mono" title="First 12 characters of the agent file's SHA-256 — compare with Get-FileHash on the device">{a.status.build}</div>{/if}
               {#if agentOutdated(a, binaries)}<div class="cell-2"><span class="badge warn" title="This agent runs a different program than the one uploaded here. With &quot;Update agents from here&quot; on (Settings → Interfaces) it fetches the new one by itself on its next report; otherwise roll it out the way you always do.">outdated</span></div>{/if}</td>
             <td>{#if a.revoked_at}<span class="badge bad">revoked</span>{:else if a.online}<span class="badge ok"><span class="dot"></span> online</span>{:else}<span class="badge warn"><span class="dot"></span> offline</span>{/if}</td>
@@ -685,7 +688,7 @@
       <tbody>
         {#each tokenView as t (t.id)}
           <tr>
-            <td><strong>{t.label}</strong></td><td class="nowrap">{fmtTime(t.created_at)}</td><td class="nowrap">{fmtTime(t.expires_at)}</td>
+            <td><strong>{t.label}</strong>{#if t.non_persistent}<div class="cell-2">non-persistent</div>{/if}</td><td class="nowrap">{fmtTime(t.created_at)}</td><td class="nowrap">{fmtTime(t.expires_at)}</td>
             <td>{#if spent(t)}<span class="badge ok">used {t.max_uses! > 1 ? `up ${t.uses}/${t.max_uses}` : ''} {ago(t.used_at)}</span>{:else if new Date(t.expires_at) < new Date()}<span class="badge">expired{t.uses ? ` · ${t.uses}${t.max_uses ? `/${t.max_uses}` : ''}` : ''}</span>{:else}<span class="badge accent">open{t.max_uses == null ? ` · ${t.uses} enrolled` : t.max_uses > 1 ? ` · ${t.uses}/${t.max_uses}` : ''}</span>{/if}</td>
             <td class="nowrap">{#if admin && !spent(t)}<button class="btn sm ghost danger" onclick={() => delToken(t)} title="Revoke" aria-label="Revoke"><Icon name="trash" size={14} /></button>{/if}</td>
           </tr>
@@ -746,6 +749,17 @@
               Same program either way; the role is fixed at enrollment and can only be changed by enrolling again.
             </div>
           </div>
+          {#if platform === 'windows_client'}
+            <label class="check" style="margin-top:10px"><input type="checkbox" bind:checked={nonPersistent} /> Non-persistent (terminal server, Citrix/VDI)</label>
+            {#if nonPersistent}
+              <div class="hint">
+                For machines reset to a golden image every night. Run the command once on the image: the agent keeps the
+                token and enrolls again on every boot, and a host name the server already knows gets its agent back —
+                with its learning phase and alert numbers, which the server keeps for it. The token must stay valid as
+                long as the image is in use; revoking it stops the pool from enrolling.
+              </div>
+            {/if}
+          {/if}
         {/if}
         <p class="hint" style="margin:0">{!maxUses ? 'The same command enrolls any number of devices until you revoke the token in the list; anyone holding it can enroll one until then, so keep it where your deployment tool keeps secrets and revoke it when the rollout is done.' : maxUses > 1 ? `The same command enrolls up to ${maxUses} devices; anyone holding it can enroll one until then, so keep it where your deployment tool keeps secrets and revoke it when the rollout is done.` : 'The token is good for exactly one enrollment and is burned afterwards.'} The agent creates its own key; the central server only signs.</p>
       </form>

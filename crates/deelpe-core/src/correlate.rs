@@ -168,6 +168,12 @@ pub struct Alert {
     /// nothing was sent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upload_url: Option<String>,
+    /// Whose process it was. On a terminal server many people share one
+    /// machine, and the process alone names none of them. The correlator
+    /// does not know it — the Windows agent fills it in when it files the
+    /// alert. Empty elsewhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<crate::central::UserRef>,
 }
 
 /// Where the data went.
@@ -1056,6 +1062,7 @@ impl Correlator {
             copy_to: None,
             sender_read_directly: true,
             upload_url: None,
+            user: None,
         };
         Some(if is_new {
             Outcome::New(alert)
@@ -1186,6 +1193,7 @@ impl Correlator {
             copy_to: if is_volume { None } else { Some(dest) },
             sender_read_directly: true,
             upload_url: None,
+            user: None,
         };
         Some(if is_new {
             Outcome::New(alert)
@@ -1511,6 +1519,7 @@ impl Correlator {
             copy_to: None,
             sender_read_directly: ancestor.is_none() && t_read_by_none,
             upload_url: None,
+            user: None,
         };
         Some(if is_new {
             Outcome::New(alert)
@@ -1705,6 +1714,7 @@ impl Correlator {
             copy_to: None,
             sender_read_directly: false,
             upload_url: None,
+            user: None,
         };
         Some(if is_new {
             Outcome::New(alert)
@@ -1770,6 +1780,7 @@ impl Correlator {
             copy_to: None,
             sender_read_directly: false,
             upload_url: None,
+            user: None,
         };
         Some(if is_new {
             Outcome::New(alert)
@@ -2544,6 +2555,7 @@ mod tests {
             copy_to: None,
             sender_read_directly: false,
             upload_url: None,
+            user: None,
         }
     }
 

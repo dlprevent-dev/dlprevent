@@ -434,10 +434,13 @@ pub(super) struct TokenRow {
     uses: i32,
     /// Enrols file servers too, not only workstations (`agent::enroll`).
     file_server: bool,
+    /// For workstations reset every night: a known host name gets its agent
+    /// back (`agent::reenroll`).
+    non_persistent: bool,
 }
 
 pub(super) const TOKEN_COLS: &str =
-    "id, label, created_at, expires_at, used_at, used_by, max_uses, uses, file_server";
+    "id, label, created_at, expires_at, used_at, used_by, max_uses, uses, file_server, non_persistent";
 
 /// Usable tokens first: a rollout token lives for weeks, and a hundred
 /// single-device tokens made meanwhile must not push it out of the list —
@@ -469,6 +472,10 @@ pub(super) struct TokenBody {
     /// the agent says what it is when it enrolls (`EnrollRequest::kind`).
     #[serde(default)]
     platform: Option<String>,
+    /// For `windows_client` only: machines reset to their image every night
+    /// (terminal servers, Citrix/VDI pools). See `agent::reenroll`.
+    #[serde(default)]
+    non_persistent: bool,
 }
 
 /// The enrolment command per kind of device. It is in the dashboard for
@@ -504,6 +511,7 @@ pub(super) struct TokenBody {
 /// existing, and that is no reason to skip `service start`.
 fn enroll_command(
     platform: Option<&str>,
+    non_persistent: bool,
     url: &str,
     token: &str,
     ca: &str,
@@ -528,6 +536,7 @@ if ($LASTEXITCODE) {{ throw 'enrolment failed' }}; \
     };
     match platform {
         Some("windows_server") => win(""),
+        Some("windows_client") if non_persistent => win(" --endpoint --non-persistent"),
         Some("windows_client") => win(" --endpoint"),
         _ => match sha {
             None => format!("sudo deelpe central enroll {url} {token} --ca-sha256 {ca}"),
@@ -579,15 +588,19 @@ pub(super) async fn create_token(
     // should not outlive the people who made it.
     let hours = b.hours.clamp(1, 24 * 365);
     let max_uses = b.max_uses.map(|n| n.clamp(1, 100_000));
+    if b.non_persistent && b.platform.as_deref() != Some("windows_client") {
+        return Err(bad("only Windows workstations can be non-persistent"));
+    }
     let token = auth::random_token();
     let expires_at = Utc::now() + Duration::hours(hours);
-    let (id,): (Uuid,) = sqlx::query_as("INSERT INTO enroll_tokens (token_hash, label, created_by, expires_at, max_uses, file_server) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id")
+    let (id,): (Uuid,) = sqlx::query_as("INSERT INTO enroll_tokens (token_hash, label, created_by, expires_at, max_uses, file_server, non_persistent) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id")
         .bind(auth::sha256_hex(&token))
         .bind(&label)
         .bind(user.id)
         .bind(expires_at)
         .bind(max_uses)
         .bind(b.platform.as_deref() == Some("windows_server"))
+        .bind(b.non_persistent)
         .fetch_one(&st.pool)
         .await?;
     // The name from the address bar: behind a proxy the `Host` would
@@ -611,6 +624,7 @@ pub(super) async fn create_token(
         .and_then(|p| crate::binaries::sha256_of(&st, p));
     let command = enroll_command(
         b.platform.as_deref(),
+        b.non_persistent,
         &agent_url,
         &token,
         &st.pki.ca_fingerprint,
@@ -622,13 +636,14 @@ pub(super) async fn create_token(
     let enroll = (b.platform.as_deref() == Some("mac") && sha.is_some()).then(|| {
         enroll_command(
             b.platform.as_deref(),
+            false,
             &agent_url,
             &token,
             &st.pki.ca_fingerprint,
             None,
         )
     });
-    db::audit(&st.pool, (&user).into(), "token_create", json!({ "id": id, "label": label, "hours": hours, "max_uses": max_uses, "platform": b.platform })).await;
+    db::audit(&st.pool, (&user).into(), "token_create", json!({ "id": id, "label": label, "hours": hours, "max_uses": max_uses, "platform": b.platform, "non_persistent": b.non_persistent })).await;
     Ok(Json(TokenCreated {
         id,
         token,
@@ -671,30 +686,37 @@ mod tests {
     fn enroll_command_per_platform() {
         let (u, t, c) = ("https://s:8444", "tok", "ab12");
         // Without an uploaded program it stays at the bare enrolment command.
-        assert!(enroll_command(None, u, t, c, None).starts_with("sudo deelpe central enroll"));
         assert!(
-            enroll_command(Some("mac"), u, t, c, None).starts_with("sudo deelpe central enroll")
+            enroll_command(None, false, u, t, c, None).starts_with("sudo deelpe central enroll")
         );
+        assert!(enroll_command(Some("mac"), false, u, t, c, None)
+            .starts_with("sudo deelpe central enroll"));
         // Linux shares the `deelpe` CLI with the Mac, and nothing is ever
         // stored for it (`binaries::platform_for` → `None`), so this is the
         // command the dialog shows — and the one INSTALL.md tells people to
         // run. It has to stay a bare enrolment.
         assert_eq!(
-            enroll_command(Some("linux"), u, t, c, None),
+            enroll_command(Some("linux"), false, u, t, c, None),
             "sudo deelpe central enroll https://s:8444 tok --ca-sha256 ab12"
         );
         assert_eq!(crate::binaries::platform_for(Some("linux")), None);
         assert_eq!(
-            enroll_command(Some("windows_server"), u, t, c, None),
+            enroll_command(Some("windows_server"), false, u, t, c, None),
             "deelpe-winagent enroll https://s:8444 tok --ca-sha256 ab12"
         );
         // The workstation needs --endpoint, otherwise the agent reads a
         // server's security log, which does not exist there.
-        assert!(enroll_command(Some("windows_client"), u, t, c, None).ends_with("--endpoint"));
+        assert!(
+            enroll_command(Some("windows_client"), false, u, t, c, None).ends_with("--endpoint")
+        );
+        // A pool reset every night: the agent learns it from its command,
+        // and keeps the token to enroll again on every boot.
+        assert!(enroll_command(Some("windows_client"), true, u, t, c, None)
+            .ends_with("--endpoint --non-persistent"));
 
         // If the program is ready and waiting, the command fetches it itself
         // and checks the checksum before running it.
-        let w = enroll_command(Some("windows_client"), u, t, c, Some("aa11"));
+        let w = enroll_command(Some("windows_client"), false, u, t, c, Some("aa11"));
         assert!(w.contains("/agent/binary/windows"), "{w}");
         assert!(w.contains("X-Deelpe-Token"), "{w}");
         // curl.exe, not Invoke-WebRequest: see enroll_command.
@@ -710,7 +732,7 @@ mod tests {
         assert!(w.contains("throw 'download failed'"), "{w}");
         assert!(w.contains("throw 'enrolment failed'"), "{w}");
         assert!(w.contains("--endpoint"), "{w}");
-        let m = enroll_command(Some("mac"), u, t, c, Some("aa11"));
+        let m = enroll_command(Some("mac"), false, u, t, c, Some("aa11"));
         assert!(m.contains("/agent/binary/mac"), "{m}");
         assert!(m.contains("shasum -a 256 -c"), "{m}");
         // The enrolment is not in here. It needs the service that

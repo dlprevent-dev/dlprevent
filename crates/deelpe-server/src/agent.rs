@@ -64,20 +64,20 @@ async fn enroll(
         return Err(bad(format!("expects API version {}", API_VERSION)));
     }
     let hash = crate::auth::sha256_hex(req.token.trim());
-    type TokenRow = (Uuid, String, chrono::DateTime<Utc>, bool, bool);
-    let row: Option<TokenRow> = sqlx::query_as("SELECT id, label, expires_at, COALESCE(uses >= max_uses, false), file_server FROM enroll_tokens WHERE token_hash = $1")
+    type TokenRow = (Uuid, String, chrono::DateTime<Utc>, bool, bool, bool);
+    let row: Option<TokenRow> = sqlx::query_as("SELECT id, label, expires_at, COALESCE(uses >= max_uses, false), file_server, non_persistent FROM enroll_tokens WHERE token_hash = $1")
         .bind(&hash)
         .fetch_optional(&st.pool)
         .await?;
-    let Some((token_id, label, expires_at, spent, file_server)) = row else {
+    let Some((token_id, label, expires_at, spent, file_server, non_persistent)) = row else {
         warn!(peer = %peer.0, "enrollment with an unknown token");
         return Err(ApiError(StatusCode::UNAUTHORIZED, "unknown token".into()));
     };
-    if spent {
-        return Err(ApiError(
-            StatusCode::UNAUTHORIZED,
-            "token already used".into(),
-        ));
+    let used_up = || ApiError(StatusCode::UNAUTHORIZED, "token already used".into());
+    // A non-persistent token is spent for *new* machines only: the ones it
+    // enrolled come back every morning (`reenroll` below).
+    if spent && !non_persistent {
+        return Err(used_up());
     }
     if expires_at < Utc::now() {
         return Err(ApiError(StatusCode::UNAUTHORIZED, "token expired".into()));
@@ -93,9 +93,26 @@ async fn enroll(
             "this token does not enrol file servers".into(),
         ));
     }
+    // Only the Windows workstation agent keeps its state with the central
+    // server. Any other agent taking an old identity back would start its
+    // alert numbers over at 1 — and overwrite yesterday's alerts under it.
+    if non_persistent && !matches!(req.kind, deelpe_core::central::AgentKind::WindowsClient) {
+        return Err(ApiError(
+            StatusCode::FORBIDDEN,
+            "this token enrols only Windows workstations".into(),
+        ));
+    }
     let hostname = req.hostname.trim();
     if hostname.is_empty() || hostname.len() > 253 {
         return Err(bad("host name is missing"));
+    }
+    if non_persistent {
+        if let Some(back) = reenroll(&st, hostname, &req, &peer, &label).await? {
+            return Ok(Json(back));
+        }
+        if spent {
+            return Err(used_up());
+        }
     }
     let agent_id = Uuid::new_v4();
     let (cert_pem, fp, not_after) = st
@@ -117,12 +134,9 @@ async fn enroll(
         .await?
         .rows_affected();
     if burned == 0 {
-        return Err(ApiError(
-            StatusCode::UNAUTHORIZED,
-            "token already used".into(),
-        ));
+        return Err(used_up());
     }
-    sqlx::query("INSERT INTO agents (id, name, kind, version, cert_fingerprint, cert_not_after, last_addr) VALUES ($1, $2, $3, $4, $5, $6, $7)")
+    sqlx::query("INSERT INTO agents (id, name, kind, version, cert_fingerprint, cert_not_after, last_addr, non_persistent) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)")
         .bind(agent_id)
         .bind(hostname)
         .bind(&kind)
@@ -130,6 +144,7 @@ async fn enroll(
         .bind(&fp)
         .bind(not_after)
         .bind(peer.0.ip().to_string())
+        .bind(non_persistent)
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
@@ -139,6 +154,72 @@ async fn enroll(
         agent_id: agent_id.to_string(),
         cert_pem,
         ca_pem: st.pki.ca_pem.clone(),
+        non_persistent,
+        roaming: None,
+    }))
+}
+
+/// A non-persistent machine back from its nightly reset: the agent it was
+/// yesterday, under a new key, with the state it left here. `None` if the
+/// name is new — then it is a first enrollment like any other.
+///
+/// The name is the identity, and only among agents a non-persistent token
+/// enrolled: those are the ones whose disk forgets. A revoked one stays
+/// revoked — the machine comes back every morning, and it must not come
+/// back as a new agent either. Deleting the revoked agent lets it in again.
+///
+/// ponytail: whoever holds the pool's token can claim a pool machine's name
+/// and lock the real one out until its next boot. The token lives in the
+/// golden image, readable by administrators only (`bootstrap.json`); the
+/// audit log shows every re-enrollment. Upgrade path: bind the identity to
+/// the machine's domain account (Kerberos) instead of its name.
+async fn reenroll(
+    st: &Shared,
+    hostname: &str,
+    req: &EnrollRequest,
+    peer: &PeerAddr,
+    token_label: &str,
+) -> Result<Option<EnrollResponse>, ApiError> {
+    type Row = (Uuid, Option<serde_json::Value>, bool);
+    let row: Option<Row> = sqlx::query_as(
+        "SELECT id, roaming, revoked_at IS NOT NULL FROM agents WHERE non_persistent AND kind = 'windows_client' \
+         AND lower(name) = lower($1) ORDER BY revoked_at DESC NULLS LAST, last_seen DESC NULLS LAST LIMIT 1",
+    )
+    .bind(hostname)
+    .fetch_optional(&st.pool)
+    .await?;
+    let Some((agent_id, roaming, revoked)) = row else {
+        return Ok(None);
+    };
+    if revoked {
+        warn!(peer = %peer.0, hostname, "revoked non-persistent agent tried to enroll again");
+        return Err(ApiError(StatusCode::FORBIDDEN, "agent revoked".into()));
+    }
+    let (cert_pem, fp, not_after) = st
+        .pki
+        .sign_agent(&req.csr_pem, agent_id)
+        .map_err(|e| bad(format!("CSR: {e}")))?;
+    // Last night's key dies with last night's machine — no grace period:
+    // nothing holds it any more that should still get in.
+    sqlx::query(
+        "UPDATE agents SET cert_fingerprint = $2, cert_not_after = $3, prev_cert_fingerprint = NULL, prev_cert_until = NULL, \
+         version = $4, last_addr = $5 WHERE id = $1",
+    )
+    .bind(agent_id)
+    .bind(&fp)
+    .bind(not_after)
+    .bind(req.version.trim())
+    .bind(peer.0.ip().to_string())
+    .execute(&st.pool)
+    .await?;
+    db::audit(&st.pool, db::Actor::SYSTEM, "agent_reenroll", json!({ "id": agent_id, "name": hostname, "token": token_label, "ip": peer.0.ip().to_string() })).await;
+    info!(%agent_id, hostname, "non-persistent agent enrolled again");
+    Ok(Some(EnrollResponse {
+        agent_id: agent_id.to_string(),
+        cert_pem,
+        ca_pem: st.pki.ca_pem.clone(),
+        non_persistent: true,
+        roaming,
     }))
 }
 
@@ -368,6 +449,15 @@ async fn report(
         accepted_access_alerts += 1;
     }
     let accepted_counts = db::upsert_counts(&st.pool, agent.id, &r.counts).await?;
+    // Kept for non-persistent agents only (see `reenroll`); anyone else's
+    // state belongs on its own disk.
+    if let Some(roaming) = &r.roaming {
+        sqlx::query("UPDATE agents SET roaming = $2 WHERE id = $1 AND non_persistent")
+            .bind(agent.id)
+            .bind(roaming)
+            .execute(&st.pool)
+            .await?;
+    }
 
     // Log lines from the machine. Only an upper bound, no check of the
     // content: what an agent writes is text, and in the dashboard it stands
@@ -1166,6 +1256,15 @@ mod report_tests {
         host: &str,
         kind: deelpe_core::central::AgentKind,
     ) -> Result<(), String> {
+        enroll_full(st, token, host, kind).await.map(|_| ())
+    }
+
+    async fn enroll_full(
+        st: &Shared,
+        token: &str,
+        host: &str,
+        kind: deelpe_core::central::AgentKind,
+    ) -> Result<EnrollResponse, String> {
         let key = rcgen::KeyPair::generate().unwrap();
         let csr_pem = rcgen::CertificateParams::new(Vec::<String>::new())
             .unwrap()
@@ -1188,9 +1287,26 @@ mod report_tests {
         )
         .await
         {
-            Ok(_) => Ok(()),
+            Ok(Json(r)) => Ok(r),
             Err(ApiError(_, msg)) => Err(msg),
         }
+    }
+
+    async fn non_persistent_token(pool: &PgPool, token: &str, max_uses: i32) {
+        sqlx::query("INSERT INTO enroll_tokens (token_hash, label, expires_at, max_uses, non_persistent) VALUES ($1, 'NP', now() + interval '1 day', $2, true)")
+            .bind(crate::auth::sha256_hex(token))
+            .bind(max_uses)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    async fn fingerprint_of(pool: &PgPool, id: &str) -> String {
+        sqlx::query_scalar("SELECT cert_fingerprint FROM agents WHERE id = $1::uuid")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .unwrap()
     }
 
     /// A token with a count stops at it. A token without one enrolls every
@@ -1287,5 +1403,161 @@ mod report_tests {
                 .await
                 .unwrap();
         assert_eq!(servers, vec!["FS-01"]);
+    }
+
+    /// A terminal server reset to its image every night enrolls again on
+    /// every boot. With a token made for that, a host name the central
+    /// server already knows gets its agent back — one row per machine, not
+    /// one per night — and the re-enrollment burns no use: a pool of five
+    /// machines is five agents on the first night and on the hundredth.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_non_persistent_machine_gets_its_agent_back(pool: PgPool) {
+        use deelpe_core::central::AgentKind;
+        let st = state(pool.clone());
+        non_persistent_token(&pool, "pool", 1).await;
+
+        let first = enroll_full(&st, "pool", "TS-01", AgentKind::WindowsClient)
+            .await
+            .unwrap();
+        assert!(first.non_persistent);
+        let old_fp = fingerprint_of(&pool, &first.agent_id).await;
+
+        let again = enroll_full(&st, "pool", "ts-01", AgentKind::WindowsClient)
+            .await
+            .expect("the token's one use went to TS-01 itself");
+        assert_eq!(again.agent_id, first.agent_id, "same machine, same agent");
+        let agents: i64 = sqlx::query_scalar("SELECT count(*) FROM agents")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(agents, 1);
+        let new_fp = fingerprint_of(&pool, &again.agent_id).await;
+        assert_ne!(new_fp, old_fp, "the new key is the one that counts");
+        assert!(
+            db::agent_by_fingerprint(&pool, &old_fp)
+                .await
+                .unwrap()
+                .is_none(),
+            "last night's key is gone with last night's machine"
+        );
+
+        assert_eq!(
+            enroll_kind(&st, "pool", "TS-02", AgentKind::WindowsClient).await,
+            Err("token already used".into()),
+            "a new machine still counts against the token"
+        );
+        assert_eq!(
+            enroll_kind(&st, "pool", "TS-01", AgentKind::Mac).await,
+            Err("this token enrols only Windows workstations".into()),
+            "only the Windows agent keeps its state with the central server"
+        );
+
+        // Revoked means revoked: the machine comes back every morning, and
+        // it must not come back as a new agent either — not even with uses
+        // left on the token. Deleting the revoked agent lets it in again.
+        sqlx::query("UPDATE enroll_tokens SET max_uses = 10")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE agents SET revoked_at = now()")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            enroll_kind(&st, "pool", "TS-01", AgentKind::WindowsClient).await,
+            Err("agent revoked".into())
+        );
+        sqlx::query("DELETE FROM agents")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            enroll_kind(&st, "pool", "TS-01", AgentKind::WindowsClient).await,
+            Ok(())
+        );
+    }
+
+    /// The token picks up only machines enrolled as non-persistent. A
+    /// laptop that happens to carry the same name as a pool machine is not
+    /// taken over by whoever holds the pool's token.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn a_non_persistent_token_takes_over_no_ordinary_agent(pool: PgPool) {
+        use deelpe_core::central::AgentKind;
+        let st = state(pool.clone());
+        token_with_uses(&pool, "laptops", None).await;
+        non_persistent_token(&pool, "pool", 5).await;
+        let laptop = enroll_full(&st, "laptops", "PC-9", AgentKind::WindowsClient)
+            .await
+            .unwrap();
+        assert!(!laptop.non_persistent);
+        let np = enroll_full(&st, "pool", "PC-9", AgentKind::WindowsClient)
+            .await
+            .unwrap();
+        assert_ne!(np.agent_id, laptop.agent_id);
+        assert!(np.non_persistent);
+        assert_eq!(
+            enroll_full(&st, "laptops", "PC-9", AgentKind::WindowsClient)
+                .await
+                .unwrap()
+                .agent_id
+                .len(),
+            36,
+            "an ordinary token keeps enrolling new agents, as before"
+        );
+    }
+
+    /// What the disk forgets overnight — the learning phase, the alert
+    /// numbers — the central server keeps for the agent and hands back at
+    /// the next enrollment. Only for non-persistent agents: an ordinary one
+    /// has its disk, and its state stays there.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn roaming_state_comes_back_at_the_next_enrollment(pool: PgPool) {
+        use deelpe_core::central::AgentKind;
+        let st = state(pool.clone());
+        non_persistent_token(&pool, "pool", 5).await;
+        token_with_uses(&pool, "laptops", None).await;
+
+        let first = enroll_full(&st, "pool", "TS-01", AgentKind::WindowsClient)
+            .await
+            .unwrap();
+        assert!(first.roaming.is_none(), "nothing kept yet");
+        let fp = fingerprint_of(&pool, &first.agent_id).await;
+        report_roaming(&st, &fp, Some(json!({ "next_alert_id": 42 }))).await;
+        // A report without it leaves the kept state alone.
+        report_roaming(&st, &fp, None).await;
+
+        let again = enroll_full(&st, "pool", "TS-01", AgentKind::WindowsClient)
+            .await
+            .unwrap();
+        assert_eq!(again.roaming, Some(json!({ "next_alert_id": 42 })));
+
+        let laptop = enroll_full(&st, "laptops", "PC-1", AgentKind::WindowsClient)
+            .await
+            .unwrap();
+        let fp = fingerprint_of(&pool, &laptop.agent_id).await;
+        report_roaming(&st, &fp, Some(json!({ "next_alert_id": 7 }))).await;
+        let kept: Option<serde_json::Value> =
+            sqlx::query_scalar("SELECT roaming FROM agents WHERE name = 'PC-1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(kept, None);
+    }
+
+    async fn report_roaming(st: &Shared, fp: &str, roaming: Option<serde_json::Value>) {
+        let r = Report {
+            roaming,
+            ..Default::default()
+        };
+        if let Err(ApiError(code, msg)) = report(
+            State(st.clone()),
+            Some(Extension(PeerCert(fp.into()))),
+            Extension(PeerAddr("10.0.0.9:1".parse().unwrap())),
+            Json(r),
+        )
+        .await
+        {
+            panic!("report rejected: {code} {msg}");
+        }
     }
 }
