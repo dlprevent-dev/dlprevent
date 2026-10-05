@@ -229,6 +229,16 @@ pub async fn renew_if_due(
     )))
 }
 
+/// What an enrollment brings back besides the credentials.
+#[derive(Debug, Clone)]
+pub struct Enrolled {
+    pub creds: Credentials,
+    /// See [`crate::central::EnrollResponse::non_persistent`].
+    pub non_persistent: bool,
+    /// The state the agent last left with the central server.
+    pub roaming: Option<serde_json::Value>,
+}
+
 /// Enrollment with the central server. `ca_sha256` is the fingerprint from
 /// the dashboard; without a match nothing happens.
 pub async fn enroll(
@@ -238,7 +248,7 @@ pub async fn enroll(
     hostname: &str,
     kind: AgentKind,
     version: &str,
-) -> Result<Credentials> {
+) -> Result<Enrolled> {
     let url = url.trim_end_matches('/');
     let expected = ca_sha256.trim().to_lowercase().replace(':', "");
     if expected.len() != 64 {
@@ -301,12 +311,16 @@ pub async fn enroll(
     if er.ca_pem.trim() != ca_pem.trim() {
         bail!("the central server returns a different CA than before");
     }
-    Ok(Credentials {
-        url: url.to_string(),
-        agent_id: er.agent_id,
-        ca_pem,
-        cert_pem: er.cert_pem,
-        key_pem: key.serialize_pem(),
+    Ok(Enrolled {
+        creds: Credentials {
+            url: url.to_string(),
+            agent_id: er.agent_id,
+            ca_pem,
+            cert_pem: er.cert_pem,
+            key_pem: key.serialize_pem(),
+        },
+        non_persistent: er.non_persistent,
+        roaming: er.roaming,
     })
 }
 

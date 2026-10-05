@@ -479,6 +479,7 @@ mod tests {
             copy_to: None,
             sender_read_directly: false,
             upload_url: None,
+            user: None,
         }
     }
 

@@ -132,6 +132,7 @@ fn learn_wire_format() {
         copy_to: None,
         sender_read_directly: false,
         upload_url: None,
+        user: None,
     };
     l.judge(&a, true, t0);
     let json = serde_json::to_string(&Response::Learn(l.status(t0))).unwrap();
@@ -165,6 +166,7 @@ fn response_wire_format() {
         copy_to: None,
         sender_read_directly: false,
         upload_url: None,
+        user: None,
     };
     assert_eq!(
         serde_json::to_string(&Response::Alerts(vec![alert])).unwrap(),
@@ -226,6 +228,7 @@ fn response_wire_format() {
         copy_to: None,
         sender_read_directly: false,
         upload_url: None,
+        user: None,
     };
     // `via` is absent when it has no value (older log lines and clients stay valid).
     // A continued alert: `last_at` and the total in `bytes_out`.
