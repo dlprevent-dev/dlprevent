@@ -5,7 +5,7 @@ the checks Wazuh SCA reported as failed on 2026-10-13, as two GPOs.
   CIS - Domain Account Policy   linked at the domain root  (password + lockout policy)
   CIS - Domain Controllers      linked at OU=Domain Controllers (everything else)
 
-Run on the DC as Domain Admin. Re-running is safe: it rewrites both GPOs.
+Run on the DC as Domain Admin, next to CisGpo.ps1. Re-running is safe: it rewrites both GPOs.
 Check the result without waiting for the Wazuh manager: gen_verifier.py next to this file
 turns the agent's SCA policy (C:\Program Files (x86)\ossec-agent\ruleset\sca\cis_win2025.yml)
 into a read-only verify_sca.ps1 that evaluates the checks the way the agent does
@@ -41,15 +41,8 @@ Changed on purpose:
 #>
 param([switch]$NoGpupdate)
 $ErrorActionPreference = 'Stop'
-Import-Module GroupPolicy, ActiveDirectory
 
-$domain = Get-ADDomain
-$sysvol = "\\$($domain.DNSRoot)\SYSVOL\$($domain.DNSRoot)\Policies"
-
-# CSE pairs for gPCMachineExtensionNames, already sorted by GUID as AD wants them.
-$ExtRegistry = '[{35378EAC-683F-11D2-A89A-00C04FBBCFA2}{D02B1F72-3407-48AE-BA88-E8213C6761F1}]'
-$ExtSecurity = '[{827D319E-6EAC-11D2-A4EA-00C04F79F83A}{803E14A0-B4FB-11D0-A0D0-00A0C90F574B}]'
-$ExtAudit    = '[{F3CCC681-B74C-4060-9F26-CD84525DCA2A}{0F3F3735-573D-9804-99E4-AB2A69BA5FD4}]'
+. "$PSScriptRoot\CisGpo.ps1"
 
 # --- Account policy (1.1, 1.2) and the Guest account: on a DC [System Access] is only read
 # from GPOs linked at the domain root.
@@ -415,59 +408,6 @@ $PW\WindowsUpdate|DeferQualityUpdatesPeriodInDays|D|0
 #  - FirewallRules CIS-SSH-In / CIS-RDP-In: the Public profile ignores local rules (36600), so if
 #    the DC ever comes up as Public, these keep SSH and RDP open to repair it.
 
-function Get-CisGpo([string]$Name) {
-    $g = Get-GPO -Name $Name -ErrorAction SilentlyContinue
-    if (-not $g) { $g = New-GPO -Name $Name -Comment 'CIS Windows Server 2025 v1.0.0 - lab/cis/Set-CisDcBaseline.ps1' }
-    $g
-}
-
-function Write-GpoFile($Gpo, [string]$RelPath, [string]$Text, [string]$Encoding) {
-    $path = Join-Path "$sysvol\{$($Gpo.Id)}\Machine" $RelPath
-    New-Item -ItemType Directory -Force -Path (Split-Path $path) | Out-Null
-    Set-Content -Path $path -Value $Text -Encoding $Encoding
-}
-
-function Write-SecTemplate($Gpo, [string]$Body) {
-    $inf = "[Unicode]`r`nUnicode=yes`r`n$($Body -replace "`r?`n", "`r`n")`r`n[Version]`r`nsignature=`"`$CHICAGO`$`"`r`nRevision=1"
-    Write-GpoFile $Gpo 'Microsoft\Windows NT\SecEdit\GptTmpl.inf' $inf Unicode
-}
-
-# Registry.pol in one write. Set-GPRegistryValue rewrites the file once per value and trips over
-# its own Registry.tmp when something (Defender, DFSR) holds it. Format: "PReg", version 1, then
-# [key;value;type;size;data] with UTF-16LE text.
-function Write-RegistryPol($Gpo, [string]$Lines) {
-    $u = [Text.Encoding]::Unicode
-    $ms = New-Object IO.MemoryStream
-    $w = New-Object IO.BinaryWriter $ms
-    $w.Write([byte[]](0x50, 0x52, 0x65, 0x67)); $w.Write([uint32]1)
-    foreach ($line in $Lines -split "`r?`n" | Where-Object { $_ }) {
-        $key, $name, $type, $data = $line -split '\|', 4
-        if ($type -eq 'D') { $t = 4; $bytes = [BitConverter]::GetBytes([uint32]$data) }
-        else { $t = 1; $bytes = $u.GetBytes("$data`0") }
-        $w.Write($u.GetBytes("[$key`0;$name`0;")); $w.Write([uint32]$t)
-        $w.Write($u.GetBytes(';')); $w.Write([uint32]$bytes.Length)
-        $w.Write($u.GetBytes(';')); $w.Write($bytes); $w.Write($u.GetBytes(']'))
-    }
-    $dir = "$sysvol\{$($Gpo.Id)}\Machine"
-    Remove-Item "$dir\Registry.tmp" -ErrorAction SilentlyContinue
-    [IO.File]::WriteAllBytes("$dir\Registry.pol", $ms.ToArray())
-}
-
-# Files written straight into SYSVOL are only picked up when the CSE is registered on the GPO
-# object and the version moves, in AD and in GPT.INI alike.
-function Publish-Gpo($Gpo, [string]$ExtensionNames) {
-    $dn = "CN={$($Gpo.Id)},CN=Policies,CN=System,$($domain.DistinguishedName)"
-    $v = (Get-ADObject $dn -Properties versionNumber).versionNumber + 1
-    Set-ADObject $dn -Replace @{ versionNumber = $v; gPCMachineExtensionNames = $ExtensionNames }
-    Set-Content -Path "$sysvol\{$($Gpo.Id)}\GPT.INI" -Value "[General]`r`nVersion=$v" -Encoding ASCII
-}
-
-function Set-FirstLink($Gpo, [string]$Target) {
-    $linked = (Get-GPInheritance -Target $Target).GpoLinks | Where-Object GpoId -eq $Gpo.Id
-    if ($linked) { Set-GPLink -Guid $Gpo.Id -Target $Target -LinkEnabled Yes -Order 1 | Out-Null }
-    else { New-GPLink -Guid $Gpo.Id -Target $Target -LinkEnabled Yes -Order 1 | Out-Null }
-}
-
 # Account policy GPO
 $acct = Get-CisGpo 'CIS - Domain Account Policy'
 Write-SecTemplate $acct $AccountInf
@@ -477,13 +417,7 @@ Publish-Gpo $acct $ExtSecurity
 $dc = Get-CisGpo 'CIS - Domain Controllers'
 Write-RegistryPol $dc $Reg
 Write-SecTemplate $dc $DcInf
-$names = @{ 1 = 'Success'; 2 = 'Failure'; 3 = 'Success and Failure' }
-$csv = @('Machine Name,Policy Target,Subcategory,Subcategory GUID,Inclusion Setting,Exclusion Setting,Setting Value')
-foreach ($line in $Audit -split "`r?`n" | Where-Object { $_ }) {
-    $sub, $guid, $val = $line -split '\|'
-    $csv += ",System,Audit $sub,$guid,$($names[[int]$val]),,$val"
-}
-Write-GpoFile $dc 'Microsoft\Windows NT\Audit\audit.csv' ($csv -join "`r`n") ASCII
+Write-AuditCsv $dc $Audit
 Publish-Gpo $dc "$ExtRegistry$ExtSecurity$ExtAudit"
 
 Set-FirstLink $acct $domain.DistinguishedName
