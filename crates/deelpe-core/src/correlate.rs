@@ -1664,18 +1664,26 @@ impl Correlator {
         a.last_at = g.at;
         a.count += 1;
         a.blocked += u32::from(g.blocked);
-        let what = match g.direction.as_str() {
-            "tool_result" => format!(
-                "prompt injection in the result of tool {}",
-                g.origin.as_deref().unwrap_or("?")
-            ),
-            "tool_definition" => format!(
-                "prompt injection in the description of tool {}",
-                g.origin.as_deref().unwrap_or("?")
-            ),
+        let tool = g.origin.as_deref().unwrap_or("?");
+        // Some rules are not about what the text says, so they name the
+        // finding themselves; everything else is worded by direction.
+        let by_rule = g.rules.iter().find_map(|r| match r.as_str() {
+            "model_not_allowed" => Some("request for a model that is not allowed".to_string()),
+            "rate_limited" => Some("request over the rate limit".to_string()),
+            "tool_definition_changed" => Some(format!(
+                "change to the definition of tool {tool} since it was let through"
+            )),
+            "unscanned_content" => Some("image or file the guard could not read".to_string()),
+            "guard_scan_failed" => Some("piece the guard could not scan".to_string()),
+            _ => None,
+        });
+        let what = by_rule.unwrap_or_else(|| match g.direction.as_str() {
+            "tool_result" => format!("prompt injection in the result of tool {tool}"),
+            "tool_definition" => format!("prompt injection in the description of tool {tool}"),
             "output" => "the model's answer or tool call".to_string(),
+            "system" => "the system prompt".to_string(),
             _ => "the user's prompt".to_string(),
-        };
+        });
         let mut via = format!(
             "LLM guard: {} × {what}, rules {}",
             a.count,
@@ -4545,6 +4553,55 @@ mod tests {
             ))
             .unwrap();
         assert_eq!(o.via.as_deref(), Some("LLM guard: 1 × prompt injection in the description of tool web_extract, rules retrieved_instruction_override, 1 refused, model m"));
+    }
+
+    #[test]
+    fn guard_findings_that_are_not_injections_are_named_by_rule() {
+        let cases = [
+            (
+                "input",
+                "model_not_allowed",
+                true,
+                "request for a model that is not allowed",
+            ),
+            ("input", "rate_limited", true, "request over the rate limit"),
+            (
+                "tool_definition",
+                "tool_definition_changed",
+                false,
+                "change to the definition of tool web_extract since it was let through",
+            ),
+            (
+                "tool_result",
+                "unscanned_content",
+                false,
+                "image or file the guard could not read",
+            ),
+            (
+                "output",
+                "guard_scan_failed",
+                false,
+                "piece the guard could not scan",
+            ),
+            (
+                "system",
+                "ignore_prior_instructions",
+                false,
+                "the system prompt",
+            ),
+        ];
+        for (direction, rule, blocked, what) in cases {
+            let mut c = Correlator::new(cfg());
+            let o = c
+                .ingest(&guard(direction, &[rule], blocked, Utc::now()))
+                .unwrap();
+            let refused = if blocked { ", 1 refused" } else { "" };
+            assert_eq!(
+                o.via.as_deref(),
+                Some(format!("LLM guard: 1 × {what}, rules {rule}{refused}, model m").as_str()),
+                "{direction}/{rule}"
+            );
+        }
     }
 
     // --- Opens refused by the permission listener
