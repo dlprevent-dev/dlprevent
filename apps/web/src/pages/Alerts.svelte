@@ -1,12 +1,13 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, fmtBytes, fmtTime, fmtUtc, interventionOf, tzName, verdictClass, verdictLabel, VERDICTS, isAlarm } from '../lib/api';
+  import { api, fmtBytes, fmtTime, fmtUtc, interventionOf, repClass, tzName, verdictClass, verdictLabel, VERDICTS, isAlarm } from '../lib/api';
   import { notify, isAdmin } from '../lib/session.svelte';
   import { createSort } from '../lib/sort.svelte';
   import { chainOf } from '../lib/chain';
   import { deepLinkAlert, originOf, takeAlertOrigin, type AlertOrigin } from '../lib/router.svelte';
   import type { Alert, Insight, Reputation, ReputationView, Settings } from '../lib/types';
   import Icon from '../lib/Icon.svelte';
+  import Investigation from '../lib/Investigation.svelte';
   import PageHead from '../lib/PageHead.svelte';
   import SearchBox from '../lib/SearchBox.svelte';
   import SortHeader from '../lib/SortHeader.svelte';
@@ -156,8 +157,6 @@
   /// `google.com` says more than `Google LLC`, and both are already in the
   /// reputation lookup — it was just only shown on expanding until now.
   const destOf = (a: Alert) => { const r = repOf(a); return r?.domain || r?.isp || null; };
-  /** Thresholds as in the AbuseIPDB docs: from 25 suspicious, from 75 malicious. */
-  function repClass(r: Reputation) { return r.is_whitelisted || r.score < 25 ? 'ok' : r.score < 75 ? 'warn' : 'bad'; }
 
   async function recheck(a: Alert, e: Event) {
     e.stopPropagation();
@@ -201,6 +200,18 @@
     try { insights = { ...insights, [a.id]: await api<Insight>(`/api/alerts/${a.id}/explain`, { method: 'POST' }) }; }
     catch (err) { notify((err as Error).message, true); }
     finally { explaining = null; }
+  }
+
+  // ---------- Investigation ----------
+  // Over every alert and notice the filter matches, not one row at a time.
+  let investigating = $state(false);
+
+  /** A `#123` in the findings or the answer: that one alert, expanded. */
+  async function openAlert(id: number) {
+    only = id;
+    status = 'all';
+    await load();
+    if (rows.some((a) => a.id === id)) { expanded = null; expand(id); }
   }
 
   function changeCategory(next: typeof category) {
@@ -403,12 +414,18 @@
        "Nothing found" without seeing why. -->
   {#if only !== null}
     <span class="badge accent">
-      From email: alert #{only}
-      <button class="iconbtn" onclick={() => { only = null; load(); }} title="Show every alert again" aria-label="Remove the filter from the email link"><Icon name="x" size={12} /></button>
+      Only alert #{only}
+      <button class="iconbtn" onclick={() => { only = null; load(); }} title="Show every alert again" aria-label="Remove the filter to one alert"><Icon name="x" size={12} /></button>
     </span>
   {/if}
   {#if filtered}<button class="btn ghost sm" onclick={reset}><Icon name="x" size={14} /> Clear filters</button>{/if}
   <span class="spacer"></span>
+  {#if admin}
+    <button class="btn ghost sm" class:on={investigating} onclick={() => (investigating = !investigating)}
+      title="Findings over every alert and notice matching this filter, open and done: where data went, to whom, how much against the usual. Computed by the database; the AI summary is a separate click.">
+      <Icon name="search" size={14} /> Investigate
+    </button>
+  {/if}
   {#if admin && picked.size > 0}
     <span class="badge accent">{picked.size} selected</span>
     <button class="btn sm" onclick={ackPicked} disabled={busy}><Icon name="check" size={14} /> Mark done</button>
@@ -426,6 +443,10 @@
 </div>
 
 {#if error}<p class="error">{error}</p>{/if}
+
+{#if investigating}
+  <Investigation filter={() => params(0)} {assistOn} onpick={openAlert} onclose={() => (investigating = false)} />
+{/if}
 
 <div class="card">
   {#if loading}

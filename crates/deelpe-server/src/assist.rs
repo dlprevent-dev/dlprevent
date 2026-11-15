@@ -252,6 +252,28 @@ struct Message<'a> {
 struct Envelope {
     #[serde(default)]
     choices: Vec<Choice>,
+    /// `null` from some providers, absent from others: both mean "not
+    /// counted", not a broken answer.
+    #[serde(default)]
+    usage: Option<Tokens>,
+}
+
+/// What a question cost, as the provider counts it. Ollama and Infomaniak
+/// both send `usage`; a service that does not leaves both at zero, and the
+/// dashboard then shows zero rather than a guess.
+#[derive(Debug, Clone, Copy, Default, PartialEq, serde::Deserialize, Serialize)]
+pub struct Tokens {
+    #[serde(default)]
+    pub prompt_tokens: i64,
+    #[serde(default)]
+    pub completion_tokens: i64,
+}
+
+/// The model's text together with what it cost.
+#[derive(Debug, PartialEq)]
+pub struct Answer {
+    pub text: String,
+    pub tokens: Tokens,
 }
 
 #[derive(serde::Deserialize)]
@@ -287,9 +309,10 @@ enum ErrorItem {
 
 /// Status code and body into text or an error. Kept apart from [`ask`] so
 /// that it can be checked without a network and without a model.
-pub fn parse(status: u16, body: &[u8]) -> Result<String, Error> {
+pub fn parse(status: u16, body: &[u8]) -> Result<Answer, Error> {
     if status == 200 {
         let env: Envelope = serde_json::from_slice(body).map_err(|_| Error::Malformed)?;
+        let tokens = env.usage.unwrap_or_default();
         let choice = env.choices.into_iter().next();
         let ran_out = choice
             .as_ref()
@@ -300,7 +323,7 @@ pub fn parse(status: u16, body: &[u8]) -> Result<String, Error> {
             .unwrap_or_default();
         let text = strip_thoughts(&text);
         return match (text.is_empty(), ran_out) {
-            (false, _) => Ok(text),
+            (false, _) => Ok(Answer { text, tokens }),
             (true, true) => Err(Error::OutOfTokens),
             (true, false) => Err(Error::Empty),
         };
@@ -358,15 +381,25 @@ fn strip_thoughts(text: &str) -> String {
     rest.trim().to_string()
 }
 
+/// One question to the model, with the briefing for one alert.
+pub async fn ask(client: &reqwest::Client, cfg: &Config, prompt: &str) -> Result<Answer, Error> {
+    ask_with(client, cfg, SYSTEM, prompt).await
+}
+
 /// One question to the model. The provider's error is passed on unchanged:
 /// "model 'lama3' not found" says more than any wording of our own.
-pub async fn ask(client: &reqwest::Client, cfg: &Config, prompt: &str) -> Result<String, Error> {
+pub async fn ask_with(
+    client: &reqwest::Client,
+    cfg: &Config,
+    system: &str,
+    prompt: &str,
+) -> Result<Answer, Error> {
     let body = Request {
         model: &cfg.model,
         messages: [
             Message {
                 role: "system",
-                content: SYSTEM,
+                content: system,
             },
             Message {
                 role: "user",
@@ -391,7 +424,7 @@ pub async fn ask(client: &reqwest::Client, cfg: &Config, prompt: &str) -> Result
 
 /// "Test connection": the cheapest question there is. Checks address, key
 /// and model name in one go, without an alert leaving the house.
-pub async fn probe(client: &reqwest::Client, cfg: &Config) -> Result<String, Error> {
+pub async fn probe(client: &reqwest::Client, cfg: &Config) -> Result<Answer, Error> {
     ask(
         client,
         cfg,
@@ -742,7 +775,7 @@ fn yes(b: bool) -> &'static str {
 }
 
 /// Bytes, the way the dashboard writes them.
-fn bytes(b: i64) -> String {
+pub(crate) fn bytes(b: i64) -> String {
     if b < 1024 {
         return format!("{b} B");
     }
@@ -763,7 +796,7 @@ fn bytes(b: i64) -> String {
 /// break off in the middle of a character, otherwise the text is no longer
 /// UTF-8. That it was truncated is stated with it — a model that does not
 /// see the end should not believe it has seen everything.
-fn clamp(s: &str, max: usize) -> String {
+pub(crate) fn clamp(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_string();
     }
@@ -834,6 +867,10 @@ pub async fn store(
 /// costs something too.
 pub const AUDIT_ACTION: &str = "alert_explain";
 pub const AUDIT_TEST: &str = "assist_test";
+/// The summary of an investigation over many alerts (`api::investigate`).
+pub const AUDIT_INVESTIGATE: &str = "alert_investigate";
+/// Every action that asks the model, and so counts against the budget.
+const AUDIT_ASKS: &[&str] = &[AUDIT_ACTION, AUDIT_TEST, AUDIT_INVESTIGATE];
 
 /// How many explanations were asked for today (UTC). Counted out of the
 /// database as with the IP reputation, so that a restart of the server does
@@ -847,10 +884,27 @@ pub const AUDIT_TEST: &str = "assist_test";
 /// and is never cleaned up.
 pub async fn used_today(pool: &PgPool) -> Result<i64> {
     let (n,): (i64,) = sqlx::query_as("SELECT count(*) FROM audit_log WHERE action = ANY($1) AND at >= date_trunc('day', now() AT TIME ZONE 'utc') AT TIME ZONE 'utc'")
-        .bind(&[AUDIT_ACTION, AUDIT_TEST][..])
+        .bind(AUDIT_ASKS)
         .fetch_one(pool)
         .await?;
     Ok(n)
+}
+
+/// Tokens spent today and this month (UTC), summed from the same audit rows
+/// the budget counts. The provider's own numbers, written down at each
+/// question: what a paid service will bill is visible before the bill.
+pub async fn tokens_used(pool: &PgPool) -> Result<(i64, i64)> {
+    Ok(sqlx::query_as(
+        "SELECT \
+           coalesce(sum(t) FILTER (WHERE at >= date_trunc('day', now() AT TIME ZONE 'utc') AT TIME ZONE 'utc'), 0)::bigint, \
+           coalesce(sum(t), 0)::bigint \
+         FROM (SELECT at, coalesce((detail->>'prompt_tokens')::bigint, 0) + coalesce((detail->>'completion_tokens')::bigint, 0) AS t \
+               FROM audit_log WHERE action = ANY($1) \
+                 AND at >= date_trunc('month', now() AT TIME ZONE 'utc') AT TIME ZONE 'utc') x",
+    )
+    .bind(AUDIT_ASKS)
+    .fetch_one(pool)
+    .await?)
 }
 
 #[cfg(test)]
@@ -860,7 +914,14 @@ mod tests {
     #[test]
     fn status_codes_become_the_errors_the_dashboard_shows() {
         let ok = br#"{"choices":[{"message":{"role":"assistant","content":"What happened: a thing."}}]}"#;
-        assert_eq!(parse(200, ok).unwrap(), "What happened: a thing.");
+        assert_eq!(parse(200, ok).unwrap().text, "What happened: a thing.");
+        let counted = br#"{"choices":[{"message":{"content":"x"}}],"usage":{"prompt_tokens":812,"completion_tokens":95,"total_tokens":907}}"#;
+        let uncounted = br#"{"choices":[{"message":{"content":"x"}}],"usage":null}"#;
+        assert_eq!(parse(200, uncounted).unwrap().tokens, Tokens::default());
+        assert_eq!(
+            parse(200, counted).unwrap().tokens,
+            Tokens { prompt_tokens: 812, completion_tokens: 95 }
+        );
 
         assert_eq!(parse(401, b"").unwrap_err(), Error::Unauthorized);
         assert_eq!(parse(403, b"").unwrap_err(), Error::Unauthorized);
@@ -903,7 +964,8 @@ mod tests {
                 200,
                 br#"{"choices":[{"message":{"content":"<think>a</think>b"}}]}"#
             )
-            .unwrap(),
+            .unwrap()
+            .text,
             "b"
         );
     }
@@ -915,7 +977,7 @@ mod tests {
         let ran_out = br#"{"choices":[{"message":{"role":"assistant","content":"","reasoning_content":"Let me look at the dossier..."},"finish_reason":"length"}]}"#;
         assert_eq!(parse(200, ran_out).unwrap_err(), Error::OutOfTokens);
         let done = br#"{"choices":[{"message":{"content":"What happened: x","reasoning_content":"hmm"},"finish_reason":"stop"}]}"#;
-        assert_eq!(parse(200, done).unwrap(), "What happened: x");
+        assert_eq!(parse(200, done).unwrap().text, "What happened: x");
     }
 
     #[test]
@@ -1073,6 +1135,22 @@ mod tests {
             dossier(&pool, id + 9999).await.unwrap().is_none(),
             "eine Warnung, die es nicht gibt"
         );
+    }
+
+    /// The token counter adds up what the provider said each question cost,
+    /// over every action that asks the model.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn tokens_are_counted_from_the_audit_log(pool: PgPool) {
+        for (action, p, c) in [
+            (AUDIT_INVESTIGATE, 2000, 400),
+            (AUDIT_ACTION, 900, 100),
+            ("login", 5000, 5000),
+        ] {
+            crate::db::audit(&pool, crate::db::Actor { id: None, name: "t" }, action, serde_json::json!({ "prompt_tokens": p, "completion_tokens": c })).await;
+        }
+        crate::db::audit(&pool, crate::db::Actor { id: None, name: "t" }, AUDIT_TEST, serde_json::json!({ "ok": false })).await;
+        assert_eq!(tokens_used(&pool).await.unwrap(), (3400, 3400));
+        assert_eq!(used_today(&pool).await.unwrap(), 3, "an investigation counts against the budget");
     }
 
     #[test]

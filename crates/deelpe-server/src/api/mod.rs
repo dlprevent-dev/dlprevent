@@ -29,6 +29,7 @@ mod agents;
 mod alerts;
 mod assist;
 mod audit;
+mod investigate;
 mod keys;
 mod notify;
 mod release;
@@ -73,6 +74,8 @@ pub fn router(state: Shared, extra: Router<Shared>) -> Router {
         .route("/api/overview", get(alerts::overview))
         .route("/api/alerts", get(alerts::alerts))
         .route("/api/alerts/count", get(alerts::alert_count))
+        .route("/api/investigate", get(investigate::investigate))
+        .route("/api/investigate/summary", post(investigate::summary))
         .route("/api/alerts/{id}/ack", post(alerts::ack_alert))
         .route("/api/alerts/ack", post(alerts::ack_alerts))
         .route("/api/alerts/{id}/learn", post(alerts::learn_alert))
@@ -276,6 +279,8 @@ mod tests {
             ("ApiKey", keys::KEY_COLS, &[]),
             ("AuditRow", audit::AUDIT_COLS, &[]),
             ("Insight", crate::assist::INSIGHT_COLS, &[]),
+            // `cached` says whether the row came out of the table or the model.
+            ("Investigation", investigate::INVESTIGATION_COLS, &["cached"]),
         ];
         for (iface, cols, extra) in checks {
             let api: Vec<&str> = cols.split(',').map(str::trim).collect();
@@ -303,6 +308,7 @@ mod tests {
             "AgentStatus",
             "AssistProbe",
             "AssistView",
+            "Findings",
             "Binary",
             "Counts",
             "LogRow",
@@ -356,13 +362,13 @@ mod tests {
     fn the_dashboard_and_the_filter_agree_on_what_a_ruf_is() {
         let svelte = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../apps/web/src/pages/Alerts.svelte"
+            "/../../apps/web/src/lib/api.ts"
         ))
-        .expect("Alerts.svelte neben dem Server");
+        .expect("api.ts neben dem Server");
         let line = svelte
             .lines()
             .find(|l| l.contains("function repClass"))
-            .expect("repClass in Alerts.svelte");
+            .expect("repClass in api.ts");
         let nums: Vec<i64> = line
             .split(|c: char| !c.is_ascii_digit())
             .filter(|t| !t.is_empty())
@@ -666,6 +672,7 @@ mod tests {
             "/api/users",
             "/api/assist",
             "/api/alerts/1/explain",
+            "/api/investigate",
             "/api/rules",
             "/api/agents",
             "/api/sources",

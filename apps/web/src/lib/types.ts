@@ -80,7 +80,37 @@ export interface Insight {
  *  that the endpoint lies outside this network. */
 export interface AssistView {
   active: boolean; endpoint: string; model: string; external: boolean;
-  today: number; daily_limit: number; stored: number;
+  today: number; daily_limit: number; stored: number; tokens_today: number; tokens_month: number;
+}
+/** Response of `/api/investigate`: what the database found over every alert
+ *  and notice the filter matches. No model involved, no tokens spent. */
+export interface Findings {
+  filter: string; tz: string;
+  scope: {
+    events: number; first: string | null; last: string | null; users: number; devices: string[]; device_count: number;
+    sent_bytes: number; sent_files: number; read_bytes: number; read_files: number;
+  };
+  indicators: { key: string; title: string; count: number; unit: string; serious: boolean; ids: number[] }[];
+  quiet: string[]; skipped: string[];
+  destinations: {
+    target: string; events: number; files: number; bytes: number; score: number | null; tor: boolean; whitelisted: boolean;
+    public: boolean; first_in_fleet: string; new: boolean; ids: number[];
+  }[];
+  users: {
+    user: string; events: number; sent_bytes: number; sent_files: number; read_bytes: number; read_files: number;
+    sent_per_day: number; read_per_day: number; sent_per_day_before: number | null; read_per_day_before: number | null;
+  }[];
+  timeline: {
+    at: string; last: string; user: string | null; process: string | null; kind: string; path: string | null; remote: string | null;
+    verdict: string; events: number; files: number; bytes: number; ids: number[]; samples: string[];
+  }[];
+  timeline_groups: number;
+}
+/** An AI summary of an investigation. `prompt` is the dossier that went out,
+ *  word for word; `cached` means it came from the database and cost nothing. */
+export interface Investigation {
+  id: number; question: string; model: string; endpoint: string; prompt: string; summary: string;
+  prompt_tokens: number; completion_tokens: number; created_at: string; created_by_name: string; cached: boolean;
 }
 /** Response of `/api/assist/test`: what came out of "Test connection". */
 export interface AssistProbe { endpoint: string; model: string; external: boolean; reply: string }
