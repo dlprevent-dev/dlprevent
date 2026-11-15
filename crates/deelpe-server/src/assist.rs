@@ -48,9 +48,11 @@ const PATH: &str = "/chat/completions";
 /// minute for this answer. Three are generous and still finite.
 const TIMEOUT: Duration = Duration::from_secs(180);
 
-/// Length of the answer. Three short paragraphs, no more — whoever wants
-/// an essay reads the raw data.
-const MAX_TOKENS: u32 = 700;
+/// Ceiling on the output. The answer itself is three short paragraphs —
+/// the prompt keeps it short, not this number. Thinking models (DeepSeek V4
+/// by default, qwen3, R1) spend their reasoning from the same budget before
+/// the first word of the answer; 700 was gone before they started writing.
+const MAX_TOKENS: u32 = 4096;
 
 /// Upper limit of the dossier in characters. A small local model often has
 /// only 4k or 8k tokens of context; if it overruns it does not answer with
@@ -192,6 +194,9 @@ pub enum Error {
     /// Valid answer, but without any text. Happens when a model has only
     /// thought and said nothing.
     Empty,
+    /// No text, and the provider says why: the output budget ran out. With
+    /// a thinking model that means it was still reasoning.
+    OutOfTokens,
     Network(String),
 }
 
@@ -215,6 +220,10 @@ impl std::fmt::Display for Error {
                 "AI service: unexpected response (is this an OpenAI-compatible endpoint?)"
             ),
             Error::Empty => write!(f, "AI service: the model returned no text."),
+            Error::OutOfTokens => write!(
+                f,
+                "AI service: the model used up its output limit before answering (still thinking). Pick a model without thinking, or turn thinking off for it at the provider."
+            ),
             Error::Network(m) => write!(f, "AI service: {m}"),
         }
     }
@@ -249,6 +258,8 @@ struct Envelope {
 struct Choice {
     #[serde(default)]
     message: Option<Content>,
+    #[serde(default)]
+    finish_reason: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -279,18 +290,19 @@ enum ErrorItem {
 pub fn parse(status: u16, body: &[u8]) -> Result<String, Error> {
     if status == 200 {
         let env: Envelope = serde_json::from_slice(body).map_err(|_| Error::Malformed)?;
-        let text = env
-            .choices
-            .into_iter()
-            .next()
+        let choice = env.choices.into_iter().next();
+        let ran_out = choice
+            .as_ref()
+            .is_some_and(|c| c.finish_reason.as_deref() == Some("length"));
+        let text = choice
             .and_then(|c| c.message)
             .and_then(|m| m.content)
             .unwrap_or_default();
         let text = strip_thoughts(&text);
-        return if text.is_empty() {
-            Err(Error::Empty)
-        } else {
-            Ok(text)
+        return match (text.is_empty(), ran_out) {
+            (false, _) => Ok(text),
+            (true, true) => Err(Error::OutOfTokens),
+            (true, false) => Err(Error::Empty),
         };
     }
     let detail = serde_json::from_slice::<ErrorEnvelope>(body)
@@ -894,6 +906,16 @@ mod tests {
             .unwrap(),
             "b"
         );
+    }
+
+    #[test]
+    fn a_model_that_thought_until_the_limit_says_so() {
+        // DeepSeek V4, vLLM, newer Ollama: the reasoning sits next to the
+        // answer, not in it, and counts against `max_tokens`.
+        let ran_out = br#"{"choices":[{"message":{"role":"assistant","content":"","reasoning_content":"Let me look at the dossier..."},"finish_reason":"length"}]}"#;
+        assert_eq!(parse(200, ran_out).unwrap_err(), Error::OutOfTokens);
+        let done = br#"{"choices":[{"message":{"content":"What happened: x","reasoning_content":"hmm"},"finish_reason":"stop"}]}"#;
+        assert_eq!(parse(200, done).unwrap(), "What happened: x");
     }
 
     #[test]
