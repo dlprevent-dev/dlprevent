@@ -88,6 +88,18 @@ export function fmtTime(s: string | null | undefined): string {
   return d.toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false, timeZone: displayTz });
 }
 
+/** Traffic light for an AbuseIPDB reputation: the thresholds of the
+ *  AbuseIPDB docs, suspicious from 25, malicious from 75; on the whitelist
+ *  the score does not count. The server filters by the same ones
+ *  (`REP_SUSPICIOUS`, `REP_MALICIOUS`). */
+export function repClass(r: { score: number; is_whitelisted?: boolean; whitelisted?: boolean }): 'ok' | 'warn' | 'bad' { return r.is_whitelisted || r.whitelisted || r.score < 25 ? 'ok' : r.score < 75 ? 'warn' : 'bad'; }
+
+/** The IANA name of the zone times are shown in, for the server: an
+ *  investigation's working hours and dossier use the same clock as the page. */
+export function zoneId(): string {
+  return displayTz ?? (Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC');
+}
+
 /** Short name of the browser's time zone, e.g. "CEST". Sits in the header of
  *  the time columns: a bare clock time does not show whether it means local
  *  time or UTC, and a record that is two hours off is worthless. */

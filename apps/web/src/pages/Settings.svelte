@@ -372,16 +372,16 @@
 
           <div class="field"><label for="am">Model</label>
             <input id="am" type="text" bind:value={s.assist_model} disabled={!admin} autocomplete="off" spellcheck="false" placeholder="llama3.1:8b" />
-            <div class="hint">Exactly as the endpoint spells it — <code>ollama list</code> on the machine that runs Ollama, or the provider's model list. A wrong name comes back as “model not found”, not as a bad answer.</div></div>
+            <div class="hint">Exactly as the endpoint spells it — <code>ollama list</code> on the machine that runs Ollama, or the provider's model list. A wrong name comes back as “model not found”, not as a bad answer. Prefer a model <b>without thinking</b>: a thinking model spends most of its tokens on reasoning nobody reads, and at a paid service those are billed too.</div></div>
 
           <div class="field"><label for="ak2">API key</label>
             <input id="ak2" type="password" bind:value={aiKeyDraft} disabled={!admin} autocomplete="off" spellcheck="false"
               placeholder={s.assist_key_set ? 'A key is stored — type a new one to replace it' : 'Leave empty for Ollama in your own network'} />
             <div class="hint">Stored on the server and never sent back to the browser. Ollama needs none; Infomaniak needs its API token. Pointing the base URL at a <b>different host</b> drops the stored key — a key belongs to the service it was issued for.</div></div>
 
-          <div class="field" style="margin-bottom:0"><label for="al">Explanations per day</label>
+          <div class="field" style="margin-bottom:0"><label for="al">Questions per day</label>
             <input id="al" type="number" min="1" max="10000" bind:value={s.assist_daily_limit} disabled={!admin} />
-            <div class="hint">The server refuses further explanations once this many were asked for today. Asking the same alert again counts again — it costs again, and so does <b>Test connection</b>. The count comes from the audit log, so a restart does not reset it.</div></div>
+            <div class="hint">The server refuses further questions to the model once this many were asked today: alert explanations, investigation summaries and <b>Test connection</b>. Explaining the same alert again counts again; an investigation summary whose dossier was answered before comes from the database and costs nothing. Each question is bounded in size, so this number is also a ceiling on the tokens. The count comes from the audit log, so a restart does not reset it.</div></div>
         </fieldset>
 
         <fieldset class="fset">
@@ -415,7 +415,8 @@
                 </span>
                 <span class="k">Model</span><span class="mono">{assist.model}</span>
               {/if}
-              <span class="k">Today</span><span>{assist.today} of {assist.daily_limit} explanations{#if assist.today >= assist.daily_limit} — budget spent, resumes tomorrow{/if}</span>
+              <span class="k">Today</span><span>{assist.today} of {assist.daily_limit} questions{#if assist.today >= assist.daily_limit} — budget spent, resumes tomorrow{/if}</span>
+              <span class="k">Tokens</span><span>{assist.tokens_today.toLocaleString()} today · {assist.tokens_month.toLocaleString()} this month <span class="muted small">(as counted by the provider, UTC)</span></span>
               <span class="k">Stored</span><span>{assist.stored} explanations</span>
             </div>
           {:else}

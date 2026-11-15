@@ -118,7 +118,7 @@ pub(super) struct AlertQuery {
     rep: Option<String>,
     /// Only what happened in the last this-many hours. See [`AlertFilter::hours`].
     #[serde(default)]
-    hours: Option<i64>,
+    pub(super) hours: Option<i64>,
     #[serde(default)]
     sort: Option<String>,
     #[serde(default)]
@@ -231,7 +231,7 @@ macro_rules! alert_ip {
          WHEN remote ~ '^[0-9.]+:[0-9]+$' THEN split_part(remote, ':', 1) ELSE remote END"
     };
 }
-const ALERT_IP: &str = alert_ip!();
+pub(super) const ALERT_IP: &str = alert_ip!();
 
 /// The reputation as a number, for sorting. `concat!` instead of `format!`,
 /// because the sort list is a constant.
@@ -246,7 +246,7 @@ const ALERT_IP: &str = alert_ip!();
 /// point as malicious.
 ///
 /// The thresholds from the AbuseIPDB docs. The same judgement is made by
-/// `repClass` in `apps/web/src/pages/Alerts.svelte`, rebuilt in TypeScript —
+/// `repClass` in `apps/web/src/lib/api.ts`, rebuilt in TypeScript —
 /// the test `the_dashboard_and_the_filter_agree_on_what_a_ruf_is` holds the
 /// two together. Before, there was a literal here and next to it a comment
 /// pointing at the twin.
@@ -297,6 +297,42 @@ fn rep_where(rep: Option<&str>) -> Option<String> {
     Some(format!(
         "EXISTS (SELECT 1 FROM ip_reputations r WHERE r.ip = {ALERT_IP} AND {cond})"
     ))
+}
+
+/// The condition for an investigation (`api::investigate`): the filter on
+/// screen, but over alerts **and** notices, open **and** done. A suspicion is
+/// about what happened, not about which drawer it was sorted into or whether
+/// somebody already ticked it off.
+pub(super) fn investigation_where(b: &mut Binder, q: &AlertQuery) -> String {
+    let mut f = AlertFilter::from_query(q);
+    f.category = AlertCategory::All;
+    f.open = None;
+    alert_where(b, &f)
+}
+
+/// The filter in words, for the head of an investigation's dossier: the
+/// model should know what was looked at, and what was not.
+pub(super) fn describe(q: &AlertQuery) -> String {
+    let mut parts = Vec::new();
+    if let Some(id) = q.id {
+        parts.push(format!("only alert #{id}"));
+    }
+    if let Some(t) = q.q.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+        parts.push(format!("search \"{t}\""));
+    }
+    for (name, v) in [("verdict", &q.verdict), ("kind", &q.kind), ("reputation", &q.rep), ("origin", &q.origin)] {
+        if let Some(v) = v.as_deref().filter(|v| !v.is_empty()) {
+            parts.push(format!("{name} {v}"));
+        }
+    }
+    if q.agent.is_some() || q.source.is_some() {
+        parts.push("one device or source".into());
+    }
+    match q.hours.filter(|h| *h > 0) {
+        Some(h) => parts.push(format!("last {h} hours")),
+        None => parts.push("any time".into()),
+    }
+    parts.join("; ")
 }
 
 /// The alert list's condition, together with its values in the `Binder`.

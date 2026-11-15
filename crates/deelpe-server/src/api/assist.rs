@@ -31,10 +31,14 @@ pub(super) struct AssistView {
     daily_limit: i64,
     /// Explanations in total.
     stored: i64,
+    /// Tokens the provider counted, today and this month (UTC).
+    tokens_today: i64,
+    tokens_month: i64,
 }
 
 pub(super) async fn assist(State(st): State<Shared>, _u: Admin) -> R<AssistView> {
     let cfg = assist::config(&st.pool).await?;
+    let (tokens_today, tokens_month) = assist::tokens_used(&st.pool).await?;
     let (stored,): (i64,) = sqlx::query_as("SELECT count(*) FROM alert_insights")
         .fetch_one(&st.pool)
         .await?;
@@ -46,6 +50,8 @@ pub(super) async fn assist(State(st): State<Shared>, _u: Admin) -> R<AssistView>
         today: assist::used_today(&st.pool).await?,
         daily_limit: db::setting_i64(&st.pool, "assist_daily_limit", 50).await?,
         stored,
+        tokens_today,
+        tokens_month,
     }))
 }
 
@@ -83,14 +89,14 @@ pub(super) async fn explain(
         return Err(not_found());
     };
     let client = assist::client().map_err(|e| bad(e.to_string()))?;
-    let summary = assist::ask(&client, &cfg, &prompt)
+    let answer = assist::ask(&client, &cfg, &prompt)
         .await
         .map_err(|e| bad(e.to_string()))?;
-    let out = assist::store(&st.pool, id, &cfg, &prompt, &summary, (user.id, &user.name)).await?;
+    let out = assist::store(&st.pool, id, &cfg, &prompt, &answer.text, (user.id, &user.name)).await?;
     // What gets logged is that a question was asked and where it went — not
     // the dossier: that is stored in full on the alert, and the audit log is
     // not a second copy of the alert data.
-    db::audit(&st.pool, (&user).into(), assist::AUDIT_ACTION, json!({ "alert": id, "endpoint": out.endpoint, "model": out.model, "external": cfg.external() })).await;
+    db::audit(&st.pool, (&user).into(), assist::AUDIT_ACTION, json!({ "alert": id, "endpoint": out.endpoint, "model": out.model, "external": cfg.external(), "prompt_tokens": answer.tokens.prompt_tokens, "completion_tokens": answer.tokens.completion_tokens })).await;
     Ok(Json(out))
 }
 
@@ -125,7 +131,11 @@ pub(super) async fn test(State(st): State<Shared>, Admin(user): Admin) -> R<Prob
         &st.pool,
         (&user).into(),
         assist::AUDIT_TEST,
-        json!({ "endpoint": cfg.endpoint(), "model": cfg.model, "ok": outcome.is_ok() }),
+        json!({
+            "endpoint": cfg.endpoint(), "model": cfg.model, "ok": outcome.is_ok(),
+            "prompt_tokens": outcome.as_ref().map_or(0, |a| a.tokens.prompt_tokens),
+            "completion_tokens": outcome.as_ref().map_or(0, |a| a.tokens.completion_tokens),
+        }),
     )
     .await;
     let reply = outcome.map_err(|e| bad(e.to_string()))?;
@@ -135,6 +145,6 @@ pub(super) async fn test(State(st): State<Shared>, Admin(user): Admin) -> R<Prob
         external: cfg.external(),
         // A talkative model answers with a sentence instead of a word; only
         // one line fits into the message anyway.
-        reply: reply.chars().take(200).collect(),
+        reply: reply.text.chars().take(200).collect(),
     }))
 }
